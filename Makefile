@@ -41,6 +41,20 @@ test: unit integration
 .PHONY: check
 check: lint test
 
+# uvx 経由で動かす。グローバルに mkdocs を入れさせない ── 入れさせると
+# 手元と CI で版がずれる。requirements-docs.txt で固定してあるので、
+# どちらも同じものを使う。
+UVX ?= uvx --quiet --with-requirements requirements-docs.txt
+
 .PHONY: docs
 docs:
-	@echo 'docs: まだ未実装です（ROADMAP S10）'
+	$(UVX) mkdocs serve
+
+.PHONY: docs-build
+docs-build:
+	$(UVX) mkdocs build --strict
+
+.PHONY: shots
+shots:
+	@echo 'スクリーンショットは実際の実行結果から作る（作り物の画面は置かない）:'
+	@echo '  ccs ls | python3 scripts/termshot.py -o docs/img/ls.svg --title "ccs ls"'
