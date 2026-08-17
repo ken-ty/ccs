@@ -25,6 +25,13 @@ CCS_VERSION='0.1.0'
 : "${CCS_TRUST_FILE:=${HOME}/.claude.json}"
 : "${CCS_SCRATCH_ROOT:=${HOME}/.cc-scratch}"
 
+# 使い捨て作業枠の本数。
+#
+# **枠を有限にするのが目的**（docs/design.md §4.4 案 B）。毎回新しい
+# ディレクトリを作る方式だと、trust ダイアログが毎回出るうえ、使い捨て
+# セッションが無限に増える。枠なら人が最初の 1 回だけ信頼すれば済む。
+: "${CCS_SCRATCH_SLOTS:=8}"
+
 # tmux セッション名の接頭辞。手で開いた tmux セッションを巻き込まないための境界。
 #
 # ---------------------------------------------------------------------------
@@ -69,6 +76,7 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
   ccs kill <slug>                         セッションを畳む
   ccs gc                                  死んだペイン・空の作業枠を掃除する
 
+  ccs resolve <target> [--json]           <target> がどこに解決されるかを見る
   ccs help                                このヘルプ
   ccs version                             バージョン
 
@@ -85,6 +93,7 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
   CCS_SESSIONS_DIR   セッションレジストリ     [既定: ~/.claude/sessions]
   CCS_TRUST_FILE     trust 状態のファイル     [既定: ~/.claude.json]
   CCS_SCRATCH_ROOT   使い捨て作業枠の親       [既定: ~/.cc-scratch]
+  CCS_SCRATCH_SLOTS  使い捨て作業枠の本数     [既定: 8]
 
 詳細は docs/design.md。
 EOF
@@ -117,10 +126,215 @@ require_deps() {
 }
 
 # ---------------------------------------------------------------------------
+# 対象の解決
+#
+# <target> を「絶対パス」と「slug」の 2 つに落とす。slug は tmux セッション名・
+# Claude の表示名・ログの見出しで同じものを使う唯一の識別子
+# （docs/design.md §4.2）。ここがブレると名寄せが全部ブレる。
+#
+# 結果は CCS_RESOLVED_PATH / CCS_RESOLVED_SLUG に入る。
+# ---------------------------------------------------------------------------
+
+CCS_RESOLVED_PATH=''
+CCS_RESOLVED_SLUG=''
+
+# tmux セッション名として安全な形にする。
+#
+# tmux 3.7 は `.` も `:` も名前に受け付けてしまうが、`:` は
+# `session:window` の区切りなので、後から -t で狙えなくなる。
+# 受け付けられることと安全であることは別。
+sanitize_slug() {
+	printf '%s' "$1" | sed 's/[^A-Za-z0-9_@-]/-/g'
+}
+
+json_str() {
+	printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+}
+
+# 実在するディレクトリを絶対パスに正規化する。
+# realpath / readlink -f は環境差が大きいので使わない。
+abs_dir() {
+	(cd "$1" 2>/dev/null && pwd -P) || return 1
+}
+
+# ghq 配下で <basename> が複数あるかを見る。
+# 衝突していれば slug に owner を足す（design.md §4.2）。
+repo_basename_is_ambiguous() {
+	_base=$1
+	_n=$("$CCS_GHQ_BIN" list 2>/dev/null |
+		awk -F/ -v b="$_base" '$NF == b' | wc -l | tr -d ' ')
+	[ "${_n:-0}" -gt 1 ]
+}
+
+# 絶対パスから slug を決める。
+#
+# 基本は末尾要素だが、ghq 配下で名前が衝突しているなら <owner>-<repo> にする。
+# **利用者がどう打ったか（repo か owner/repo か）に依らず同じ slug になる**
+# ことが大事 — 打ち方で別セッションが立つと、冪等性 (S5) が成立しない。
+slug_for_path() {
+	_path=$1
+	_base=$(basename "$_path")
+
+	if repo_basename_is_ambiguous "$_base"; then
+		_owner=$(basename "$(dirname "$_path")")
+		sanitize_slug "${_owner}-${_base}"
+	else
+		sanitize_slug "$_base"
+	fi
+}
+
+resolve_as_path() {
+	_p=$1
+	[ -d "$_p" ] || die "$EX_FAIL" "そのディレクトリはありません: ${_p}"
+	CCS_RESOLVED_PATH=$(abs_dir "$_p") ||
+		die "$EX_FAIL" "ディレクトリを解決できません: ${_p}"
+	CCS_RESOLVED_SLUG=$(slug_for_path "$CCS_RESOLVED_PATH")
+}
+
+resolve_as_repo() {
+	_q=$1
+
+	have "$CCS_GHQ_BIN" ||
+		die "$EX_FAIL" "リポジトリ名で指定するには ghq が要ります（${CCS_GHQ_BIN} が見つかりません）。パスで指定してください"
+
+	# 末尾一致で引く。`x01` でも `ken-ty/x01` でも
+	# `github.com/ken-ty/x01` でも同じように当たる。
+	# 正規表現を組み立てないのは、リポジトリ名に含まれる記号を
+	# エスケープし損ねる事故を避けるため。
+	_matches=$("$CCS_GHQ_BIN" list -p 2>/dev/null |
+		awk -v q="/$_q" 'index($0, q) == length($0) - length(q) + 1')
+
+	_count=$(printf '%s' "$_matches" | grep -c . || true)
+
+	case ${_count:-0} in
+	0)
+		warn "ccs: ghq にそのリポジトリはありません: ${_q}"
+		warn ''
+		warn '  手元にあるか確認: ghq list | grep -i '"${_q}"
+		warn '  取ってくる:       ghq get <owner>/<repo>'
+		warn '  パスで指定しても構いません: ccs new /path/to/repo'
+		exit "$EX_FAIL"
+		;;
+	1)
+		resolve_as_path "$_matches"
+		;;
+	*)
+		warn "ccs: ${_q} に当てはまるリポジトリが複数あります:"
+		warn ''
+		printf '%s\n' "$_matches" | while IFS= read -r _m; do
+			[ -n "$_m" ] || continue
+			warn "  $(basename "$(dirname "$_m")")/$(basename "$_m")"
+		done
+		warn ''
+		warn '<owner>/<repo> の形で指定し直してください。'
+		exit "$EX_FAIL"
+		;;
+	esac
+}
+
+dir_is_empty() {
+	[ -d "$1" ] || return 1
+	# 隠しファイルも数える。.git だけ残った枠を「空」と見なすと、
+	# 前の作業の痕跡が次のセッションに漏れる。
+	_n=$(find "$1" -mindepth 1 -maxdepth 1 2>/dev/null | head -1)
+	[ -z "$_n" ]
+}
+
+# 使い捨て作業枠を 1 つ確保する。
+#
+# 空いている枠 = ディレクトリが無いか、中身が空。**tmux セッションの有無は
+# ここでは見ない** — 見ると S4 以前にテストできなくなるうえ、責務が混ざる。
+# 立っているセッションとの突き合わせは ccs new 側（S5 の冪等性）が持つ。
+resolve_as_scratch() {
+	mkdir -p "$CCS_SCRATCH_ROOT" ||
+		die "$EX_FAIL" "作業枠を作れません: ${CCS_SCRATCH_ROOT}"
+
+	_i=1
+	while [ "$_i" -le "$CCS_SCRATCH_SLOTS" ]; do
+		_slot="${CCS_SCRATCH_ROOT}/${_i}"
+
+		if [ ! -e "$_slot" ] || dir_is_empty "$_slot"; then
+			mkdir -p "$_slot" || die "$EX_FAIL" "作業枠を作れません: ${_slot}"
+			CCS_RESOLVED_PATH=$(abs_dir "$_slot")
+			CCS_RESOLVED_SLUG="tmp-${_i}"
+			return 0
+		fi
+
+		_i=$((_i + 1))
+	done
+
+	warn "ccs: 使い捨ての作業枠が全部埋まっています（${CCS_SCRATCH_ROOT} に ${CCS_SCRATCH_SLOTS} 本）"
+	warn ''
+	warn '  使い終わったものを片付ける: ccs gc'
+	warn '  個別に畳む:                 ccs kill tmp-<番号>'
+	warn ''
+	warn '枠を増やすなら CCS_SCRATCH_SLOTS。ただし枠が有限であること自体が'
+	warn '使い捨てセッションを増やしすぎないための歯止めです。'
+	exit "$EX_FAIL"
+}
+
+resolve_target() {
+	_target=$1
+
+	# 引用符付きで `~/foo` が渡ってきたときのため。通常はシェルが先に展開する。
+	case $_target in
+	\~/*) _target="${HOME}/${_target#\~/}" ;;
+	esac
+
+	case $_target in
+	tmp)
+		resolve_as_scratch
+		;;
+	/* | ./* | ../*)
+		resolve_as_path "$_target"
+		;;
+	*)
+		# 相対パスとして実在するならパス優先。`ken-ty/x01` のように
+		# ghq の指定とも相対パスとも読める形があるため、実物を優先する。
+		if [ -d "$_target" ]; then
+			resolve_as_path "$_target"
+		else
+			resolve_as_repo "$_target"
+		fi
+		;;
+	esac
+
+	if [ -z "$CCS_RESOLVED_PATH" ] || [ -z "$CCS_RESOLVED_SLUG" ]; then
+		die "$EX_FAIL" "対象を解決できませんでした: ${_target}"
+	fi
+}
+
+# ---------------------------------------------------------------------------
 # サブコマンド
 #
 # 中身は S4 以降で埋める（ROADMAP 参照）。ここでは分岐だけを固定する。
 # ---------------------------------------------------------------------------
+
+cmd_resolve() {
+	_json=''
+	_target=''
+
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--json) _json=1 ;;
+		-*) die "$EX_USAGE" "resolve: 知らないオプション: $1" ;;
+		*) _target=$1 ;;
+		esac
+		shift
+	done
+
+	[ -n "$_target" ] || die "$EX_USAGE" 'resolve: <target> を指定してください'
+
+	resolve_target "$_target"
+
+	if [ -n "$_json" ]; then
+		printf '{"slug":%s,"path":%s}\n' \
+			"$(json_str "$CCS_RESOLVED_SLUG")" \
+			"$(json_str "$CCS_RESOLVED_PATH")"
+	else
+		printf '%s\t%s\n' "$CCS_RESOLVED_SLUG" "$CCS_RESOLVED_PATH"
+	fi
+}
 
 cmd_new() {
 	require_deps
@@ -169,6 +383,7 @@ main() {
 	attach) cmd_attach "$@" ;;
 	kill) cmd_kill "$@" ;;
 	gc) cmd_gc "$@" ;;
+	resolve) cmd_resolve "$@" ;;
 	help | --help | -h) usage ;;
 	version | --version | -V) printf '%s\n' "$CCS_VERSION" ;;
 	*)
