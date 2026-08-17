@@ -58,6 +58,8 @@ markdown_extensions:
 
 nav:
   - はじめに: index.md
+  - 使い方:
+      - はじめてのセッション: tutorial.md
   - 設計:
       - 設計調査: design.md
       - 参照資料: references.md

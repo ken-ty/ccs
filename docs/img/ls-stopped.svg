@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="738" height="120" viewBox="0 0 738 120" role="img" aria-label="ccs ls">
+  <style>
+    /* light と dark の両方を持たせて prefers-color-scheme で切り替える。
+       画像を 2 枚用意して読み手の設定で出し分ける手間を省くため。 */
+    .bg   { fill: #ffffff; stroke: #d8dde3; }
+    .bar  { fill: #f2f4f7; }
+    .ttl  { fill: #5b6672; }
+    .out  { fill: #24292f; }
+    .cmd  { fill: #0a5ca8; font-weight: 600; }
+    .dot1 { fill: #ff5f57; } .dot2 { fill: #febc2e; } .dot3 { fill: #28c840; }
+    text  { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo,
+             Consolas, "Liberation Mono", monospace;
+             font-size: 13.5px; white-space: pre; dominant-baseline: middle; }
+    @media (prefers-color-scheme: dark) {
+      .bg  { fill: #14171c; stroke: #2c313a; }
+      .bar { fill: #1d2128; }
+      .ttl { fill: #98a2b0; }
+      .out { fill: #d7dde5; }
+      .cmd { fill: #6cb6ff; }
+    }
+  </style>
+  <rect class="bg" x="0.5" y="0.5" width="737" height="119" rx="8"/>
+  <path class="bar" d="M0.5 8.5 a8 8 0 0 1 8 -8 h721 a8 8 0 0 1 8 8 v31.5 h-737 z"/>
+  <circle cx="22" cy="20" r="6" class="dot dot1"/><circle cx="44" cy="20" r="6" class="dot dot2"/><circle cx="66" cy="20" r="6" class="dot dot3"/>
+  <text x="369" y="20" class="ttl" text-anchor="middle" font-size="12">ccs ls</text>
+  <text x="16.0" y="44.0" class="cmd">$ ccs ls</text>
+  <text x="16.0" y="64.0" class="out">SLUG   STATUS    SESSION ID                            PATH</text>
+  <text x="16.0" y="84.0" class="out">catan  stopped   bc6984a6-7c94-4b8c-b2ce-1c02889a9b81  ~/ghq/github.com/ken-ty/catan</text>
+</svg>
