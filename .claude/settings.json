@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git switch:*)",
+      "Bash(git checkout -b:*)",
+      "Bash(git branch:*)",
+      "Bash(git rebase origin/main)",
+      "Bash(git merge --ff-only:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh issue:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
+      "Bash(bats:*)",
+      "Bash(shellcheck:*)",
+      "Bash(tmux:*)",
+      "Bash(make:*)",
+      "Bash(uvx:*)",
+      "Bash(brew install bats-core)",
+      "Bash(brew install shellcheck)"
+    ],
+    "deny": [
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(gh repo edit:*)",
+      "Bash(gh repo delete:*)"
+    ]
+  }
+}
