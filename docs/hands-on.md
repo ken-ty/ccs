@@ -138,7 +138,9 @@ ccs new x01
 
 **`ccs` を作った理由はこの 1 点。** 立てたセッションに、このハブから指示を送れること。
 
-このチャットで、こう聞く:
+ここで使う [`ListAgents`](agent-tools.md#listagents) と
+[`SendMessage`](agent-tools.md#sendmessage) はシェルのコマンドではないので、
+ターミナルではなくこのチャットで頼む。
 
 > ListAgents で今あるセッションを見せて
 
@@ -408,7 +410,7 @@ rm ~/.local/bin/ccs
 | 症状 | 見るところ |
 | --- | --- |
 | `ccs new` が 30 秒待って失敗する | ペインの中身が出るのでそれを読む。信頼確認かログイン切れが大半 |
-| `ListAgents` に出てこない | `ccs ls` で `idle` か確かめる。`stopped` なら claude が落ちている |
+| [`ListAgents`](agent-tools.md#listagents) に出てこない | `ccs ls` で `idle` か確かめる。`stopped` なら claude が落ちている（[使い分け](agent-tools.md#ccs-ls-との使い分け)） |
 | `attach` から抜けられない | `Ctrl-b` → `d`。`Ctrl-c` ではない |
 | `ccs new --tmp` が「枠が全部埋まっています」 | `ccs gc` で状況を見る。中身のある枠は `ccs` が消さないので自分で確認する |
 | `ccs new tmp` が「同名のリポジトリもあります」 | ghq に `tmp` がある。作業枠なら `--tmp`、リポジトリなら `<owner>/tmp` |

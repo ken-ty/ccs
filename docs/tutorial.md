@@ -54,17 +54,16 @@ brew install tmux jq
 | `transcript` | 会話ログの**予測パス**。初回のやり取りが起きるまでファイルは作られない |
 | `created` | 新しく立てたか、既にあったものを返したか |
 
-立った直後から、ハブの `ListAgents` に `<slug>` として現れる。**これはシェルのコマンドではない** —
-`ListAgents` はエージェントの組み込みツールなので、ハブのチャットにこう打つ。
+立った直後から、ハブの [`ListAgents`](agent-tools.md#listagents) に `<slug>` として現れる。
 
-```bash
+```
 > ListAgents で今あるセッションを見せて
 Peer sessions (7):
   catan [e679d3]  ·  interactive  ·  idle  ·  started 6s ago
   x01 [80bd9b]  ·  interactive  ·  idle  ·  started 17s ago
 ```
 
-あとは `SendMessage` で指示を送れる — これが `ccs` を作った理由そのもの。
+あとは [`SendMessage`](agent-tools.md#sendmessage) で指示を送れる — これが `ccs` を作った理由そのもの。
 
 > x01 のセッションに「このリポジトリの README の見出しだけ列挙して」と頼んで、結果を教えて
 
@@ -166,5 +165,6 @@ claude が終了してもペインは残る。一覧では `stopped` になる�
 
 ## 次に読むもの
 
+- [ハブの組み込みツール](agent-tools.md) — `ListAgents` / `SendMessage` の打ち方と `ccs ls` との使い分け
 - [手を動かして確かめる](hands-on.md) — 実機で 1 周する手順（期待される出力つき）
 - [設計調査](design.md) — なぜこの形なのか。実測の証拠つき
