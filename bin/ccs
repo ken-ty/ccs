@@ -1,0 +1,184 @@
+#!/bin/sh
+#
+# ccs — Claude Code セッションを tmux で立てる薄いラッパー。
+#
+# 設計の正本は docs/design.md。ここが持つのは 4 つだけ:
+#   セッションの新規作成 / trust ダイアログの回避 / パス解決 / 命名規約と後片付け
+# 一覧・状態・セッション間通信は Claude Code の組み込みに委譲する。
+
+set -eu
+
+CCS_VERSION='0.1.0'
+
+# ---------------------------------------------------------------------------
+# 差し替え点
+#
+# AGENTS.md「テストの方針」。テストはここを差し替えることで、本物の claude を
+# 起動せず、本物の ~/.claude.json を書き換えずに済ませる。**新しく外部コマンドや
+# 外部パスに触るときは、必ずここに差し替え点を足してから使うこと。**
+# ---------------------------------------------------------------------------
+: "${CCS_CLAUDE_BIN:=claude}"
+: "${CCS_TMUX_BIN:=tmux}"
+: "${CCS_GHQ_BIN:=ghq}"
+: "${CCS_JQ_BIN:=jq}"
+: "${CCS_SESSIONS_DIR:=${HOME}/.claude/sessions}"
+: "${CCS_TRUST_FILE:=${HOME}/.claude.json}"
+: "${CCS_SCRATCH_ROOT:=${HOME}/.cc-scratch}"
+
+# tmux セッション名の接頭辞。手で開いた tmux セッションを巻き込まないための境界。
+#
+# ---------------------------------------------------------------------------
+# 終了コード
+#
+# 呼び出し側（ハブのエージェント）が分岐できるよう、意味を固定する。
+# **これは対外的な契約なので、まだ使っていない番号も消さない。**
+# shellcheck disable=SC2034  # S4 以降で使う。命名規約の契約として先に固定する
+CCS_PREFIX='cc/'
+EX_OK=0       # 成功
+# shellcheck disable=SC2034  # S4 以降で使う。終了コードの契約として先に固定する
+EX_FAIL=1     # 一般的な失敗
+EX_USAGE=2    # 使い方の誤り（未知のサブコマンド、引数不足）
+EX_TODO=3     # 未実装
+EX_DEPS=4     # 依存コマンドが無い
+
+# ---------------------------------------------------------------------------
+# 出力
+# ---------------------------------------------------------------------------
+
+# 人間向けのメッセージは stderr に出す。stdout は機械可読な結果だけに使う
+# （`ccs new` の JSON、`ccs ls --json`）。混ぜるとハブ側でパースできなくなる。
+warn() {
+	printf '%s\n' "$*" >&2
+}
+
+die() {
+	_code=$1
+	shift
+	warn "ccs: $*"
+	exit "$_code"
+}
+
+usage() {
+	cat <<'EOF'
+ccs — Claude Code セッションを tmux で立てる薄いラッパー
+
+使い方:
+  ccs new <target> [-- <初期プロンプト>]  セッションを立てる
+  ccs ls [--json]                         cc/ のセッションを一覧する
+  ccs attach <slug>                       セッションに乗り込む
+  ccs kill <slug>                         セッションを畳む
+  ccs gc                                  死んだペイン・空の作業枠を掃除する
+
+  ccs help                                このヘルプ
+  ccs version                             バージョン
+
+<target>:
+  <repo>        ghq 配下のリポジトリ名（例: x01）
+  <path>        絶対パスまたは相対パス
+  tmp           使い捨ての作業枠（CCS_SCRATCH_ROOT 配下）
+
+環境変数（テストと特殊な環境のための差し替え点）:
+  CCS_CLAUDE_BIN     claude の実体            [既定: claude]
+  CCS_TMUX_BIN       tmux の実体              [既定: tmux]
+  CCS_GHQ_BIN        ghq の実体               [既定: ghq]
+  CCS_JQ_BIN         jq の実体                [既定: jq]
+  CCS_SESSIONS_DIR   セッションレジストリ     [既定: ~/.claude/sessions]
+  CCS_TRUST_FILE     trust 状態のファイル     [既定: ~/.claude.json]
+  CCS_SCRATCH_ROOT   使い捨て作業枠の親       [既定: ~/.cc-scratch]
+
+詳細は docs/design.md。
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# 依存チェック
+#
+# help / version では走らせない。**依存が無いことを知るためにヘルプを読むので、
+# ヘルプが依存チェックで死ぬと詰む。**
+# ---------------------------------------------------------------------------
+have() {
+	command -v "$1" >/dev/null 2>&1
+}
+
+require_deps() {
+	_missing=''
+	have "$CCS_TMUX_BIN" || _missing="${_missing} ${CCS_TMUX_BIN}"
+	have "$CCS_JQ_BIN" || _missing="${_missing} ${CCS_JQ_BIN}"
+
+	[ -z "$_missing" ] && return 0
+
+	warn "ccs: 必要なコマンドが見つかりません:${_missing}"
+	warn ''
+	warn '  macOS: brew install tmux jq'
+	warn '  Debian/Ubuntu: sudo apt install tmux jq'
+	warn ''
+	warn '別の場所にあるなら CCS_TMUX_BIN / CCS_JQ_BIN で指定できます。'
+	exit "$EX_DEPS"
+}
+
+# ---------------------------------------------------------------------------
+# サブコマンド
+#
+# 中身は S4 以降で埋める（ROADMAP 参照）。ここでは分岐だけを固定する。
+# ---------------------------------------------------------------------------
+
+cmd_new() {
+	require_deps
+	[ $# -ge 1 ] || die "$EX_USAGE" 'new: <target> を指定してください（ccs help を見てください）'
+	die "$EX_TODO" 'new: 未実装です（ROADMAP S4）'
+}
+
+cmd_ls() {
+	require_deps
+	die "$EX_TODO" 'ls: 未実装です（ROADMAP S7）'
+}
+
+cmd_attach() {
+	require_deps
+	[ $# -ge 1 ] || die "$EX_USAGE" 'attach: <slug> を指定してください'
+	die "$EX_TODO" 'attach: 未実装です（ROADMAP S8）'
+}
+
+cmd_kill() {
+	require_deps
+	[ $# -ge 1 ] || die "$EX_USAGE" 'kill: <slug> を指定してください'
+	die "$EX_TODO" 'kill: 未実装です（ROADMAP S8）'
+}
+
+cmd_gc() {
+	require_deps
+	die "$EX_TODO" 'gc: 未実装です（ROADMAP S9）'
+}
+
+# ---------------------------------------------------------------------------
+# 入口
+# ---------------------------------------------------------------------------
+
+main() {
+	[ $# -ge 1 ] || {
+		usage >&2
+		exit "$EX_USAGE"
+	}
+
+	_cmd=$1
+	shift
+
+	case $_cmd in
+	new) cmd_new "$@" ;;
+	ls) cmd_ls "$@" ;;
+	attach) cmd_attach "$@" ;;
+	kill) cmd_kill "$@" ;;
+	gc) cmd_gc "$@" ;;
+	help | --help | -h) usage ;;
+	version | --version | -V) printf '%s\n' "$CCS_VERSION" ;;
+	*)
+		warn "ccs: 未知のサブコマンド: ${_cmd}"
+		warn ''
+		usage >&2
+		exit "$EX_USAGE"
+		;;
+	esac
+}
+
+main "$@"
+exit "$EX_OK"
