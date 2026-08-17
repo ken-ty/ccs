@@ -2,7 +2,7 @@
 
 ハブ 1 本から、tmux 上に複数の Claude Code セッションを立て・見つけ・畳むための CLI。
 
-**v1 のコマンドが揃った。** → [チュートリアル](docs/tutorial.md) / [設計調査](docs/design.md)
+**v1 のコマンドが揃った。** → [チュートリアル](docs/tutorial.md) / [動作確認の手順](docs/hands-on.md) / [設計調査](docs/design.md)
 
 ```bash
 git clone git@github.com:ken-ty/ccs.git ~/ghq/github.com/ken-ty/ccs
