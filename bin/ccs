@@ -24,6 +24,13 @@ CCS_VERSION='0.1.0'
 : "${CCS_SESSIONS_DIR:=${HOME}/.claude/sessions}"
 : "${CCS_TRUST_FILE:=${HOME}/.claude.json}"
 : "${CCS_SCRATCH_ROOT:=${HOME}/.cc-scratch}"
+: "${CCS_PROJECTS_DIR:=${HOME}/.claude/projects}"
+
+# 起動してからレジストリに載るまで待つ秒数。
+#
+# 本物は起動に数秒かかる（トラストダイアログで止まると永遠に載らない）。
+# 短すぎると健全な起動を失敗と誤判定し、長すぎると詰まりに気づくのが遅れる。
+: "${CCS_NEW_TIMEOUT:=30}"
 
 # 使い捨て作業枠の本数。
 #
@@ -94,6 +101,8 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
   CCS_TRUST_FILE     trust 状態のファイル     [既定: ~/.claude.json]
   CCS_SCRATCH_ROOT   使い捨て作業枠の親       [既定: ~/.cc-scratch]
   CCS_SCRATCH_SLOTS  使い捨て作業枠の本数     [既定: 8]
+  CCS_PROJECTS_DIR   transcript の親          [既定: ~/.claude/projects]
+  CCS_NEW_TIMEOUT    登録を待つ秒数           [既定: 30]
 
 詳細は docs/design.md。
 EOF
@@ -336,10 +345,174 @@ cmd_resolve() {
 	fi
 }
 
+# ---------------------------------------------------------------------------
+# セッションを立てる
+# ---------------------------------------------------------------------------
+
+# シェルコマンドの一部として安全に埋め込める形にする。
+#
+# tmux にはコマンドを文字列で渡すので、ここを手抜きすると、空白や引用符を
+# 含むパスで壊れる。パスは利用者が決めるものなので、必ず通す。
+shq() {
+	printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+# セッション ID を先に決める。
+#
+# 本物は --session-id を尊重する（docs/design.md §2.4）。先に決めておくと、
+# 起動直後にレジストリを名前で探し回らずに済み、transcript の場所も
+# 起動前に確定する。
+new_uuid() {
+	if have uuidgen; then
+		uuidgen | tr '[:upper:]' '[:lower:]'
+		return 0
+	fi
+
+	if [ -r /proc/sys/kernel/random/uuid ]; then
+		cat /proc/sys/kernel/random/uuid
+		return 0
+	fi
+
+	# uuidgen が無い環境向け。version/variant のビットまで整えておく ──
+	# 本物は「有効な UUID であること」を検証するため。
+	_hex=$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')
+	[ ${#_hex} -eq 32 ] || die "$EX_FAIL" 'セッション ID を生成できません'
+
+	_b6=$(printf '4%s' "$(printf '%s' "$_hex" | cut -c14-16)")
+	_b8=$(printf '%s' "$_hex" | cut -c17-20 |
+		sed 's/^./8/')
+
+	printf '%s-%s-%s-%s-%s\n' \
+		"$(printf '%s' "$_hex" | cut -c1-8)" \
+		"$(printf '%s' "$_hex" | cut -c9-12)" \
+		"$_b6" "$_b8" \
+		"$(printf '%s' "$_hex" | cut -c21-32)"
+}
+
+# transcript の置き場所。
+#
+# 実測した本物の規則: 絶対パスの英数字以外をすべて `-` に潰す
+#   /Users/apple/ghq/github.com/ken-ty/collection_deck_ja
+#     → -Users-apple-ghq-github-com-ken-ty-collection-deck-ja
+#
+# **これは予測したパスであって、この時点ではまだファイルは無い。**
+# 本物は最初のやり取りが発生してから .jsonl を作る（実測）。
+# 立てた直後に読もうとすると必ず失敗するので、そのつもりで扱うこと。
+transcript_path() {
+	_path=$1
+	_uuid=$2
+	_slug=$(printf '%s' "$_path" | sed 's/[^A-Za-z0-9]/-/g')
+	printf '%s/%s/%s.jsonl\n' "$CCS_PROJECTS_DIR" "$_slug" "$_uuid"
+}
+
+tmux_session_exists() {
+	"$CCS_TMUX_BIN" has-session -t "=${1}" 2>/dev/null
+}
+
+# レジストリに <uuid> が現れるまで待つ。
+#
+# 固定の sleep で済ませない。速いマシンでは無駄に待ち、遅いマシンでは
+# 取りこぼす。見つかったら即座に返す。
+wait_for_registration() {
+	_uuid=$1
+	_deadline=$(($(date +%s) + CCS_NEW_TIMEOUT))
+
+	while [ "$(date +%s)" -lt "$_deadline" ]; do
+		if registry_file_for "$_uuid" >/dev/null; then
+			return 0
+		fi
+		sleep 0.2
+	done
+
+	return 1
+}
+
+# <uuid> を持つレジストリファイルのパスを出す。無ければ 1 を返す。
+registry_file_for() {
+	_uuid=$1
+	for _f in "$CCS_SESSIONS_DIR"/*.json; do
+		[ -e "$_f" ] || continue
+		if grep -q "\"sessionId\":\"${_uuid}\"" "$_f" 2>/dev/null; then
+			printf '%s\n' "$_f"
+			return 0
+		fi
+	done
+	return 1
+}
+
+emit_session_json() {
+	printf '{"slug":%s,"sessionId":%s,"path":%s,"tmux":%s,"transcript":%s,"created":%s}\n' \
+		"$(json_str "$1")" "$(json_str "$2")" "$(json_str "$3")" \
+		"$(json_str "$4")" "$(json_str "$5")" "$6"
+}
+
 cmd_new() {
 	require_deps
-	[ $# -ge 1 ] || die "$EX_USAGE" 'new: <target> を指定してください（ccs help を見てください）'
-	die "$EX_TODO" 'new: 未実装です（ROADMAP S4）'
+
+	_target=''
+	_prompt=''
+
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--)
+			shift
+			_prompt=$*
+			break
+			;;
+		-*) die "$EX_USAGE" "new: 知らないオプション: $1" ;;
+		*)
+			[ -z "$_target" ] || die "$EX_USAGE" "new: <target> は 1 つだけです: ${_target} と $1"
+			_target=$1
+			;;
+		esac
+		shift
+	done
+
+	[ -n "$_target" ] || die "$EX_USAGE" 'new: <target> を指定してください（ccs help を見てください）'
+
+	resolve_target "$_target"
+	_slug=$CCS_RESOLVED_SLUG
+	_path=$CCS_RESOLVED_PATH
+	_session="${CCS_PREFIX}${_slug}"
+
+	# 冪等な返し方は S5 で入れる。それまでは黙って上書きせず、明示的に落とす。
+	if tmux_session_exists "$_session"; then
+		warn "ccs: すでに立っています: ${_session}"
+		warn ''
+		warn "  乗り込む: ccs attach ${_slug}"
+		warn "  畳む:     ccs kill ${_slug}"
+		exit "$EX_FAIL"
+	fi
+
+	_uuid=$(new_uuid)
+	_transcript=$(transcript_path "$_path" "$_uuid")
+
+	# claude が終了してもペインを残す（design.md §4.3）。残しておけば
+	# あとから同じ場所で `claude --resume <uuid>` を流し込める。
+	_cmd="$(shq "$CCS_CLAUDE_BIN") -n $(shq "$_slug") --session-id $(shq "$_uuid")"
+	[ -n "$_prompt" ] && _cmd="${_cmd} $(shq "$_prompt")"
+	_cmd="${_cmd}; exec $(shq "${SHELL:-/bin/sh}")"
+
+	"$CCS_TMUX_BIN" new-session -d -s "$_session" -c "$_path" sh -c "$_cmd" ||
+		die "$EX_FAIL" "tmux セッションを作れませんでした: ${_session}"
+
+	if ! wait_for_registration "$_uuid"; then
+		warn "ccs: ${CCS_NEW_TIMEOUT} 秒待ちましたが、セッションが登録されませんでした。"
+		warn ''
+		warn 'ペインの中身:'
+		warn '---'
+		"$CCS_TMUX_BIN" capture-pane -p -t "$_session" 2>/dev/null | tail -20 >&2 || true
+		warn '---'
+		warn ''
+		warn '起動途中で何かを尋ねられている可能性があります（信頼確認・ログインなど）。'
+		warn "  乗り込んで確かめる: ccs attach ${_slug}"
+		warn "  諦めて畳む:         ccs kill ${_slug}"
+		# **ここでセッションを消さない。** 消すと、何に詰まっていたのかが
+		# 分からなくなる。片付けるかどうかは人が決める。
+		exit "$EX_FAIL"
+	fi
+
+	emit_session_json "$_slug" "$_uuid" "$_path" "$_session" "$_transcript" true
 }
 
 cmd_ls() {

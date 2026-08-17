@@ -41,7 +41,7 @@ teardown() {
 	run "$CCS_BIN" help
 	[ "$status" -eq 0 ]
 	for var in CCS_CLAUDE_BIN CCS_TMUX_BIN CCS_GHQ_BIN CCS_JQ_BIN \
-		CCS_SESSIONS_DIR CCS_TRUST_FILE CCS_SCRATCH_ROOT; do
+		CCS_SESSIONS_DIR CCS_TRUST_FILE CCS_SCRATCH_ROOT CCS_PROJECTS_DIR; do
 		[[ "$output" == *"$var"* ]] || {
 			echo "ヘルプに $var が無い"
 			return 1
@@ -151,10 +151,6 @@ teardown() {
 	[ "$status" -eq 3 ]
 	[[ "$output" == *"S9"* ]]
 
-	run "$CCS_BIN" new somewhere
-	[ "$status" -eq 3 ]
-	[[ "$output" == *"S4"* ]]
-
 	run "$CCS_BIN" attach someslug
 	[ "$status" -eq 3 ]
 	[[ "$output" == *"S8"* ]]
@@ -170,7 +166,8 @@ teardown() {
 	# このテストが落ちたら、他の全テストが実環境を壊しうる状態になっている。
 	# 個別のテストが差し替えを組み立てないよう、ヘルパの責務をここで固定する。
 	[ -n "$CCS_TEST_TMP" ]
-	for path in "$HOME" "$CCS_SESSIONS_DIR" "$CCS_TRUST_FILE" "$CCS_SCRATCH_ROOT"; do
+	for path in "$HOME" "$CCS_SESSIONS_DIR" "$CCS_TRUST_FILE" \
+		"$CCS_SCRATCH_ROOT" "$CCS_PROJECTS_DIR"; do
 		[[ "$path" == "$CCS_TEST_TMP"/* ]] || {
 			echo "実環境を指している: $path"
 			return 1
