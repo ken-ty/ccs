@@ -52,6 +52,13 @@ Claude Code は起動時に `~/.claude/sessions/<pid>.json` を書く。tmux 内
 > （devas.life 版）は tmux のユーザオプション `@claude_state` に hook で状態を書き込んでいたが、
 > **その役割は今 Claude 本体が持っている**。
 
+> **訂正（S7、2026-08-17）: `claude agents --json` は `tmux` フィールドを持たない。**
+> 返るのは `cwd` / `kind` / `name` / `pid` / `sessionId` / `startedAt` だけで、`tmux` は
+> `~/.claude/sessions/<pid>.json` の側にしか無い。したがって **あの出力から「`cc/` で
+> 始まるセッション」を選び出すことはできない**。`ccs ls` は tmux 側を起点にし
+> （`cc/` が付いているのは ccs が立てたものだけなので管轄として正しい）、
+> 各セッションの中身はレジストリのファイルから引く。
+
 ### 2.2 ハブ → tmux セッションの往復が通る（実証済み）
 
 `/tmp` 配下の空ディレクトリで tmux セッションを立て、このハブから `SendMessage` を投げ、返答を得た。
