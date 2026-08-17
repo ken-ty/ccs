@@ -32,7 +32,8 @@ ln -sf ~/ghq/github.com/ken-ty/ccs/bin/ccs ~/.local/bin/ccs
 ## 想定する使い方
 
 ```
-ccs new <target> [-- <初期プロンプト>]   # target: リポジトリ名 | ghq パス | "tmp"
+ccs new <target> [-- <初期プロンプト>]   # target: リポジトリ名 | ghq パス
+ccs new --tmp [-- <初期プロンプト>]      # 使い捨ての作業枠（"tmp" は短い綴り）
 ccs ls [--json]                          # cc/ 接頭辞のセッションだけを整形して出す
 ccs attach <slug>                        # 人間が乗り込む
 ccs kill <slug>                          # ペインごと畳む

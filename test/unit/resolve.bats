@@ -231,6 +231,59 @@ ${CCS_TEST_TMP}/ghq/github.com/bob/dup"
 	[[ "$output" == *"CCS_SCRATCH_SLOTS"* ]]
 }
 
+@test "--tmp: tmp と同じ枠を取る" {
+	# 正式な綴りはオプションのほう。リポジトリ名の名前空間に置かないため。
+	run "$CCS_BIN" resolve --tmp
+	[ "$status" -eq 0 ]
+	[ "$(echo "$output" | cut -f1)" = 'tmp-1' ]
+	[ "$(echo "$output" | cut -f2)" = "$(cd "${CCS_SCRATCH_ROOT}/1" && pwd -P)" ]
+}
+
+@test "--tmp: <target> との同時指定は 2 で落ちる" {
+	run "$CCS_BIN" resolve --tmp x01
+	[ "$status" -eq 2 ]
+	[[ "$output" == *"同時に指定できません"* ]]
+}
+
+@test "--tmp: --json と併用できる" {
+	run bash -c "'$CCS_BIN' resolve --tmp --json | jq -r '.slug'"
+	[ "$status" -eq 0 ]
+	[ "$output" = 'tmp-1' ]
+}
+
+@test "--tmp: 同名のリポジトリがあっても枠を取る" {
+	# オプションはリポジトリ名の名前空間の外にあるので、衝突しない。
+	ccs_stub_ghq "${CCS_TEST_TMP}/ghq/github.com/someone/tmp"
+	mkdir -p "${CCS_TEST_TMP}/ghq/github.com/someone/tmp"
+
+	run "$CCS_BIN" resolve --tmp
+	[ "$status" -eq 0 ]
+	[ "$(echo "$output" | cut -f1)" = 'tmp-1' ]
+}
+
+@test "tmp: 同名のリポジトリがあれば選ばずに落ちる" {
+	# 予約語 tmp はリポジトリ名と名前空間を共有している。どちらを指したかは
+	# 打った人にしか分からないので、IceCubesApp の衝突と同じ扱いにする。
+	ccs_stub_ghq "${CCS_TEST_TMP}/ghq/github.com/someone/tmp"
+	mkdir -p "${CCS_TEST_TMP}/ghq/github.com/someone/tmp"
+
+	run "$CCS_BIN" resolve tmp
+	[ "$status" -eq 1 ]
+	[[ "$output" == *"someone/tmp"* ]]
+	[[ "$output" == *"--tmp"* ]]
+	# 枠を作ってしまわない。落ちる前に副作用を残さない。
+	[ ! -d "${CCS_SCRATCH_ROOT}/1" ]
+}
+
+@test "tmp: 名前の一部が tmp のリポジトリは衝突ではない" {
+	# 末尾要素が完全一致したときだけ曖昧。`tmpl` や `x-tmp` は別物。
+	ccs_stub_ghq "${CCS_TEST_TMP}/ghq/github.com/someone/tmpl"
+
+	run "$CCS_BIN" resolve tmp
+	[ "$status" -eq 0 ]
+	[ "$(echo "$output" | cut -f1)" = 'tmp-1' ]
+}
+
 @test "tmp: 枠の本数は CCS_SCRATCH_SLOTS で変えられる" {
 	export CCS_SCRATCH_SLOTS=3
 	for i in 1 2; do

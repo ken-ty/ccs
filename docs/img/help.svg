@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="721" height="740" viewBox="0 0 721 740" role="img" aria-label="ccs help">
+<svg xmlns="http://www.w3.org/2000/svg" width="721" height="800" viewBox="0 0 721 800" role="img" aria-label="ccs help">
   <style>
     /* light と dark の両方を持たせて prefers-color-scheme で切り替える。
        画像を 2 枚用意して読み手の設定で出し分ける手間を省くため。 */
@@ -19,7 +19,7 @@
       .cmd { fill: #6cb6ff; }
     }
   </style>
-  <rect class="bg" x="0.5" y="0.5" width="720" height="739" rx="8"/>
+  <rect class="bg" x="0.5" y="0.5" width="720" height="799" rx="8"/>
   <path class="bar" d="M0.5 8.5 a8 8 0 0 1 8 -8 h704 a8 8 0 0 1 8 8 v31.5 h-720 z"/>
   <circle cx="22" cy="20" r="6" class="dot dot1"/><circle cx="44" cy="20" r="6" class="dot dot2"/><circle cx="66" cy="20" r="6" class="dot dot3"/>
   <text x="360" y="20" class="ttl" text-anchor="middle" font-size="12">ccs help</text>
@@ -28,33 +28,36 @@
   <text x="16.0" y="84.0" class="out"></text>
   <text x="16.0" y="104.0" class="out">使い方:</text>
   <text x="16.0" y="124.0" class="out">  ccs new &lt;target&gt; [-- &lt;初期プロンプト&gt;]  セッションを立てる</text>
-  <text x="16.0" y="144.0" class="out">  ccs ls [--json]                         cc/ のセッションを一覧する</text>
-  <text x="16.0" y="164.0" class="out">  ccs attach &lt;slug&gt;                       セッションに乗り込む</text>
-  <text x="16.0" y="184.0" class="out">  ccs kill [--force] &lt;slug&gt;               セッションを畳む</text>
-  <text x="16.0" y="204.0" class="out">                                          （作業中は --force が要る）</text>
-  <text x="16.0" y="224.0" class="out">  ccs gc [--yes]                          止まったセッションと空の作業枠を掃除する</text>
-  <text x="16.0" y="244.0" class="out">                                          （既定は見せるだけ。--yes で実行）</text>
-  <text x="16.0" y="264.0" class="out"></text>
-  <text x="16.0" y="284.0" class="out">  ccs resolve &lt;target&gt; [--json]           &lt;target&gt; がどこに解決されるかを見る</text>
-  <text x="16.0" y="304.0" class="out">  ccs help                                このヘルプ</text>
-  <text x="16.0" y="324.0" class="out">  ccs version                             バージョン</text>
-  <text x="16.0" y="344.0" class="out"></text>
-  <text x="16.0" y="364.0" class="out">&lt;target&gt;:</text>
-  <text x="16.0" y="384.0" class="out">  &lt;repo&gt;        ghq 配下のリポジトリ名（例: x01）</text>
-  <text x="16.0" y="404.0" class="out">  &lt;path&gt;        絶対パスまたは相対パス</text>
-  <text x="16.0" y="424.0" class="out">  tmp           使い捨ての作業枠（CCS_SCRATCH_ROOT 配下）</text>
-  <text x="16.0" y="444.0" class="out"></text>
-  <text x="16.0" y="464.0" class="out">環境変数（テストと特殊な環境のための差し替え点）:</text>
-  <text x="16.0" y="484.0" class="out">  CCS_CLAUDE_BIN     claude の実体            [既定: claude]</text>
-  <text x="16.0" y="504.0" class="out">  CCS_TMUX_BIN       tmux の実体              [既定: tmux]</text>
-  <text x="16.0" y="524.0" class="out">  CCS_GHQ_BIN        ghq の実体               [既定: ghq]</text>
-  <text x="16.0" y="544.0" class="out">  CCS_JQ_BIN         jq の実体                [既定: jq]</text>
-  <text x="16.0" y="564.0" class="out">  CCS_SESSIONS_DIR   セッションレジストリ     [既定: ~/.claude/sessions]</text>
-  <text x="16.0" y="584.0" class="out">  CCS_TRUST_FILE     trust 状態のファイル     [既定: ~/.claude.json]</text>
-  <text x="16.0" y="604.0" class="out">  CCS_SCRATCH_ROOT   使い捨て作業枠の親       [既定: ~/.cc-scratch]</text>
-  <text x="16.0" y="624.0" class="out">  CCS_SCRATCH_SLOTS  使い捨て作業枠の本数     [既定: 8]</text>
-  <text x="16.0" y="644.0" class="out">  CCS_PROJECTS_DIR   transcript の親          [既定: ~/.claude/projects]</text>
-  <text x="16.0" y="664.0" class="out">  CCS_NEW_TIMEOUT    登録を待つ秒数           [既定: 30]</text>
-  <text x="16.0" y="684.0" class="out"></text>
-  <text x="16.0" y="704.0" class="out">詳細は docs/design.md。</text>
+  <text x="16.0" y="144.0" class="out">  ccs new --tmp [-- &lt;初期プロンプト&gt;]     使い捨ての作業枠に立てる</text>
+  <text x="16.0" y="164.0" class="out">  ccs ls [--json]                         cc/ のセッションを一覧する</text>
+  <text x="16.0" y="184.0" class="out">  ccs attach &lt;slug&gt;                       セッションに乗り込む</text>
+  <text x="16.0" y="204.0" class="out">  ccs kill [--force] &lt;slug&gt;               セッションを畳む</text>
+  <text x="16.0" y="224.0" class="out">                                          （作業中は --force が要る）</text>
+  <text x="16.0" y="244.0" class="out">  ccs gc [--yes]                          止まったセッションと空の作業枠を掃除する</text>
+  <text x="16.0" y="264.0" class="out">                                          （既定は見せるだけ。--yes で実行）</text>
+  <text x="16.0" y="284.0" class="out"></text>
+  <text x="16.0" y="304.0" class="out">  ccs resolve &lt;target&gt; [--json]           &lt;target&gt; がどこに解決されるかを見る</text>
+  <text x="16.0" y="324.0" class="out">  ccs resolve --tmp [--json]              次に取る作業枠を見る</text>
+  <text x="16.0" y="344.0" class="out">  ccs help                                このヘルプ</text>
+  <text x="16.0" y="364.0" class="out">  ccs version                             バージョン</text>
+  <text x="16.0" y="384.0" class="out"></text>
+  <text x="16.0" y="404.0" class="out">&lt;target&gt;:</text>
+  <text x="16.0" y="424.0" class="out">  &lt;repo&gt;        ghq 配下のリポジトリ名（例: x01）</text>
+  <text x="16.0" y="444.0" class="out">  &lt;path&gt;        絶対パスまたは相対パス</text>
+  <text x="16.0" y="464.0" class="out">  tmp           使い捨ての作業枠（--tmp の短い綴り。ghq に tmp という</text>
+  <text x="16.0" y="484.0" class="out">                リポジトリがあるときは曖昧なので受け付けない）</text>
+  <text x="16.0" y="504.0" class="out"></text>
+  <text x="16.0" y="524.0" class="out">環境変数（テストと特殊な環境のための差し替え点）:</text>
+  <text x="16.0" y="544.0" class="out">  CCS_CLAUDE_BIN     claude の実体            [既定: claude]</text>
+  <text x="16.0" y="564.0" class="out">  CCS_TMUX_BIN       tmux の実体              [既定: tmux]</text>
+  <text x="16.0" y="584.0" class="out">  CCS_GHQ_BIN        ghq の実体               [既定: ghq]</text>
+  <text x="16.0" y="604.0" class="out">  CCS_JQ_BIN         jq の実体                [既定: jq]</text>
+  <text x="16.0" y="624.0" class="out">  CCS_SESSIONS_DIR   セッションレジストリ     [既定: ~/.claude/sessions]</text>
+  <text x="16.0" y="644.0" class="out">  CCS_TRUST_FILE     trust 状態のファイル     [既定: ~/.claude.json]</text>
+  <text x="16.0" y="664.0" class="out">  CCS_SCRATCH_ROOT   使い捨て作業枠の親       [既定: ~/.cc-scratch]</text>
+  <text x="16.0" y="684.0" class="out">  CCS_SCRATCH_SLOTS  使い捨て作業枠の本数     [既定: 8]</text>
+  <text x="16.0" y="704.0" class="out">  CCS_PROJECTS_DIR   transcript の親          [既定: ~/.claude/projects]</text>
+  <text x="16.0" y="724.0" class="out">  CCS_NEW_TIMEOUT    登録を待つ秒数           [既定: 30]</text>
+  <text x="16.0" y="744.0" class="out"></text>
+  <text x="16.0" y="764.0" class="out">詳細は docs/design.md。</text>
 </svg>

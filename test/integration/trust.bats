@@ -179,13 +179,51 @@ JSON
 	[[ "$stderr" == *"ccs attach proj"* ]]
 }
 
-@test "作業枠も自動では信頼しない" {
-	# 固定枠は人が一度だけ信頼する（design.md §4.4 案 B）。
-	run --separate-stderr "$CCS_BIN" new tmp
+# --- 空の作業枠は自動で信頼する（#6、2026-08-18 の決定） --------------------
+
+@test "空の作業枠は自動で信頼する" {
+	# 枠は ccs 自身が作った空のディレクトリ。確認が守ろうとしている
+	# 「知らないコード」がそもそも無い。手作業にすると枠ごとに承認が要り、
+	# tmp を何本も立てる運用が実質できなくなる。
+	run --separate-stderr "$CCS_BIN" new --tmp
 	[ "$status" -eq 0 ]
 
 	_abs=$(echo "$output" | jq -r '.path')
+	[ "$(_trusted "$_abs")" = 'true' ]
+}
+
+@test "作業枠: 信頼済みにしたことを stderr で伝える" {
+	run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 0 ]
+	[[ "$stderr" == *"作業枠なので信頼済みにしました"* ]]
+}
+
+@test "作業枠: 2 本目以降も自動で信頼する" {
+	# ここが壊れると tmp の 2 回目が信頼ダイアログで止まり、30 秒待って
+	# 「登録されませんでした」になる（実機で踏んだ）。
+	run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 0 ]
+	_first=$(echo "$output" | jq -r '.path')
+
+	run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 0 ]
+	_second=$(echo "$output" | jq -r '.path')
+
+	[ "$_first" != "$_second" ]
+	[ "$(_trusted "$_second")" = 'true' ]
+}
+
+@test "中身のある作業枠を実パスで指したら自動では信頼しない" {
+	# そこにあるのは誰かが置いたコード。確認する意味がある。
+	mkdir -p "${CCS_SCRATCH_ROOT}/1"
+	printf 'x' >"${CCS_SCRATCH_ROOT}/1/leftover.txt"
+
+	run --separate-stderr "$CCS_BIN" new "${CCS_SCRATCH_ROOT}/1"
+	[ "$status" -eq 0 ]
+
+	_abs=$(cd "${CCS_SCRATCH_ROOT}/1" && pwd -P)
 	[ "$(_trusted "$_abs")" = 'false' ]
+	[[ "$stderr" == *"信頼されていません"* ]]
 }
 
 @test "ghq の外でも、伝えたうえで立てる" {
