@@ -1,0 +1,49 @@
+# ドキュメントをビルドして Artifacts に上げる。
+#
+# **GitHub Pages へはデプロイしない。** このリポジトリは private で、Free プランでは
+# private リポジトリの Pages を publish できない。仮にできても Pages のサイトは
+# インターネットに公開される。Artifacts なら**リポジトリのアクセス権がそのまま
+# ドキュメントのアクセス制御になる**。
+#
+# 公開に切り替えるなら、可視性の変更（人間の判断）と合わせてここも書き換える。
+
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths: &docs_paths
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'requirements-docs.txt'
+      - 'scripts/termshot.py'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths: *docs_paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 依存を入れる（版は requirements-docs.txt で固定）
+        run: pip install -r requirements-docs.txt
+
+      - name: ビルド
+        # --strict にして、リンク切れや未参照ファイルで落とす。
+        run: mkdocs build --strict
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ccs-docs
+          path: site/
+          retention-days: 14
