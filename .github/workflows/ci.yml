@@ -25,7 +25,19 @@ jobs:
       - name: 依存を入れる
         run: |
           sudo apt-get update
-          sudo apt-get install -y shellcheck tmux jq bats
+          sudo apt-get install -y tmux jq bats
+
+      # **shellcheck はバージョンを固定する。** apt の版 (0.9.x) は手元の
+      # brew 版 (0.11.x) と検出する項目が違い、「ローカルでは通るのに CI で
+      # 落ちる」を生む。実際に SC2015 で 1 度踏んだ。どちらかに揃える以外に
+      # 直しようがないので、明示的に固定する。
+      - name: shellcheck を固定バージョンで入れる
+        env:
+          SHELLCHECK_VERSION: v0.11.0
+        run: |
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            | tar -xJf - -C /tmp
+          sudo install "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
 
       - name: バージョンを記録する
         # 落ちたときに、どの版で落ちたかを追えるようにしておく。

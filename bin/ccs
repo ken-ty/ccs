@@ -299,8 +299,9 @@ resolve_target() {
 		;;
 	esac
 
-	[ -n "$CCS_RESOLVED_PATH" ] && [ -n "$CCS_RESOLVED_SLUG" ] ||
+	if [ -z "$CCS_RESOLVED_PATH" ] || [ -z "$CCS_RESOLVED_SLUG" ]; then
 		die "$EX_FAIL" "対象を解決できませんでした: ${_target}"
+	fi
 }
 
 # ---------------------------------------------------------------------------

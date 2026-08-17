@@ -72,7 +72,7 @@ tmux を起動し `claude` を立ち上げるツールなので、素朴に書�
 ## 依存
 
 - 必須: `tmux`、`jq`
-- 開発: `bats-core`（テスト）、`shellcheck`（静的検査）
+- 開発: `bats-core`（テスト）、`shellcheck`（静的検査。**CI は v0.11.0 に固定**）
 - ドキュメント: `uv`（`uvx` 経由で mkdocs を実行。グローバルに入れない）
 
 CI で入るもの以外を勝手に増やさない。増やすなら ROADMAP に項目を立ててから。
