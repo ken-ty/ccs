@@ -32,6 +32,24 @@ ccs ls [--json]                          # cc/ 接頭辞のセッションだけ
 ccs attach <slug>                        # 人間が乗り込む
 ccs kill <slug>                          # ペインごと畳む
 ccs gc                                   # 死んだペイン・空の一時ディレクトリを掃除
+
+ccs resolve <target> [--json]            # <target> がどこに解決されるかを見る
+```
+
+`resolve` は副作用を持たない（使い捨て枠の確保を除く）。**立てる前に、どのリポジトリの
+どのパスに当たるかを確かめられる**:
+
+```console
+$ ccs resolve x01
+x01	/Users/apple/ghq/github.com/ken-ty/x01
+
+$ ccs resolve IceCubesApp
+ccs: IceCubesApp に当てはまるリポジトリが複数あります:
+
+  Dimillian/IceCubesApp
+  ken-ty/IceCubesApp
+
+<owner>/<repo> の形で指定し直してください。
 ```
 
 ハブ（Remote Control を張ったセッション）から `ccs new` で立て、あとは組み込みの

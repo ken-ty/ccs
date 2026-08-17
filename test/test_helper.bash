@@ -46,11 +46,35 @@ ccs_stub() {
 	chmod +x "${CCS_STUB_BIN}/${_name}"
 }
 
-# 依存（tmux / jq）が揃っているように見せる。
-# 依存チェック自体を検証するテスト以外は、これを呼んでから ccs を叩く。
+# unit テストが本物の tmux を起動しないようにする。
+#
+# **jq は差し替えない。** テスト自身が JSON の検証に jq を使うので、
+# ダミーに置き換えると「jq が常に成功する」だけの空虚なテストになる
+# （実際に一度そうなった）。jq はこのプロジェクトの必須依存なので、
+# 無い環境ではテストが落ちてよい。
 ccs_stub_deps() {
-	ccs_stub tmux 'exit 0'
-	ccs_stub jq 'exit 0'
+	ccs_stub tmux 'echo "tmux stub was invoked with: $*" >&2; exit 0'
+}
+
+# ghq を「決まったリポジトリ一覧を返すもの」に差し替える。
+# 引数は絶対パスの改行区切り。`ghq list` と `ghq list -p` の両方に答える。
+#
+# 本物の ghq を使わないのは、テストが実行環境の clone 状況に依存すると、
+# マシンによって落ちたり通ったりするため。
+ccs_stub_ghq() {
+	local _paths=$1
+	local _file="${CCS_TEST_TMP}/ghq-paths.txt"
+	printf '%s' "$_paths" >"$_file"
+
+	ccs_stub ghq "
+case \"\$1 \$2\" in
+'list -p') grep -v '^\$' '$_file' || true ;;
+'list ') grep -v '^\$' '$_file' | sed 's#^.*/ghq/##' || true ;;
+*) grep -v '^\$' '$_file' | sed 's#^.*/ghq/##' || true ;;
+esac
+exit 0
+"
+	export CCS_GHQ_BIN="${CCS_STUB_BIN}/ghq"
 }
 
 # 依存が「無い」状態を作る。
