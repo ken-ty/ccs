@@ -56,6 +56,18 @@ ccs: IceCubesApp に当てはまるリポジトリが複数あります:
 `SendMessage` で指示し、`ListAgents` で状態を見る。ターミナルを閉じても tmux が残すので、
 セッションは生き続ける。
 
+`ccs new` は 1 行の JSON を返す:
+
+```console
+$ ccs new agent-skills
+{"slug":"agent-skills","sessionId":"92e3a7c8-…","path":"/Users/apple/ghq/github.com/ken-ty/agent-skills","tmux":"cc/agent-skills","transcript":"/Users/apple/.claude/projects/-Users-…/92e3a7c8-….jsonl","created":true}
+```
+
+立った直後から、ハブの `ListAgents` に `<slug>` として現れる（実機で確認済み）。
+
+> `transcript` は**予測したパス**で、この時点ではまだファイルが無い。本物は最初の
+> やり取りが発生してから `.jsonl` を作る。
+
 ## 要件
 
 - `tmux`

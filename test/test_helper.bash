@@ -24,7 +24,8 @@ ccs_setup_sandbox() {
 	export CCS_SESSIONS_DIR="${CCS_TEST_TMP}/sessions"
 	export CCS_TRUST_FILE="${CCS_TEST_TMP}/claude.json"
 	export CCS_SCRATCH_ROOT="${CCS_TEST_TMP}/scratch"
-	mkdir -p "$CCS_SESSIONS_DIR" "$CCS_SCRATCH_ROOT"
+	export CCS_PROJECTS_DIR="${CCS_TEST_TMP}/projects"
+	mkdir -p "$CCS_SESSIONS_DIR" "$CCS_SCRATCH_ROOT" "$CCS_PROJECTS_DIR"
 
 	# スタブを置く場所。PATH の先頭に差し込む。
 	export CCS_STUB_BIN="${CCS_TEST_TMP}/stub-bin"
@@ -88,6 +89,43 @@ ccs_hide_dep() {
 	jq) export CCS_JQ_BIN='ccs-absent-jq' ;;
 	*) return 1 ;;
 	esac
+}
+
+# --- 本物の tmux を、自分専用のサーバで使う --------------------------------
+#
+# **既定のソケットを使わない。** teardown の `kill-server` が、利用者が実際に
+# 開いている tmux セッションを巻き添えにする。テストがユーザーの作業を消すのは
+# 論外なので、テストごとに専用ソケット（`tmux -L <名前>`）を立てる。
+
+ccs_use_own_tmux_server() {
+	CCS_TMUX_SOCKET="ccs-test-${BASHPID:-$$}-${RANDOM}"
+	export CCS_TMUX_SOCKET
+
+	# ccs から見える tmux を「-L 付きの本物」に差し替える。
+	# 名前を tmux にしないのは、この中から本物の tmux を引くため。
+	{
+		echo '#!/bin/sh'
+		echo "exec tmux -L '${CCS_TMUX_SOCKET}' \"\$@\""
+	} >"${CCS_STUB_BIN}/tmux-own"
+	chmod +x "${CCS_STUB_BIN}/tmux-own"
+
+	export CCS_TMUX_BIN="${CCS_STUB_BIN}/tmux-own"
+}
+
+# テストから同じサーバを覗く。
+ccs_tmux() {
+	tmux -L "$CCS_TMUX_SOCKET" "$@"
+}
+
+ccs_kill_own_tmux_server() {
+	[ -n "${CCS_TMUX_SOCKET:-}" ] || return 0
+	tmux -L "$CCS_TMUX_SOCKET" kill-server 2>/dev/null || true
+	return 0
+}
+
+# claude を fake に差し替える。
+ccs_use_fake_claude() {
+	export CCS_CLAUDE_BIN="$CCS_FAKE_CLAUDE"
 }
 
 # --- 非同期を待つ ----------------------------------------------------------
