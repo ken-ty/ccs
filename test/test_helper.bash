@@ -54,7 +54,15 @@ ccs_stub() {
 # （実際に一度そうなった）。jq はこのプロジェクトの必須依存なので、
 # 無い環境ではテストが落ちてよい。
 ccs_stub_deps() {
-	ccs_stub tmux 'echo "tmux stub was invoked with: $*" >&2; exit 0'
+	# has-session は「無い」を返す。常に 0 を返すダミーにすると
+	# 「セッションが全部立っている」ことになり、作業枠の確保が回らない。
+	ccs_stub tmux '
+case "$1" in
+has-session) exit 1 ;;
+*) exit 0 ;;
+esac
+'
+	export CCS_TMUX_BIN="${CCS_STUB_BIN}/tmux"
 }
 
 # ghq を「決まったリポジトリ一覧を返すもの」に差し替える。

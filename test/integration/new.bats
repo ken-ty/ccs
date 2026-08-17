@@ -171,18 +171,7 @@ teardown() {
 
 # --- 失敗の経路 -------------------------------------------------------------
 
-@test "new: すでに立っていれば落として、次の手を示す" {
-	# 冪等な返し方は S5。それまでは黙って上書きしない。
-	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
-
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
-	[ "$status" -eq 0 ]
-
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
-	[ "$status" -eq 1 ]
-	[[ "$output" == *"すでに立っています"* ]]
-	[[ "$output" == *"ccs attach myrepo"* ]]
-}
+# 同じ slug を 2 度頼まれたときの振る舞いは integration/idempotent.bats。
 
 @test "new: 登録されなければ落とし、ペインの中身を見せる" {
 	# 本物が信頼確認やログインで止まったときの経路。何に詰まったかは
@@ -250,10 +239,7 @@ teardown() {
 }
 
 @test "new: 失敗時は stdout を汚さない" {
-	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
-
-	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/nope"
 	[ "$status" -eq 1 ]
 	[ -z "$output" ]
 	[ -n "$stderr" ]
