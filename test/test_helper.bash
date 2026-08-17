@@ -8,6 +8,7 @@
 CCS_REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 export CCS_REPO_ROOT
 export CCS_BIN="${CCS_REPO_ROOT}/bin/ccs"
+export CCS_FAKE_CLAUDE="${CCS_REPO_ROOT}/test/fixtures/fake-claude"
 
 # 各テストを使い捨てのサンドボックスに閉じ込める。
 #
@@ -63,4 +64,55 @@ ccs_hide_dep() {
 	jq) export CCS_JQ_BIN='ccs-absent-jq' ;;
 	*) return 1 ;;
 	esac
+}
+
+# --- 非同期を待つ ----------------------------------------------------------
+#
+# fake-claude は起動してからレジストリを書くまでに間がある（本物もそう）。
+# 固定の sleep で待つと、遅いマシンで falky になり、速いマシンで無駄に遅くなる。
+# 条件が満たされるまでポーリングする。
+
+# ccs_wait_until <秒> <コマンド...>
+# コマンドが 0 を返すまで 0.05 秒刻みで待つ。時間切れなら 1 を返す。
+ccs_wait_until() {
+	local _timeout=$1
+	shift
+	local _deadline=$((SECONDS + _timeout))
+	while [ "$SECONDS" -lt "$_deadline" ]; do
+		if "$@"; then return 0; fi
+		sleep 0.05
+	done
+	return 1
+}
+
+# fake-claude をバックグラウンドで起動し、PID を CCS_FAKE_PID に入れる。
+# teardown で確実に止めるため、起動はこの関数に集約する。
+ccs_start_fake_claude() {
+	"$CCS_FAKE_CLAUDE" "$@" &
+	CCS_FAKE_PID=$!
+	export CCS_FAKE_PID
+}
+
+# ccs_start_fake_claude で起動したものを止める。teardown から呼ぶ。
+ccs_stop_fake_claude() {
+	[ -n "${CCS_FAKE_PID:-}" ] || return 0
+	kill "$CCS_FAKE_PID" 2>/dev/null || true
+	wait "$CCS_FAKE_PID" 2>/dev/null || true
+	CCS_FAKE_PID=''
+	return 0
+}
+
+# レジストリに <n> 件並ぶまで待つ。
+ccs_registry_count() {
+	find "$CCS_SESSIONS_DIR" -name '*.json' -type f 2>/dev/null | wc -l | tr -d ' '
+}
+
+# 述語として渡す。ccs_wait_until は毎回これを呼び直すので、
+# `test "$(...)" = n` のように呼び出し時点で 1 度だけ評価してはいけない。
+ccs_registry_count_is() {
+	[ "$(ccs_registry_count)" = "$1" ]
+}
+
+ccs_wait_registry_count() {
+	ccs_wait_until "${2:-5}" ccs_registry_count_is "$1"
 }

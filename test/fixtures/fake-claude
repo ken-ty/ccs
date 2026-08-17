@@ -1,0 +1,223 @@
+#!/bin/sh
+#
+# fake-claude — 本物の `claude` の代役。
+#
+# **integration テストが本物の Claude を起動しないための要。** これが無いと
+# テストのたびに API を叩き、課金され、ログイン状態に依存し、実行のたびに
+# 結果が変わる（AGENTS.md「テストの方針」）。
+#
+# 本物のうち、ccs が依存する部分だけを真似る:
+#
+#   1. 起動すると ${CCS_SESSIONS_DIR}/<pid>.json を書く
+#      （実測した本物の形。docs/design.md §2.1）
+#   2. tmux の中にいれば tmux フィールドを埋める
+#   3. 終了時にその JSON を消す（本物もプロセスが死ねば消える）
+#   4. `agents --json` で生きているセッションの配列を返す
+#
+# 本物と違って、アイドルするだけで何もしない。
+#
+# ## テスト用のつまみ（環境変数）
+#
+#   FAKE_CLAUDE_REGISTER_DELAY   登録までの待ち秒数。既定 0
+#                                 ccs new のレジストリ待ちを検証するのに使う
+#   FAKE_CLAUDE_NEVER_REGISTER   1 なら永遠に登録しない。タイムアウトの検証用
+#   FAKE_CLAUDE_EXIT_AFTER       この秒数で自ら終了する。空なら終了しない
+#                                 「ペインは生きているが claude は死んだ」の再現
+#   FAKE_CLAUDE_EXIT_CODE        自ら終了するときの終了コード。既定 0
+#   FAKE_CLAUDE_STATUS           registry に書く status。既定 idle
+#   FAKE_CLAUDE_LOG              指定すると、受け取った引数をこのファイルに追記する
+#                                 ccs が渡した引数を検証するのに使う
+
+set -eu
+
+FAKE_CLAUDE_VERSION='0.0.0-fake'
+
+: "${CCS_SESSIONS_DIR:?fake-claude: CCS_SESSIONS_DIR が未設定です（本物の ~/.claude を守るため必須）}"
+
+: "${FAKE_CLAUDE_REGISTER_DELAY:=0}"
+: "${FAKE_CLAUDE_NEVER_REGISTER:=}"
+: "${FAKE_CLAUDE_EXIT_AFTER:=}"
+: "${FAKE_CLAUDE_EXIT_CODE:=0}"
+: "${FAKE_CLAUDE_STATUS:=idle}"
+: "${FAKE_CLAUDE_LOG:=}"
+
+# ---------------------------------------------------------------------------
+# 共通
+# ---------------------------------------------------------------------------
+
+now_ms() {
+	printf '%s000\n' "$(date +%s)"
+}
+
+# JSON 文字列としての最低限のエスケープ。パスに " や \ が混じる異常系でも
+# 壊れた JSON を書かないため（テストが「壊れた JSON」を検証したいときに、
+# 意図せず壊れているのと区別がつかなくなる）。
+json_escape() {
+	printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+log_invocation() {
+	[ -n "$FAKE_CLAUDE_LOG" ] || return 0
+	printf '%s\n' "$*" >>"$FAKE_CLAUDE_LOG"
+}
+
+# ---------------------------------------------------------------------------
+# agents --json — 生きているセッションの配列を返す
+#
+# 本物の `claude agents --json` に合わせる。ccs ls (S7) がこれを読む。
+# ---------------------------------------------------------------------------
+
+cmd_agents() {
+	_json=''
+	for _arg in "$@"; do
+		[ "$_arg" = '--json' ] && _json=1
+	done
+
+	if [ -z "$_json" ]; then
+		echo 'fake-claude: agents は --json のみ対応しています' >&2
+		exit 2
+	fi
+
+	_first=1
+	printf '[\n'
+	for _f in "$CCS_SESSIONS_DIR"/*.json; do
+		[ -e "$_f" ] || continue
+
+		# 死んだプロセスの残骸は出さない。本物も生きているものしか並べない。
+		_pid=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$_f")
+		[ -n "$_pid" ] || continue
+		kill -0 "$_pid" 2>/dev/null || continue
+
+		[ "$_first" = 1 ] || printf ',\n'
+		_first=0
+		printf '  '
+		cat "$_f"
+	done
+	printf '\n]\n'
+}
+
+# ---------------------------------------------------------------------------
+# 対話セッションの代役
+# ---------------------------------------------------------------------------
+
+REGISTRY_FILE=''
+
+cleanup() {
+	[ -n "$REGISTRY_FILE" ] && [ -f "$REGISTRY_FILE" ] && rm -f "$REGISTRY_FILE"
+	return 0
+}
+
+write_registry() {
+	_name=$1
+	_session_id=$2
+	_cwd=$3
+
+	# tmux の中にいれば、本物と同じ形式（<session>:<window>.<pane>）で書く。
+	# 本物がこれを自分で書くので、ccs は自分で対応づけを持たなくてよい。
+	_tmux_field=''
+	if [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
+		_t=$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}:#{window_id}.#{pane_id}' 2>/dev/null || true)
+		[ -n "$_t" ] && _tmux_field="\"tmux\":\"$(json_escape "$_t")\","
+	fi
+
+	mkdir -p "$CCS_SESSIONS_DIR"
+	_tmp="${CCS_SESSIONS_DIR}/.$$.tmp"
+
+	# 一時ファイルに書いてから mv する。ccs のレジストリ待ちが
+	# 「書きかけの JSON」を読んで落ちるのを防ぐ ── 本物も原子的に置き換える。
+	{
+		printf '{"pid":%s,' "$$"
+		printf '"sessionId":"%s",' "$(json_escape "$_session_id")"
+		printf '"cwd":"%s",' "$(json_escape "$_cwd")"
+		printf '"startedAt":%s,' "$(now_ms)"
+		printf '"version":"%s",' "$FAKE_CLAUDE_VERSION"
+		printf '"kind":"interactive",'
+		printf '"entrypoint":"fake-claude",'
+		printf '%s' "$_tmux_field"
+		printf '"name":"%s",' "$(json_escape "$_name")"
+		printf '"status":"%s"}' "$(json_escape "$FAKE_CLAUDE_STATUS")"
+	} >"$_tmp"
+
+	REGISTRY_FILE="${CCS_SESSIONS_DIR}/$$.json"
+	mv "$_tmp" "$REGISTRY_FILE"
+}
+
+cmd_interactive() {
+	_name=''
+	_session_id=''
+
+	while [ $# -gt 0 ]; do
+		case $1 in
+		-n | --name)
+			_name=${2:-}
+			shift 2 || shift
+			;;
+		--session-id)
+			_session_id=${2:-}
+			shift 2 || shift
+			;;
+		# 値を取るが中身は見ないもの。本物に渡している間は落ちてはいけない。
+		--permission-mode | --model | --effort | --agent | --add-dir | --settings)
+			shift 2 || shift
+			;;
+		--*)
+			shift
+			;;
+		*)
+			shift
+			;;
+		esac
+	done
+
+	[ -n "$_session_id" ] || {
+		echo 'fake-claude: --session-id が渡されていません' >&2
+		exit 2
+	}
+	[ -n "$_name" ] || _name='fake'
+
+	trap 'cleanup' EXIT
+	trap 'cleanup; exit 143' TERM
+	trap 'cleanup; exit 130' INT
+
+	if [ -n "$FAKE_CLAUDE_NEVER_REGISTER" ]; then
+		# 登録しないまま生き続ける。ccs 側のタイムアウトを検証するため。
+		while :; do sleep 1; done
+	fi
+
+	# `[ ] && sleep` と書くと set -e の AND-OR 例外に依存する読みにくい形になる。
+	# 後から「バグだ」と直されないよう if で書く。
+	if [ "$FAKE_CLAUDE_REGISTER_DELAY" -gt 0 ] 2>/dev/null; then
+		sleep "$FAKE_CLAUDE_REGISTER_DELAY"
+	fi
+
+	write_registry "$_name" "$_session_id" "$PWD"
+
+	if [ -n "$FAKE_CLAUDE_EXIT_AFTER" ]; then
+		sleep "$FAKE_CLAUDE_EXIT_AFTER"
+		cleanup
+		exit "$FAKE_CLAUDE_EXIT_CODE"
+	fi
+
+	# アイドル。1 秒刻みなのは、trap がすぐ効くようにするため
+	# （長い sleep 中は shell がシグナルを処理しない）。
+	while :; do sleep 1; done
+}
+
+# ---------------------------------------------------------------------------
+# 入口
+# ---------------------------------------------------------------------------
+
+log_invocation "$@"
+
+case ${1:-} in
+agents)
+	shift
+	cmd_agents "$@"
+	;;
+--version | -v)
+	printf '%s (fake-claude)\n' "$FAKE_CLAUDE_VERSION"
+	;;
+*)
+	cmd_interactive "$@"
+	;;
+esac
