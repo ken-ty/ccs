@@ -75,11 +75,16 @@ ccs_stub_ghq() {
 	local _file="${CCS_TEST_TMP}/ghq-paths.txt"
 	printf '%s' "$_paths" >"$_file"
 
+	local _root=${2:-${CCS_TEST_TMP}/ghq}
 	ccs_stub ghq "
-case \"\$1 \$2\" in
-'list -p') grep -v '^\$' '$_file' || true ;;
-'list ') grep -v '^\$' '$_file' | sed 's#^.*/ghq/##' || true ;;
-*) grep -v '^\$' '$_file' | sed 's#^.*/ghq/##' || true ;;
+case \"\$1\" in
+root) echo '$_root' ;;
+list)
+  case \"\$2\" in
+  -p) grep -v '^\$' '$_file' || true ;;
+  *) grep -v '^\$' '$_file' | sed 's#^.*/ghq/##' || true ;;
+  esac
+  ;;
 esac
 exit 0
 "
