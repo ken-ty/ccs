@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="2434" height="100" viewBox="0 0 2434 100" role="img" aria-label="ccs new x01">
+<svg xmlns="http://www.w3.org/2000/svg" width="872" height="140" viewBox="0 0 872 140" role="img" aria-label="ccs new x01">
   <style>
     /* light と dark の両方を持たせて prefers-color-scheme で切り替える。
        画像を 2 枚用意して読み手の設定で出し分ける手間を省くため。 */
@@ -19,10 +19,12 @@
       .cmd { fill: #6cb6ff; }
     }
   </style>
-  <rect class="bg" x="0.5" y="0.5" width="2433" height="99" rx="8"/>
-  <path class="bar" d="M0.5 8.5 a8 8 0 0 1 8 -8 h2417 a8 8 0 0 1 8 8 v31.5 h-2433 z"/>
+  <rect class="bg" x="0.5" y="0.5" width="871" height="139" rx="8"/>
+  <path class="bar" d="M0.5 8.5 a8 8 0 0 1 8 -8 h855 a8 8 0 0 1 8 8 v31.5 h-871 z"/>
   <circle cx="22" cy="20" r="6" class="dot dot1"/><circle cx="44" cy="20" r="6" class="dot dot2"/><circle cx="66" cy="20" r="6" class="dot dot3"/>
-  <text x="1217" y="20" class="ttl" text-anchor="middle" font-size="12">ccs new x01</text>
+  <text x="436" y="20" class="ttl" text-anchor="middle" font-size="12">ccs new x01</text>
   <text x="16.0" y="44.0" class="cmd">$ ccs new x01</text>
-  <text x="16.0" y="64.0" class="out">{"slug":"x01","sessionId":"0ecd87dd-cdb0-4835-add0-23e4c14b9b5f","path":"/Users/apple/ghq/github.com/ken-ty/x01","tmux":"cc/x01","transcript":"/Users/apple/.claude/projects/-Users-apple-ghq-github-com-ken-ty-x01/0ecd87dd-cdb0-4835-add0-23e4c14b9b5f.jsonl","created":true,"running":true}</text>
+  <text x="16.0" y="64.0" class="out">{"slug":"x01","sessionId":"0ecd87dd-cdb0-4835-add0-23e4c14b9b5f","path":"/Users/apple/ghq/github.com</text>
+  <text x="16.0" y="84.0" class="out">/ken-ty/x01","tmux":"cc/x01","transcript":"/Users/apple/.claude/projects/-Users-apple-ghq-github-com</text>
+  <text x="16.0" y="104.0" class="out">-ken-ty-x01/0ecd87dd-cdb0-4835-add0-23e4c14b9b5f.jsonl","created":true,"running":true}</text>
 </svg>

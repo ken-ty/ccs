@@ -82,6 +82,39 @@ _svg_is_valid() {
 	[ "$_w_wide" -gt "$_w_ascii" ]
 }
 
+@test "termshot: 長い行は折り返す" {
+	# `ccs new` の JSON は 1 行 280 桁ある。折り返さないと横に 2400px の
+	# 画像になり、本文幅に縮小されて読めない。
+	python3 -c "print('x' * 300)" >"${CCS_TEST_TMP}/long.txt"
+
+	run python3 "$CCS_TERMSHOT" "${CCS_TEST_TMP}/long.txt" -o "${CCS_TEST_TMP}/out.svg"
+	[ "$status" -eq 0 ]
+	_svg_is_valid "${CCS_TEST_TMP}/out.svg"
+
+	_w=$(sed -n 's/.*width="\([0-9]*\)".*/\1/p' "${CCS_TEST_TMP}/out.svg" | head -1)
+	[ "$_w" -lt 1000 ]
+
+	# 3 行に割れる（100 桁 × 3）。中身は落とさない。
+	[ "$(grep -c 'class="out"' "${CCS_TEST_TMP}/out.svg")" -eq 3 ]
+}
+
+@test "termshot: --cols 0 で折り返さない" {
+	python3 -c "print('x' * 300)" >"${CCS_TEST_TMP}/long.txt"
+
+	run python3 "$CCS_TERMSHOT" "${CCS_TEST_TMP}/long.txt" --cols 0
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"$(python3 -c "print('x' * 300)")"* ]]
+}
+
+@test "termshot: 折り返した継続行はコマンドの色のまま" {
+	# 端末では 1 行の続き。途中で色が変わると別の行に見える。
+	python3 -c "print('\$ ccs new ' + 'a' * 200)" >"${CCS_TEST_TMP}/in.txt"
+
+	run python3 "$CCS_TERMSHOT" "${CCS_TEST_TMP}/in.txt"
+	[ "$status" -eq 0 ]
+	[[ "$output" != *'class="out"'* ]]
+}
+
 @test "termshot: ANSI エスケープを落とす" {
 	printf '\033[32mgreen\033[0m text\n' >"${CCS_TEST_TMP}/in.txt"
 

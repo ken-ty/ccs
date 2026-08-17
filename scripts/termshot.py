@@ -13,6 +13,9 @@
     ccs ls | python3 scripts/termshot.py -o docs/img/ls.svg --title 'ccs ls'
     python3 scripts/termshot.py captured.txt -o out.svg
 
+長い行は既定で 100 桁に折り返す（端末と同じく桁で切る）。折り返さずに
+1 行のまま出したいときは `--cols 0`。
+
 MkDocs の light / dark 両方で読めるよう、SVG の中に両方の配色を入れて
 `prefers-color-scheme` で切り替える（画像を 2 枚持たなくて済む）。
 """
@@ -38,6 +41,11 @@ PAD_BOTTOM = 16.0
 # 行頭がこれなら「人が打ったコマンド」として色を変える。
 PROMPT_PREFIXES = ("$ ", "% ", "> ")
 
+# 既定の折り返し桁。`ccs new` の JSON のように 1 行が 280 桁ある出力を
+# そのまま置くと、SVG が横に 2400px 伸び、本文幅に収まるよう縮小された
+# 結果どのテーマでも読めない画像になる。端末と同じように折り返す。
+DEFAULT_COLS = 100
+
 
 def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
@@ -48,45 +56,75 @@ def expand_tabs(text: str) -> str:
     return text.expandtabs(8)
 
 
-def wcwidth_approx(line: str) -> int:
+def char_width(ch: str) -> int:
     """全角を 2 桁として数える。
 
     日本語を含む出力を等幅で置くと、素朴な len() では幅が足りずに
     枠から溢れる。厳密な East Asian Width の実装は入れず、よく出る
     範囲だけ 2 桁として数える。
     """
+    code = ord(ch)
+    if (
+        0x1100 <= code <= 0x115F
+        or 0x2E80 <= code <= 0xA4CF
+        or 0xAC00 <= code <= 0xD7A3
+        or 0xF900 <= code <= 0xFAFF
+        or 0xFE30 <= code <= 0xFE6F
+        or 0xFF00 <= code <= 0xFF60
+        or 0xFFE0 <= code <= 0xFFE6
+        or 0x20000 <= code <= 0x3FFFD
+    ):
+        return 2
+    return 1
+
+
+def wcwidth_approx(line: str) -> int:
+    return sum(char_width(ch) for ch in line)
+
+
+def wrap_line(line: str, cols: int) -> list[str]:
+    """表示幅で折り返す。
+
+    端末と同じく単語境界は見ずに桁で切る。JSON も URL も途中に空白が
+    無いので、単語折り返しでは結局はみ出すため。
+    """
+    if cols <= 0 or wcwidth_approx(line) <= cols:
+        return [line]
+
+    out: list[str] = []
+    buf: list[str] = []
     width = 0
     for ch in line:
-        code = ord(ch)
-        if (
-            0x1100 <= code <= 0x115F
-            or 0x2E80 <= code <= 0xA4CF
-            or 0xAC00 <= code <= 0xD7A3
-            or 0xF900 <= code <= 0xFAFF
-            or 0xFE30 <= code <= 0xFE6F
-            or 0xFF00 <= code <= 0xFF60
-            or 0xFFE0 <= code <= 0xFFE6
-            or 0x20000 <= code <= 0x3FFFD
-        ):
-            width += 2
-        else:
-            width += 1
-    return width
+        w = char_width(ch)
+        if width + w > cols:
+            out.append("".join(buf))
+            buf, width = [], 0
+        buf.append(ch)
+        width += w
+    if buf:
+        out.append("".join(buf))
+    return out
 
 
-def render(lines: list[str], title: str) -> str:
-    cols = max((wcwidth_approx(ln) for ln in lines), default=0)
+def render(lines: list[str], title: str, wrap_cols: int = DEFAULT_COLS) -> str:
+    # 折り返した継続行は元の行と同じ色にする。端末では 1 行の続きなので、
+    # コマンドの途中で色が変わると別の行に見える。
+    rows: list[tuple[str, str]] = []
+    for line in lines:
+        cls = "cmd" if line.startswith(PROMPT_PREFIXES) else "out"
+        rows.extend((seg, cls) for seg in wrap_line(line, wrap_cols))
+
+    cols = max((wcwidth_approx(text) for text, _ in rows), default=0)
     cols = max(cols, wcwidth_approx(title) + 4, 24)
 
     width = cols * CHAR_W + PAD_X * 2
-    height = len(lines) * LINE_H + PAD_TOP + PAD_BOTTOM
+    height = len(rows) * LINE_H + PAD_TOP + PAD_BOTTOM
 
     body: list[str] = []
-    for i, line in enumerate(lines):
+    for i, (text, cls) in enumerate(rows):
         y = PAD_TOP + i * LINE_H
-        cls = "cmd" if line.startswith(PROMPT_PREFIXES) else "out"
         body.append(
-            f'<text x="{PAD_X:.1f}" y="{y:.1f}" class="{cls}">{escape(line)}</text>'
+            f'<text x="{PAD_X:.1f}" y="{y:.1f}" class="{cls}">{escape(text)}</text>'
         )
 
     dots = "".join(
@@ -132,6 +170,12 @@ def main() -> int:
     ap.add_argument("input", nargs="?", help="キャプチャ済みのテキスト（既定は標準入力）")
     ap.add_argument("-o", "--output", help="出力先の SVG（既定は標準出力）")
     ap.add_argument("--title", default="terminal", help="タイトルバーに出す文字列")
+    ap.add_argument(
+        "--cols",
+        type=int,
+        default=DEFAULT_COLS,
+        help=f"この桁で折り返す（既定 {DEFAULT_COLS}、0 で折り返さない）",
+    )
     args = ap.parse_args()
 
     raw = (
@@ -149,7 +193,7 @@ def main() -> int:
         print("termshot: 入力が空です", file=sys.stderr)
         return 1
 
-    svg = render(lines, args.title)
+    svg = render(lines, args.title, args.cols)
 
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
