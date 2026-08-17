@@ -295,3 +295,21 @@ ${CCS_TEST_TMP}/ghq/github.com/bob/dup"
 	[ "$status" -eq 0 ]
 	[ ! -f "${CCS_TEST_TMP}/called.log" ]
 }
+
+@test "作業枠を実パスで指しても slug は tmp-N" {
+	# 末尾要素は `1` なので、素直に basename を取ると `cc/1` という
+	# 無意味なセッションが立ち、`ccs new tmp` で立てたものと別物になる。
+	mkdir -p "${CCS_SCRATCH_ROOT}/3"
+	run "$CCS_BIN" resolve "${CCS_SCRATCH_ROOT}/3"
+	[ "$status" -eq 0 ]
+	[ "$(echo "$output" | cut -f1)" = 'tmp-3' ]
+}
+
+@test "作業枠の中のサブディレクトリは枠扱いしない" {
+	# 枠そのものだけが枠。中で作ったディレクトリまで tmp- を名乗ると、
+	# 別物が同じ名前を取り合う。
+	mkdir -p "${CCS_SCRATCH_ROOT}/1/sub"
+	run "$CCS_BIN" resolve "${CCS_SCRATCH_ROOT}/1/sub"
+	[ "$status" -eq 0 ]
+	[ "$(echo "$output" | cut -f1)" = 'sub' ]
+}

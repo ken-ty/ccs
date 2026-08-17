@@ -184,6 +184,19 @@ slug_for_path() {
 	_path=$1
 	_base=$(basename "$_path")
 
+	# 作業枠を実パスで指されたとき。末尾要素は `1` なので、そのままだと
+	# `cc/1` という無意味なセッションが立ち、`ccs new tmp` で立てたものと
+	# 別物になってしまう。枠は枠として名乗らせる。
+	_scratch_abs=$(abs_dir "$CCS_SCRATCH_ROOT" 2>/dev/null || printf '%s' "$CCS_SCRATCH_ROOT")
+	case $_path in
+	"${_scratch_abs}"/*)
+		if [ "$(dirname "$_path")" = "$_scratch_abs" ]; then
+			printf 'tmp-%s\n' "$(sanitize_slug "$_base")"
+			return 0
+		fi
+		;;
+	esac
+
 	if repo_basename_is_ambiguous "$_base"; then
 		_owner=$(basename "$(dirname "$_path")")
 		sanitize_slug "${_owner}-${_base}"
@@ -251,9 +264,11 @@ dir_is_empty() {
 
 # 使い捨て作業枠を 1 つ確保する。
 #
-# 空いている枠 = ディレクトリが無いか、中身が空。**tmux セッションの有無は
-# ここでは見ない** — 見ると S4 以前にテストできなくなるうえ、責務が混ざる。
-# 立っているセッションとの突き合わせは ccs new 側（S5 の冪等性）が持つ。
+# 空いている枠 = ディレクトリが空 **かつ** その枠にセッションが立っていない。
+#
+# セッションの有無まで見るのは、`ccs new tmp` が「新しい使い捨て」を求める
+# 指示だから。まだ何も書いていない作業中のセッションは中身が空なので、
+# ディレクトリだけを見ると、動いているセッションを掴んで返してしまう。
 resolve_as_scratch() {
 	mkdir -p "$CCS_SCRATCH_ROOT" ||
 		die "$EX_FAIL" "作業枠を作れません: ${CCS_SCRATCH_ROOT}"
@@ -261,6 +276,11 @@ resolve_as_scratch() {
 	_i=1
 	while [ "$_i" -le "$CCS_SCRATCH_SLOTS" ]; do
 		_slot="${CCS_SCRATCH_ROOT}/${_i}"
+
+		if tmux_session_exists "${CCS_PREFIX}tmp-${_i}"; then
+			_i=$((_i + 1))
+			continue
+		fi
 
 		if [ ! -e "$_slot" ] || dir_is_empty "$_slot"; then
 			mkdir -p "$_slot" || die "$EX_FAIL" "作業枠を作れません: ${_slot}"
@@ -441,9 +461,50 @@ registry_file_for() {
 }
 
 emit_session_json() {
-	printf '{"slug":%s,"sessionId":%s,"path":%s,"tmux":%s,"transcript":%s,"created":%s}\n' \
+	printf '{"slug":%s,"sessionId":%s,"path":%s,"tmux":%s,"transcript":%s,"created":%s,"running":%s}\n' \
 		"$(json_str "$1")" "$(json_str "$2")" "$(json_str "$3")" \
-		"$(json_str "$4")" "$(json_str "$5")" "$6"
+		"$(json_str "$4")" "$(json_str "$5")" "$6" "$7"
+}
+
+# 立っているセッションの sessionId を引く。
+#
+# レジストリの tmux フィールドは `cc/<slug>:<window>.<pane>` の形なので、
+# `cc/<slug>:` を前方一致で探す。slug 単体で探すと `x01` が `x011` に
+# 当たるので、区切りの `:` まで含めて見る。
+live_session_id_for() {
+	_slug=$1
+	for _f in "$CCS_SESSIONS_DIR"/*.json; do
+		[ -e "$_f" ] || continue
+		if grep -q "\"tmux\":\"${CCS_PREFIX}${_slug}:" "$_f" 2>/dev/null; then
+			sed -n 's/.*"sessionId":"\([^"]*\)".*/\1/p' "$_f"
+			return 0
+		fi
+	done
+	return 1
+}
+
+# claude が終了したあとの sessionId を、ペインの起動コマンドから拾う。
+#
+# **v1 に resume は無いので、これが手で復帰するための唯一の導線。**
+# ペインを `exec $SHELL` で残しているおかげで、起動コマンドの文字列も残る。
+pane_session_id_for() {
+	_session=$1
+	"$CCS_TMUX_BIN" list-panes -t "$_session" -F '#{pane_start_command}' 2>/dev/null |
+		sed -n "s/.*--session-id '\{0,1\}\([0-9a-f-]\{36\}\).*/\1/p" |
+		head -1
+}
+
+# 立っているセッションの cwd を引く。取れなければ空。
+live_cwd_for() {
+	_slug=$1
+	for _f in "$CCS_SESSIONS_DIR"/*.json; do
+		[ -e "$_f" ] || continue
+		if grep -q "\"tmux\":\"${CCS_PREFIX}${_slug}:" "$_f" 2>/dev/null; then
+			sed -n 's/.*"cwd":"\([^"]*\)".*/\1/p' "$_f"
+			return 0
+		fi
+	done
+	return 1
 }
 
 cmd_new() {
@@ -475,12 +536,32 @@ cmd_new() {
 	_path=$CCS_RESOLVED_PATH
 	_session="${CCS_PREFIX}${_slug}"
 
-	# 冪等な返し方は S5 で入れる。それまでは黙って上書きせず、明示的に落とす。
+	# 冪等。**同じ slug を 2 度頼まれたら、立て直さず既にあるものを返す。**
+	# ハブは「その名前のセッションが欲しい」と言っているのであって、
+	# 「必ず新しく作れ」と言っているわけではない。二重に立てると、
+	# 同じ作業ツリーを 2 本の claude が触ることになる。
 	if tmux_session_exists "$_session"; then
-		warn "ccs: すでに立っています: ${_session}"
+		if _existing=$(live_session_id_for "$_slug"); then
+			_cwd=$(live_cwd_for "$_slug" || printf '%s' "$_path")
+			[ -n "$_cwd" ] || _cwd=$_path
+			emit_session_json "$_slug" "$_existing" "$_cwd" "$_session" \
+				"$(transcript_path "$_cwd" "$_existing")" false true
+			return 0
+		fi
+
+		# ペインは残っているが claude は動いていない。ハブは会話相手を
+		# 求めているので、これを成功として返すと嘘になる。
+		_stale=$(pane_session_id_for "$_session")
+		warn "ccs: ${_session} のペインは残っていますが、claude は動いていません。"
 		warn ''
-		warn "  乗り込む: ccs attach ${_slug}"
-		warn "  畳む:     ccs kill ${_slug}"
+		if [ -n "$_stale" ]; then
+			warn '  乗り込んで、同じ会話を再開する:'
+			warn "    ccs attach ${_slug}"
+			warn "    claude --resume ${_stale}"
+		else
+			warn "  乗り込んで確かめる: ccs attach ${_slug}"
+		fi
+		warn "  畳んで立て直す:     ccs kill ${_slug} && ccs new ${_target}"
 		exit "$EX_FAIL"
 	fi
 
@@ -512,7 +593,7 @@ cmd_new() {
 		exit "$EX_FAIL"
 	fi
 
-	emit_session_json "$_slug" "$_uuid" "$_path" "$_session" "$_transcript" true
+	emit_session_json "$_slug" "$_uuid" "$_path" "$_session" "$_transcript" true true
 }
 
 cmd_ls() {
