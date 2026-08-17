@@ -61,6 +61,7 @@ nav:
   - 使い方:
       - はじめてのセッション: tutorial.md
       - 手を動かして確かめる: hands-on.md
+      - ハブの組み込みツール: agent-tools.md
   - 設計:
       - 設計調査: design.md
       - 参照資料: references.md

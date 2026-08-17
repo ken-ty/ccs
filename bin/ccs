@@ -79,6 +79,7 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
 
 使い方:
   ccs new <target> [-- <初期プロンプト>]  セッションを立てる
+  ccs new --tmp [-- <初期プロンプト>]     使い捨ての作業枠に立てる
   ccs ls [--json]                         cc/ のセッションを一覧する
   ccs attach <slug>                       セッションに乗り込む
   ccs kill [--force] <slug>               セッションを畳む
@@ -87,13 +88,15 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
                                           （既定は見せるだけ。--yes で実行）
 
   ccs resolve <target> [--json]           <target> がどこに解決されるかを見る
+  ccs resolve --tmp [--json]              次に取る作業枠を見る
   ccs help                                このヘルプ
   ccs version                             バージョン
 
 <target>:
   <repo>        ghq 配下のリポジトリ名（例: x01）
   <path>        絶対パスまたは相対パス
-  tmp           使い捨ての作業枠（CCS_SCRATCH_ROOT 配下）
+  tmp           使い捨ての作業枠（--tmp の短い綴り。ghq に tmp という
+                リポジトリがあるときは曖昧なので受け付けない）
 
 環境変数（テストと特殊な環境のための差し替え点）:
   CCS_CLAUDE_BIN     claude の実体            [既定: claude]
@@ -305,6 +308,23 @@ resolve_as_scratch() {
 	exit "$EX_FAIL"
 }
 
+# 予約語 `tmp` が ghq のリポジトリ名と衝突していないか。
+#
+# `tmp` は使い捨て枠を指す予約語だが、target の名前空間はリポジトリ名と
+# 共有している。`ghq get someone/tmp` をした瞬間、`ccs new tmp` がどちらを
+# 指すのかは打った人にしか分からない ── IceCubesApp の衝突と同じ性質なので、
+# 同じように候補を出して止める。
+#
+# **`--tmp` は名前空間の外にあるので、この衝突とは無縁。** だから枠が欲しい
+# ときの正式な綴りは `--tmp` のほう。
+CCS_SCRATCH_WORD_HITS=''
+scratch_word_conflicts() {
+	have "$CCS_GHQ_BIN" || return 1
+	CCS_SCRATCH_WORD_HITS=$("$CCS_GHQ_BIN" list -p 2>/dev/null |
+		awk -F/ '$NF == "tmp"')
+	[ -n "$CCS_SCRATCH_WORD_HITS" ]
+}
+
 resolve_target() {
 	_target=$1
 
@@ -315,6 +335,18 @@ resolve_target() {
 
 	case $_target in
 	tmp)
+		if scratch_word_conflicts; then
+			warn 'ccs: tmp は使い捨ての作業枠を指す予約語ですが、同名のリポジトリもあります:'
+			warn ''
+			printf '%s\n' "$CCS_SCRATCH_WORD_HITS" | while IFS= read -r _m; do
+				[ -n "$_m" ] || continue
+				warn "  $(basename "$(dirname "$_m")")/$(basename "$_m")"
+			done
+			warn ''
+			warn '  作業枠が欲しい:     ccs new --tmp'
+			warn '  リポジトリが欲しい: ccs new <owner>/tmp'
+			exit "$EX_FAIL"
+		fi
 		resolve_as_scratch
 		;;
 	/* | ./* | ../*)
@@ -345,19 +377,27 @@ resolve_target() {
 cmd_resolve() {
 	_json=''
 	_target=''
+	_want_scratch=''
 
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--json) _json=1 ;;
+		--tmp) _want_scratch=1 ;;
 		-*) die "$EX_USAGE" "resolve: 知らないオプション: $1" ;;
 		*) _target=$1 ;;
 		esac
 		shift
 	done
 
-	[ -n "$_target" ] || die "$EX_USAGE" 'resolve: <target> を指定してください'
-
-	resolve_target "$_target"
+	if [ -n "$_want_scratch" ]; then
+		[ -z "$_target" ] ||
+			die "$EX_USAGE" "resolve: --tmp と <target> は同時に指定できません: ${_target}"
+		resolve_as_scratch
+	else
+		[ -n "$_target" ] ||
+			die "$EX_USAGE" 'resolve: <target> を指定してください（使い捨ての作業枠は --tmp）'
+		resolve_target "$_target"
+	fi
 
 	if [ -n "$_json" ]; then
 		printf '{"slug":%s,"path":%s}\n' \
@@ -379,9 +419,15 @@ cmd_resolve() {
 #
 #   ghq 配下のリポジトリ … 自動で信頼済みにする。人が意図して clone した
 #                          ものなので、ここでの確認は情報を増やさない
+#   空の使い捨て作業枠   … 自動で信頼済みにする（#6、2026-08-18 の決定）。
+#                          枠は ccs 自身が作った空のディレクトリなので、確認が
+#                          守ろうとしている「知らないコード」がそもそも無い。
+#                          手作業にすると枠 8 本ぶん承認が要り、tmp を何本も
+#                          立てる運用が実質できなくなる（実機で踏んだ）
 #   それ以外             … 自動で承認しない。確認が出ることを先に伝えて進む
 #
-# **安全確認をツールが黙って潰さない**のがこの分け方の要点。
+# **安全確認をツールが黙って潰さない**のがこの分け方の要点。中身のあるところは
+# ghq 配下でない限り自分で答えてもらう。
 # ---------------------------------------------------------------------------
 
 trust_is_accepted() {
@@ -407,6 +453,18 @@ path_is_under_ghq() {
 	"$_root"/*) return 0 ;;
 	esac
 	return 1
+}
+
+# 使い捨て作業枠のうち、いま空のものか。
+#
+# **空であることを毎回確かめる**のがこの判定の要点。枠を渡すのは
+# `resolve_as_scratch` が空だと確かめたときだけだが、中身の入った枠を
+# 実パスで指されることはある。そのときは他所と同じく自動承認しない
+# ── そこにあるのは誰かが置いたコードなので、確認する意味がある。
+path_is_scratch_slot() {
+	_scratch_root=$(abs_dir "$CCS_SCRATCH_ROOT" 2>/dev/null) || return 1
+	[ "$(dirname "$1")" = "$_scratch_root" ] || return 1
+	dir_is_empty "$1"
 }
 
 # hasTrustDialogAccepted を立てる。
@@ -466,6 +524,12 @@ ensure_trust() {
 	if path_is_under_ghq "$_p"; then
 		trust_accept "$_p"
 		warn "ccs: ghq 配下なので信頼済みにしました: ${_p}"
+		return 0
+	fi
+
+	if path_is_scratch_slot "$_p"; then
+		trust_accept "$_p"
+		warn "ccs: 空の使い捨て作業枠なので信頼済みにしました: ${_p}"
 		return 0
 	fi
 
@@ -624,6 +688,7 @@ cmd_new() {
 
 	_target=''
 	_prompt=''
+	_want_scratch=''
 
 	while [ $# -gt 0 ]; do
 		case $1 in
@@ -632,6 +697,7 @@ cmd_new() {
 			_prompt=$*
 			break
 			;;
+		--tmp) _want_scratch=1 ;;
 		-*) die "$EX_USAGE" "new: 知らないオプション: $1" ;;
 		*)
 			[ -z "$_target" ] || die "$EX_USAGE" "new: <target> は 1 つだけです: ${_target} と $1"
@@ -641,9 +707,18 @@ cmd_new() {
 		shift
 	done
 
-	[ -n "$_target" ] || die "$EX_USAGE" 'new: <target> を指定してください（ccs help を見てください）'
+	if [ -n "$_want_scratch" ]; then
+		[ -z "$_target" ] ||
+			die "$EX_USAGE" "new: --tmp と <target> は同時に指定できません: ${_target}"
+		resolve_as_scratch
+		# 以降の案内文（`ccs kill <slug> && ccs new <target>`）で使う。
+		_target='--tmp'
+	else
+		[ -n "$_target" ] ||
+			die "$EX_USAGE" 'new: <target> を指定してください（使い捨ての作業枠は --tmp。ccs help を見てください）'
+		resolve_target "$_target"
+	fi
 
-	resolve_target "$_target"
 	_slug=$CCS_RESOLVED_SLUG
 	_path=$CCS_RESOLVED_PATH
 	_session="${CCS_PREFIX}${_slug}"

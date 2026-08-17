@@ -8,7 +8,8 @@ Claude Code のセッションを増やしたいとき、これまでは**人が
 必要があった。セッションの中にいるエージェントからは新しいセッションを開けない。
 
 `ccs` はそこだけを埋める。ハブ（Remote Control を張った 1 本）から `ccs new` を呼べば、
-tmux の上に新しいセッションが立ち、**そのままハブの `ListAgents` に現れて指示を送れる**。
+tmux の上に新しいセッションが立ち、**そのままハブの
+[`ListAgents`](agent-tools.md#listagents) に現れて指示を送れる**。
 ターミナルを閉じても tmux が残すので、セッションは生き続ける。
 
 ## 薄い
@@ -19,7 +20,7 @@ tmux の上に新しいセッションが立ち、**そのままハブの `ListA
 | やりたいこと | 担当 |
 | --- | --- |
 | 全セッションの一覧・状態 | `claude agents --json`（組み込み） |
-| ハブ → 子セッションへの指示 | `ListAgents` / `SendMessage`（組み込みツール） |
+| ハブ → 子セッションへの指示 | [`ListAgents` / `SendMessage`](agent-tools.md)（組み込みツール） |
 | tmux ペインとの対応づけ | Claude 自身が記録する |
 | セッション ID の固定 | `claude --session-id <uuid>`（組み込み） |
 | skills が見えること | `~/.claude/skills` がユーザレベルなので cwd に依らない |
@@ -51,6 +52,7 @@ tmux の上に新しいセッションが立ち、**そのままハブの `ListA
 ## この先
 
 - [はじめてのセッション](tutorial.md) — 入れて、立てて、畳むまで（実機の画面つき）
+- [ハブの組み込みツール](agent-tools.md) — 立てたあと、どう指示を送るか
 - [手を動かして確かめる](hands-on.md) — 自分の目で 1 周する手順
 - [設計調査](design.md) — なぜこの形なのか。実測の証拠つき
 - [参照資料](references.md) — 調査で当たったもの

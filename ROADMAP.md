@@ -18,7 +18,8 @@
 | セッション間通信 | 組み込みの `ListAgents` / `SendMessage`。**`tmux send-keys` でのプロンプト注入は採らない** | design.md §3 |
 | 命名 | tmux は `cc/<slug>`、Claude の `-n` は `<slug>`、id は `--session-id` で固定 | design.md §4.2 |
 | 冪等性 | 同一 slug の tmux セッションがあれば**新規に立てず既存を返す** | design.md §4.3 |
-| trust | 固定枠 `~/.cc-scratch/{1..8}` + ghq 配下の未信頼リポジトリのみ自動承認。**`send-keys` で答える案は採らない** | design.md §4.4 |
+| trust | 固定枠 `~/.cc-scratch/{1..8}`。自動承認は **ghq 配下**と**空の作業枠**だけ。**`send-keys` で答える案は採らない** | design.md §4.4 |
+| 使い捨て枠の指定 | 正式な綴りは **`--tmp`**。予約語 `tmp` も残すが、ghq に同名リポジトリがあれば選ばずに止まる | design.md §4.3 |
 | v1 の範囲 | `new` / `ls` / `attach` / `kill` / `gc` まで。**`resume` と worktree は入れない** | design.md §6 |
 | テスト | integration では **本物の `claude` を起動しない**（fake claude スタブを使う） | AGENTS.md |
 | 言語 | POSIX sh。依存は `tmux` と `jq` のみ | design.md §6 |
@@ -37,13 +38,13 @@ v1 の範囲外と決めたもの。**拾う前に人の判断が要る。**
 | --- | --- | --- |
 | V1 | `ccs resume <slug>` — 止まったペインに `claude --resume <uuid>` を流し込む | design.md §6 で v1 から外した。いまは手で打つ |
 | V2 | worktree 対応（`ccs new <repo>@<branch>`） | design.md §6。`git-worktree` スキルの規約に合わせる必要がある |
-| V3 | 使い捨て枠の自動信頼 | [#6](https://github.com/ken-ty/ccs/issues/6) 回答待ち |
 | V4 | ドキュメントの公開先（Artifacts のままか、public + Pages か） | 可視性の変更なので人の判断 |
 
 ## 完了ログ
 
 | 日付 | 内容 |
 | --- | --- |
+| 2026-08-18 | V3 使い捨て枠の自動信頼（[#6](https://github.com/ken-ty/ccs/issues/6) の回答）と `--tmp` の導入。**実機で 2 本目の枠が立たないことが分かって決まった** — 枠 1 本ごとに承認が要り、`ccs new tmp` が信頼ダイアログで固まって 30 秒後に失敗する。枠は `ccs` 自身が作った空のディレクトリなので、確認が守る「知らないコード」がそこに無い。**空であることは毎回確かめる**ので、中身のある枠を実パスで指したときは従来どおり自動承認しない。合わせて、予約語 `tmp` がリポジトリ名と名前空間を共有している問題を `--tmp` で解消（`tmp` も残すが、ghq に同名があれば IceCubesApp と同じく候補を出して止まる）。テスト 196 件 |
 | 2026-08-17 | 設計調査を実施し、自作範囲を 4 つに確定（`545e370`） |
 | 2026-08-17 | S1 `bin/ccs` の骨格。終了コードを対外契約として固定（0/1/2/3/4）し、「未知(2)」と「未実装(3)」を区別。テストのサンドボックス化は `test_helper.bash` に集約（1 箇所でも漏れると実環境を壊すため）。CI に「本物の claude が存在しないこと」の番人を置いた |
 | 2026-08-17 | S13 `cross-session-hub` スキルを改訂（[store #95](https://github.com/ken-ty/agent-skills-store/pull/95)）。旧文面の 2 点が実測と食い違っていた — `ccd_session_mgmt` はデスクトップ限定で VS Code も tmux も見えないこと、「新規セッションは開けない」が `ccs` で成り立たなくなったこと。読み取り専用の原則は変えず、むしろ「立てた相手も別セッションであることに変わりはない」を明示した。**これで v1 の全項目が完了** |

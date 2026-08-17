@@ -169,6 +169,27 @@ teardown() {
 	ccs_tmux has-session -t '=cc/tmp-1'
 }
 
+@test "new --tmp: 予約語と同じ結果になる" {
+	run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 0 ]
+	[ "$(echo "$output" | jq -r '.slug')" = 'tmp-1' ]
+	ccs_tmux has-session -t '=cc/tmp-1'
+}
+
+@test "new --tmp: 初期プロンプトを渡せる" {
+	# `--tmp` と `--` の並びを取り違えていないか。
+	run --separate-stderr "$CCS_BIN" new --tmp -- 'hello'
+	[ "$status" -eq 0 ]
+	[ "$(echo "$output" | jq -r '.slug')" = 'tmp-1' ]
+	ccs_tmux list-panes -t '=cc/tmp-1' -F '#{pane_start_command}' | grep -q 'hello'
+}
+
+@test "new --tmp: <target> との同時指定は 2 で落ちる" {
+	run --separate-stderr "$CCS_BIN" new --tmp x01
+	[ "$status" -eq 2 ]
+	[[ "$stderr" == *"同時に指定できません"* ]]
+}
+
 # --- 失敗の経路 -------------------------------------------------------------
 
 # 同じ slug を 2 度頼まれたときの振る舞いは integration/idempotent.bats。

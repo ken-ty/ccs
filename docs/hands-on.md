@@ -138,7 +138,9 @@ ccs new x01
 
 **`ccs` を作った理由はこの 1 点。** 立てたセッションに、このハブから指示を送れること。
 
-このチャットで、こう聞く:
+ここで使う [`ListAgents`](agent-tools.md#listagents) と
+[`SendMessage`](agent-tools.md#sendmessage) はシェルのコマンドではないので、
+ターミナルではなくこのチャットで頼む。
 
 > ListAgents で今あるセッションを見せて
 
@@ -306,52 +308,38 @@ ccs ls
 
 ---
 
-## 9. 使い捨ての作業枠（信頼確認を体験する）
+## 9. 使い捨ての作業枠（何本でも立つ）
 
-!!! info "ここだけ `~/.claude.json` に 1 行増える"
-    信頼確認に答えると、Claude Code 自身がそれを記録する。**`ccs` が書くのではない。**
-    手順 1 で控えた `.projects` の件数が 1 増えるのはここ。
-
-```bash
-ccs new tmp
-```
-
-**期待される出力**（`ccs` は先に警告してから立てる）:
-
-```
-ccs: /Users/apple/.cc-scratch/1 はまだ信頼されていません。
-起動時に信頼確認が出ます。一度答えれば以後は出ません:
-  ccs attach tmp-1   # 「1. Yes, I trust this folder」を選ぶ
-```
-
-その後 30 秒待って失敗する。これは**想定どおり**の動き。
+!!! info "ここで `~/.claude.json` に行が増える"
+    枠を信頼済みにするのは **`ccs` 自身**（[#6](https://github.com/ken-ty/ccs/issues/6)、
+    2026-08-18 の決定）。手順 1 で控えた `.projects` の件数が、立てた枠のぶんだけ増える。
 
 ```bash
-ccs attach tmp-1
+ccs new --tmp
 ```
 
-→ 信頼確認が出ているので **「1. Yes, I trust this folder」** を選ぶ。
-→ Claude Code が起動したら `Ctrl-b d` で抜ける。
+**期待される出力**（stderr に 1 行、stdout に JSON）:
+
+```
+ccs: 空の使い捨て作業枠なので信頼済みにしました: /Users/apple/.cc-scratch/1
+{"slug":"tmp-1","sessionId":"…","path":"/Users/apple/.cc-scratch/1",…,"created":true}
+```
+
+**信頼確認は出ない。** 枠は `ccs` が作った空のディレクトリなので、確認が守ろうとしている
+「知らないコード」がそこに無い。
+
+続けてもう 1 本立てて、**枠が増える**ことを確かめる:
 
 ```bash
+ccs new --tmp
 ccs ls
 ```
 
-**期待される出力**: `tmp-1` が `idle` で出る。
+**期待される出力**: `tmp-1` と `tmp-2` が両方 `idle` で出る。ここが詰まると
+「使い捨てを何本も立てる」という枠の存在理由そのものが成り立たない。
 
-**2 回目以降は確認が出ない**ことを確かめる:
-
-```bash
-ccs kill tmp-1
-ccs new tmp
-```
-
-→ 今度は警告なしで、数秒で `created:true` が返る。
-
-!!! question "この往復が面倒だと思ったら"
-    そのとおりで、枠 8 本ぶん初回だけこれをやることになる。
-    自動承認してよいかは [#6](https://github.com/ken-ty/ccs/issues/6) で判断待ち。
-    意見をそこに書いてほしい。
+短い綴りの `ccs new tmp` も同じ結果になる。ただし ghq に `tmp` という名前のリポジトリが
+あるときだけは、どちらを指したか決められないので候補を出して止まる。
 
 ---
 
@@ -359,6 +347,7 @@ ccs new tmp
 
 ```bash
 ccs kill tmp-1
+ccs kill tmp-2
 ccs gc --yes
 ```
 
@@ -366,6 +355,7 @@ ccs gc --yes
 
 ```
 消しました: ~/.cc-scratch/1
+消しました: ~/.cc-scratch/2
 ```
 
 親のディレクトリだけ残るので、それも消す:
@@ -389,9 +379,11 @@ rm ~/.local/bin/ccs
 ```
 
 ??? note "`~/.claude.json` について"
-    手順 9 で増えた `hasTrustDialogAccepted` の 1 行は残る。これは Claude Code の
-    通常の記録で、`~/.cc-scratch/1` を次に使うときに確認が出なくなるだけ。
-    害は無いので消さなくてよい。
+    手順 9 で増えた `hasTrustDialogAccepted` の行は残る。枠を次に使うときに確認が
+    出なくなるだけで、害は無いので消さなくてよい。気になるなら
+    `jq 'del(.projects["'"$HOME"'/.cc-scratch/1"])'` で消せるが、**このファイルは
+    Claude Code の状態がまとめて入った 100KB 級のもの**なので、書き戻す前に
+    中身を確かめること。
 
 ---
 
@@ -405,7 +397,7 @@ rm ~/.local/bin/ccs
 - [ ] 6. 二度立てても増えない（`created:false`、同じ `sessionId`）
 - [ ] 7. `stopped` でも `SESSION ID` が出る
 - [ ] 8. `gc` が既定では何も消さない
-- [ ] 9. 信頼確認に一度答えれば、以後出ない
+- [ ] 9. 使い捨ての作業枠が、信頼確認なしで 2 本とも立った
 - [ ] 10. 元に戻せた
 
 **4 が通れば、この道具が解こうとしていた問題は解けている。**
@@ -418,9 +410,10 @@ rm ~/.local/bin/ccs
 | 症状 | 見るところ |
 | --- | --- |
 | `ccs new` が 30 秒待って失敗する | ペインの中身が出るのでそれを読む。信頼確認かログイン切れが大半 |
-| `ListAgents` に出てこない | `ccs ls` で `idle` か確かめる。`stopped` なら claude が落ちている |
+| [`ListAgents`](agent-tools.md#listagents) に出てこない | `ccs ls` で `idle` か確かめる。`stopped` なら claude が落ちている（[使い分け](agent-tools.md#ccs-ls-との使い分け)） |
 | `attach` から抜けられない | `Ctrl-b` → `d`。`Ctrl-c` ではない |
-| `ccs new tmp` が「枠が全部埋まっています」 | `ccs gc` で状況を見る。中身のある枠は `ccs` が消さないので自分で確認する |
+| `ccs new --tmp` が「枠が全部埋まっています」 | `ccs gc` で状況を見る。中身のある枠は `ccs` が消さないので自分で確認する |
+| `ccs new tmp` が「同名のリポジトリもあります」 | ghq に `tmp` がある。作業枠なら `--tmp`、リポジトリなら `<owner>/tmp` |
 | `ccs kill` が「作業中です」で止まる | 意図した動き。`ccs attach` で様子を見てから `--force` |
 | 終了コードの意味 | 0 成功 / 1 失敗 / 2 使い方の誤り / 4 依存が無い |
 
