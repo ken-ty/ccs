@@ -28,12 +28,12 @@ teardown() {
 @test "2 度目は立てずに既存を返す" {
 	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	[ "$status" -eq 0 ]
 	_first=$(echo "$output" | jq -r '.sessionId')
 	[ "$(echo "$output" | jq -r '.created')" = 'true' ]
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	[ "$status" -eq 0 ]
 	[ "$(echo "$output" | jq -r '.sessionId')" = "$_first" ]
 	[ "$(echo "$output" | jq -r '.created')" = 'false' ]
@@ -44,11 +44,11 @@ teardown() {
 	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
 	export FAKE_CLAUDE_LOG="${CCS_TEST_TMP}/invocations.log"
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	[ "$status" -eq 0 ]
 	_before=$(wc -l <"$FAKE_CLAUDE_LOG" | tr -d ' ')
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	[ "$status" -eq 0 ]
 	_after=$(wc -l <"$FAKE_CLAUDE_LOG" | tr -d ' ')
 
@@ -58,8 +58,8 @@ teardown() {
 @test "tmux セッションは 1 本のまま" {
 	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 
 	_n=$(ccs_tmux list-sessions -F '#{session_name}' | grep -c '^cc/myrepo$')
 	[ "$_n" = '1' ]
@@ -71,11 +71,11 @@ teardown() {
 	mkdir -p "$_root"
 	ccs_stub_ghq "$_root"
 
-	run "$CCS_BIN" new x01
+	run --separate-stderr "$CCS_BIN" new x01
 	[ "$status" -eq 0 ]
 	_first=$(echo "$output" | jq -r '.sessionId')
 
-	run "$CCS_BIN" new ken-ty/x01
+	run --separate-stderr "$CCS_BIN" new ken-ty/x01
 	[ "$status" -eq 0 ]
 	[ "$(echo "$output" | jq -r '.sessionId')" = "$_first" ]
 	[ "$(echo "$output" | jq -r '.created')" = 'false' ]
@@ -84,9 +84,9 @@ teardown() {
 @test "別の対象なら別のセッションが立つ" {
 	mkdir -p "${CCS_TEST_TMP}/work/a" "${CCS_TEST_TMP}/work/b"
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/a"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/a"
 	_a=$(echo "$output" | jq -r '.sessionId')
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/b"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/b"
 	_b=$(echo "$output" | jq -r '.sessionId')
 
 	[ "$_a" != "$_b" ]
@@ -99,11 +99,11 @@ teardown() {
 	# 含めないと x01 が x011 に当たる。
 	mkdir -p "${CCS_TEST_TMP}/work/x01" "${CCS_TEST_TMP}/work/x011"
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/x011"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/x011"
 	[ "$status" -eq 0 ]
 	_x011=$(echo "$output" | jq -r '.sessionId')
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/x01"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/x01"
 	[ "$status" -eq 0 ]
 	[ "$(echo "$output" | jq -r '.created')" = 'true' ]
 	[ "$(echo "$output" | jq -r '.sessionId')" != "$_x011" ]
@@ -115,12 +115,12 @@ teardown() {
 	# `ccs new tmp` は「新しい使い捨て」を求める指示。まだ何も書いていない
 	# 作業中のセッションは中身が空なので、ディレクトリだけを見ると
 	# 動いているセッションを掴んで返してしまう。
-	run "$CCS_BIN" new tmp
+	run --separate-stderr "$CCS_BIN" new tmp
 	[ "$status" -eq 0 ]
 	[ "$(echo "$output" | jq -r '.slug')" = 'tmp-1' ]
 	_first=$(echo "$output" | jq -r '.sessionId')
 
-	run "$CCS_BIN" new tmp
+	run --separate-stderr "$CCS_BIN" new tmp
 	[ "$status" -eq 0 ]
 	[ "$(echo "$output" | jq -r '.slug')" = 'tmp-2' ]
 	[ "$(echo "$output" | jq -r '.created')" = 'true' ]
@@ -129,23 +129,23 @@ teardown() {
 
 @test "new tmp: 枠が全部立っていれば落ちる" {
 	export CCS_SCRATCH_SLOTS=2
-	run "$CCS_BIN" new tmp
+	run --separate-stderr "$CCS_BIN" new tmp
 	[ "$status" -eq 0 ]
-	run "$CCS_BIN" new tmp
+	run --separate-stderr "$CCS_BIN" new tmp
 	[ "$status" -eq 0 ]
 
-	run "$CCS_BIN" new tmp
+	run --separate-stderr "$CCS_BIN" new tmp
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"ccs gc"* ]]
+	[[ "$stderr" == *"ccs gc"* ]]
 }
 
 @test "tmp-N を名指しすれば冪等に返る" {
 	# 枠は掴み直さないが、その枠そのものを指せば既存が返る。
-	run "$CCS_BIN" new tmp
+	run --separate-stderr "$CCS_BIN" new tmp
 	_first=$(echo "$output" | jq -r '.sessionId')
 	_path=$(echo "$output" | jq -r '.path')
 
-	run "$CCS_BIN" new "$_path"
+	run --separate-stderr "$CCS_BIN" new "$_path"
 	[ "$status" -eq 0 ]
 	[ "$(echo "$output" | jq -r '.created')" = 'false' ]
 	[ "$(echo "$output" | jq -r '.sessionId')" = "$_first" ]
@@ -158,13 +158,13 @@ teardown() {
 	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
 	export FAKE_CLAUDE_EXIT_AFTER=1
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	[ "$status" -eq 0 ]
 	ccs_wait_registry_count 0 10
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"claude は動いていません"* ]]
+	[[ "$stderr" == *"claude は動いていません"* ]]
 }
 
 @test "claude が終了していても、再開用の uuid を出す" {
@@ -173,20 +173,20 @@ teardown() {
 	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
 	export FAKE_CLAUDE_EXIT_AFTER=1
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	_id=$(echo "$output" | jq -r '.sessionId')
 	ccs_wait_registry_count 0 10
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"claude --resume ${_id}"* ]]
+	[[ "$stderr" == *"claude --resume ${_id}"* ]]
 }
 
 # --- 出力の作法 -------------------------------------------------------------
 
 @test "既存を返すときも stdout は JSON 1 行だけ" {
 	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 
 	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	[ "$status" -eq 0 ]
@@ -197,9 +197,9 @@ teardown() {
 
 @test "既存を返すときの path はレジストリの cwd" {
 	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	_path=$(echo "$output" | jq -r '.path')
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	[ "$(echo "$output" | jq -r '.path')" = "$_path" ]
 }

@@ -366,6 +366,115 @@ cmd_resolve() {
 }
 
 # ---------------------------------------------------------------------------
+# workspace trust
+#
+# 対話モードの claude は、初めて見るディレクトリで信頼確認を出して止まる
+# （実測。docs/design.md §2.6）。止まっている間はレジストリにすら現れないので、
+# tmux 越しに立てると 30 秒待って失敗するだけになる。
+#
+# 方針（design.md §4.4、2026-08-17 の決定）:
+#
+#   ghq 配下のリポジトリ … 自動で信頼済みにする。人が意図して clone した
+#                          ものなので、ここでの確認は情報を増やさない
+#   それ以外             … 自動で承認しない。確認が出ることを先に伝えて進む
+#
+# **安全確認をツールが黙って潰さない**のがこの分け方の要点。
+# ---------------------------------------------------------------------------
+
+trust_is_accepted() {
+	_p=$1
+	[ -f "$CCS_TRUST_FILE" ] || return 1
+	# shellcheck disable=SC2016  # $p は jq の変数。シェルに展開させてはいけない
+	_v=$("$CCS_JQ_BIN" -r --arg p "$_p" \
+		'.projects[$p].hasTrustDialogAccepted // false' "$CCS_TRUST_FILE" 2>/dev/null) || return 1
+	[ "$_v" = 'true' ]
+}
+
+path_is_under_ghq() {
+	have "$CCS_GHQ_BIN" || return 1
+	_root=$("$CCS_GHQ_BIN" root 2>/dev/null) || return 1
+	[ -n "$_root" ] || return 1
+
+	# **root も symlink を辿った形にする。** 比較相手のパスは pwd -P を
+	# 通っているので、片方だけ生のままだと前方一致が外れる。macOS の
+	# /var → /private/var で実際に外れた。
+	_root=$(abs_dir "$_root" 2>/dev/null || printf '%s' "$_root")
+
+	case $1 in
+	"$_root"/*) return 0 ;;
+	esac
+	return 1
+}
+
+# hasTrustDialogAccepted を立てる。
+#
+# **~/.claude.json は Claude Code の状態がまとめて入っている 100KB 級の
+# ファイルで、壊すと本体が動かなくなる。** 触る以上、次を全部やる:
+#
+#   1. 書く前に、入力が妥当な JSON であることを確かめる
+#   2. 一時ファイルに書き、それも妥当な JSON か確かめる
+#   3. projects のキーが減っていないことを確かめる（取りこぼしの検出）
+#   4. そこまで通って初めて mv で置き換える（原子的）
+#
+# どれか 1 つでも落ちたら、元のファイルには触らずに諦める。
+trust_accept() {
+	_p=$1
+
+	if [ -f "$CCS_TRUST_FILE" ]; then
+		"$CCS_JQ_BIN" -e . "$CCS_TRUST_FILE" >/dev/null 2>&1 ||
+			die "$EX_FAIL" "${CCS_TRUST_FILE} が妥当な JSON ではないため、触りません"
+		_before=$("$CCS_JQ_BIN" -r '.projects // {} | length' "$CCS_TRUST_FILE")
+	else
+		mkdir -p "$(dirname "$CCS_TRUST_FILE")" 2>/dev/null || true
+		printf '{}\n' >"$CCS_TRUST_FILE"
+		_before=0
+	fi
+
+	_tmp="${CCS_TRUST_FILE}.ccs.$$"
+
+	# shellcheck disable=SC2016  # $p は jq の変数。シェルに展開させてはいけない
+	"$CCS_JQ_BIN" --arg p "$_p" \
+		'.projects //= {} | .projects[$p] //= {} | .projects[$p].hasTrustDialogAccepted = true' \
+		"$CCS_TRUST_FILE" >"$_tmp" 2>/dev/null || {
+		rm -f "$_tmp"
+		die "$EX_FAIL" "${CCS_TRUST_FILE} を更新できませんでした"
+	}
+
+	if ! "$CCS_JQ_BIN" -e . "$_tmp" >/dev/null 2>&1; then
+		rm -f "$_tmp"
+		die "$EX_FAIL" "更新後の内容が妥当な JSON になりませんでした。元のファイルは触っていません"
+	fi
+
+	_after=$("$CCS_JQ_BIN" -r '.projects // {} | length' "$_tmp")
+	if [ "$_after" -lt "$_before" ]; then
+		rm -f "$_tmp"
+		die "$EX_FAIL" "更新で projects の項目が減りました（${_before} → ${_after}）。元のファイルは触っていません"
+	fi
+
+	mv "$_tmp" "$CCS_TRUST_FILE"
+}
+
+# 立てる前に信頼状態を整える。落とさない ── 判断材料を出して進む。
+ensure_trust() {
+	_p=$1
+
+	trust_is_accepted "$_p" && return 0
+
+	if path_is_under_ghq "$_p"; then
+		trust_accept "$_p"
+		warn "ccs: ghq 配下なので信頼済みにしました: ${_p}"
+		return 0
+	fi
+
+	# 自動で承認しない場所。確認が出ることを先に言う ── 黙って立てると、
+	# 30 秒待たされて「登録されませんでした」とだけ言われることになる。
+	warn "ccs: ${_p} はまだ信頼されていません。"
+	warn '起動時に信頼確認が出ます。一度答えれば以後は出ません:'
+	warn "  ccs attach ${2:-<slug>}   # 「1. Yes, I trust this folder」を選ぶ"
+	warn ''
+}
+
+# ---------------------------------------------------------------------------
 # セッションを立てる
 # ---------------------------------------------------------------------------
 
@@ -564,6 +673,8 @@ cmd_new() {
 		warn "  畳んで立て直す:     ccs kill ${_slug} && ccs new ${_target}"
 		exit "$EX_FAIL"
 	fi
+
+	ensure_trust "$_path" "$_slug"
 
 	_uuid=$(new_uuid)
 	_transcript=$(transcript_path "$_path" "$_uuid")

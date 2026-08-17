@@ -31,7 +31,7 @@ teardown() {
 @test "new: tmux セッションを立てて JSON を返す" {
 	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	[ "$status" -eq 0 ]
 
 	echo "$output" | jq -e . >/dev/null
@@ -47,7 +47,7 @@ teardown() {
 	# claude が起動していないことがあるため。
 	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	[ "$status" -eq 0 ]
 	_id=$(echo "$output" | jq -r '.sessionId')
 
@@ -60,7 +60,7 @@ teardown() {
 	# 本物は --session-id に妥当な UUID を要求する。
 	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	_id=$(echo "$output" | jq -r '.sessionId')
 	[[ "$_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
 }
@@ -68,9 +68,9 @@ teardown() {
 @test "new: 呼ぶたびに違う sessionId になる" {
 	mkdir -p "${CCS_TEST_TMP}/work/a" "${CCS_TEST_TMP}/work/b"
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/a"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/a"
 	_a=$(echo "$output" | jq -r '.sessionId')
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/b"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/b"
 	_b=$(echo "$output" | jq -r '.sessionId')
 
 	[ "$_a" != "$_b" ]
@@ -80,7 +80,7 @@ teardown() {
 	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
 	export FAKE_CLAUDE_LOG="${CCS_TEST_TMP}/invocations.log"
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	[ "$status" -eq 0 ]
 	_id=$(echo "$output" | jq -r '.sessionId')
 
@@ -92,7 +92,7 @@ teardown() {
 @test "new: セッションの cwd は解決したパス" {
 	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	_id=$(echo "$output" | jq -r '.sessionId')
 	_expected=$(echo "$output" | jq -r '.path')
 
@@ -104,7 +104,7 @@ teardown() {
 	# 本物がこれを書くので、ccs は自前で対応づけを持たなくてよい。
 	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	_id=$(echo "$output" | jq -r '.sessionId')
 
 	_found=$(grep -l "\"sessionId\":\"${_id}\"" "$CCS_SESSIONS_DIR"/*.json)
@@ -116,7 +116,7 @@ teardown() {
 	# 引用を手抜きするとここで壊れる。
 	mkdir -p "${CCS_TEST_TMP}/work/my repo's dir"
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/my repo's dir"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/my repo's dir"
 	[ "$status" -eq 0 ]
 	_id=$(echo "$output" | jq -r '.sessionId')
 
@@ -128,7 +128,7 @@ teardown() {
 	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
 	export FAKE_CLAUDE_LOG="${CCS_TEST_TMP}/invocations.log"
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo" -- 'テストを走らせて'
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo" -- 'テストを走らせて'
 	[ "$status" -eq 0 ]
 
 	run cat "$FAKE_CLAUDE_LOG"
@@ -143,7 +143,7 @@ teardown() {
 	#     → -Users-apple-ghq-github-com-ken-ty-collection-deck-ja
 	mkdir -p "${CCS_TEST_TMP}/work/my_repo.v2"
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/my_repo.v2"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/my_repo.v2"
 	[ "$status" -eq 0 ]
 
 	_t=$(echo "$output" | jq -r '.transcript')
@@ -163,7 +163,7 @@ teardown() {
 # --- 使い捨て枠 -------------------------------------------------------------
 
 @test "new tmp: 作業枠に立てて slug は tmp-1" {
-	run "$CCS_BIN" new tmp
+	run --separate-stderr "$CCS_BIN" new tmp
 	[ "$status" -eq 0 ]
 	[ "$(echo "$output" | jq -r '.slug')" = 'tmp-1' ]
 	ccs_tmux has-session -t '=cc/tmp-1'
@@ -180,10 +180,10 @@ teardown() {
 	export FAKE_CLAUDE_NEVER_REGISTER=1
 	export CCS_NEW_TIMEOUT=2
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"登録されませんでした"* ]]
-	[[ "$output" == *"ccs attach myrepo"* ]]
+	[[ "$stderr" == *"登録されませんでした"* ]]
+	[[ "$stderr" == *"ccs attach myrepo"* ]]
 }
 
 @test "new: 登録されなくても tmux セッションは残す" {
@@ -192,7 +192,7 @@ teardown() {
 	export FAKE_CLAUDE_NEVER_REGISTER=1
 	export CCS_NEW_TIMEOUT=2
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	[ "$status" -eq 1 ]
 	ccs_tmux has-session -t '=cc/myrepo'
 }
@@ -203,13 +203,13 @@ teardown() {
 	export FAKE_CLAUDE_REGISTER_DELAY=2
 	export CCS_NEW_TIMEOUT=15
 
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	[ "$status" -eq 0 ]
 	[ "$(echo "$output" | jq -r '.created')" = 'true' ]
 }
 
 @test "new: 存在しない対象では tmux セッションを作らない" {
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/nope"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/nope"
 	[ "$status" -eq 1 ]
 	run ccs_tmux ls
 	[[ "$output" != *"cc/"* ]]
@@ -217,12 +217,12 @@ teardown() {
 
 @test "new: target が 2 つあれば 2" {
 	mkdir -p "${CCS_TEST_TMP}/work/a" "${CCS_TEST_TMP}/work/b"
-	run "$CCS_BIN" new "${CCS_TEST_TMP}/work/a" "${CCS_TEST_TMP}/work/b"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/a" "${CCS_TEST_TMP}/work/b"
 	[ "$status" -eq 2 ]
 }
 
 @test "new: 知らないオプションは 2" {
-	run "$CCS_BIN" new --nope somewhere
+	run --separate-stderr "$CCS_BIN" new --nope somewhere
 	[ "$status" -eq 2 ]
 }
 
