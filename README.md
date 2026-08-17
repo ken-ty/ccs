@@ -2,7 +2,12 @@
 
 ハブ 1 本から、tmux 上に複数の Claude Code セッションを立て・見つけ・畳むための CLI。
 
-**現在は設計のみ。実装はまだ無い。** → [docs/design.md](docs/design.md)
+**v1 のコマンドが揃った。** → [チュートリアル](docs/tutorial.md) / [設計調査](docs/design.md)
+
+```bash
+git clone git@github.com:ken-ty/ccs.git ~/ghq/github.com/ken-ty/ccs
+ln -sf ~/ghq/github.com/ken-ty/ccs/bin/ccs ~/.local/bin/ccs
+```
 
 ## なぜ薄いのか
 
@@ -77,9 +82,18 @@ $ ccs new agent-skills
 
 ## v1 の範囲
 
-段取り 1〜3（`new` / `ls` / `attach` / `kill` / `gc`、一時ディレクトリの固定枠、
-`cross-session-hub` スキルの改訂）まで。`resume` と worktree 対応は v1 に含めない。
-理由と派生する縛りは [docs/design.md §6](docs/design.md#6-決定事項2026-08-17)。
+`new` / `ls` / `attach` / `kill` / `gc` / `resolve` まで。**`resume` と worktree 対応は
+v1 に含めない。** 理由と派生する縛りは [docs/design.md §6](docs/design.md#6-決定事項2026-08-17)。
+
+## ドキュメント
+
+```bash
+make docs        # 手元で配信する（uvx 経由なので事前の pip install は要らない）
+make docs-build  # 静的ビルド
+```
+
+GitHub Pages へは出していない。private リポジトリ + Free プランでは publish できず、
+仮にできてもサイトは公開されるため。CI では Artifacts に上げている。
 
 ## 関連
 
