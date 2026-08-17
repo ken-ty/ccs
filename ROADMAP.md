@@ -27,7 +27,18 @@
 
 | # | 内容 | サイズ | 依存 |
 | --- | --- | --- | --- |
-| S13 | `cross-session-hub` スキルの改訂（`agent-skills-store` 側）— 二層の使い分けと `ccs new` の呼び方。**このリポジトリの外なので、別途 PR を立てる** | S | S12 |
+| — | いまは空（v1 完了） | | |
+
+## v2 の候補（着手しない。判断待ち）
+
+v1 の範囲外と決めたもの。**拾う前に人の判断が要る。**
+
+| # | 内容 | 出所 |
+| --- | --- | --- |
+| V1 | `ccs resume <slug>` — 止まったペインに `claude --resume <uuid>` を流し込む | design.md §6 で v1 から外した。いまは手で打つ |
+| V2 | worktree 対応（`ccs new <repo>@<branch>`） | design.md §6。`git-worktree` スキルの規約に合わせる必要がある |
+| V3 | 使い捨て枠の自動信頼 | [#6](https://github.com/ken-ty/ccs/issues/6) 回答待ち |
+| V4 | ドキュメントの公開先（Artifacts のままか、public + Pages か） | 可視性の変更なので人の判断 |
 
 ## 完了ログ
 
@@ -35,6 +46,7 @@
 | --- | --- |
 | 2026-08-17 | 設計調査を実施し、自作範囲を 4 つに確定（`545e370`） |
 | 2026-08-17 | S1 `bin/ccs` の骨格。終了コードを対外契約として固定（0/1/2/3/4）し、「未知(2)」と「未実装(3)」を区別。テストのサンドボックス化は `test_helper.bash` に集約（1 箇所でも漏れると実環境を壊すため）。CI に「本物の claude が存在しないこと」の番人を置いた |
+| 2026-08-17 | S13 `cross-session-hub` スキルを改訂（[store #95](https://github.com/ken-ty/agent-skills-store/pull/95)）。旧文面の 2 点が実測と食い違っていた — `ccd_session_mgmt` はデスクトップ限定で VS Code も tmux も見えないこと、「新規セッションは開けない」が `ccs` で成り立たなくなったこと。読み取り専用の原則は変えず、むしろ「立てた相手も別セッションであることに変わりはない」を明示した。**これで v1 の全項目が完了** |
 | 2026-08-17 | S12 `docs/hands-on.md`。**全 10 手順を本物の claude で上から順に実走してから書いた。** 信頼確認の 30 秒待ち、`/exit` 後にペインが zsh へ戻ること、2 回目は確認が出ないこと、stopped の枠を `ccs new tmp` が掴まないこと、をすべて実機で確認。手順 4（ハブの `ListAgents` に現れて `SendMessage` で頼める）を「ここが本命」と明示し、他が引っかかっても使い勝手の話だと分けた。検証後に tmux・作業枠とも撤去済み（trust に 1 行だけ残るのは手順書に明記） |
 | 2026-08-17 | S11 `docs/tutorial.md`。**画像 10 枚すべて本物の claude で実際に動かした出力**（作り物の画面は 1 枚も無い）。撮影の過程で ListAgents に 2 本とも現れることを再確認し、`~/.claude.json` の trust が書き換わっていないことも差分で確認した（x01・catan とも既に信頼済みだったため）。ついでに README を v1 の状態に更新し、install 手順（symlink 1 行）を書いた |
 | 2026-08-17 | S10 ドキュメント基盤。MkDocs Material を `uvx` 経由で動かし（グローバルに入れると手元と CI で版がずれる）、依存はピン留め。`scripts/termshot.py` は**実行結果のキャプチャを SVG にする道具**で、標準ライブラリのみ・決定的（同じ入力なら同じ SVG なので差分がレビューできる）・light/dark 両対応・全角の幅を考慮。日本語見出しの anchor が既定 slugify で番号だけになる問題を pymdownx の unicode slugify で解消（GitHub 上のリンクと揃える）。Pages へは出さず Artifacts（private + Free プランでは publish できず、できてもサイトは公開されるため）。テスト 13 件 |
