@@ -362,15 +362,34 @@ ccs gc --yes
 
 ```bash
 rmdir ~/.cc-scratch
-tmux ls; ls ~/.cc-scratch
+ccs ls; ls ~/.cc-scratch
 ```
 
 **期待される出力**:
 
 ```
-no server running on /private/tmp/tmux-501/default
+立っているセッションはありません。
+
+  立てる: ccs new <target>
 ls: /Users/apple/.cc-scratch: No such file or directory
 ```
+
+!!! note "`tmux ls` にセッションが残っていても異常ではない"
+    ここで確かめたいのは「**`ccs` の跡が残っていないこと**」なので、`tmux ls` ではなく
+    `ccs ls` で見る。`ccs ls` は `cc/` が付いたセッションだけに絞るため、
+    自分で開いた作業用の tmux セッションを巻き込まない。
+
+    `tmux ls` を打つと、手順 8 で畳まなかったセッションや、この手順の外で立てた
+    ものがそのまま出る。**tmux サーバは 1 本でも残っていれば動き続ける**ので、
+    `no server running …` が出るのは全部畳んだときだけ。
+
+    ```
+    $ tmux ls
+    cc/x01: 1 windows (created Tue Aug 18 03:08:39 2026)
+    ```
+
+    これは「手順 7〜8 で畳んだ `x01` を、そのあと立て直したまま残している」状態。
+    畳むなら `ccs kill x01`、残すならそのままでよい。
 
 `ccs` 自体を外すなら:
 
