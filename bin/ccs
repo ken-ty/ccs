@@ -80,7 +80,8 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
   ccs new <target> [-- <初期プロンプト>]  セッションを立てる
   ccs ls [--json]                         cc/ のセッションを一覧する
   ccs attach <slug>                       セッションに乗り込む
-  ccs kill <slug>                         セッションを畳む
+  ccs kill [--force] <slug>               セッションを畳む
+                                          （作業中は --force が要る）
   ccs gc                                  死んだペイン・空の作業枠を掃除する
 
   ccs resolve <target> [--json]           <target> がどこに解決されるかを見る
@@ -840,16 +841,132 @@ cmd_ls() {
 	fi
 }
 
+# ---------------------------------------------------------------------------
+# 乗り込む / 畳む
+# ---------------------------------------------------------------------------
+
+# その slug が無いときに、候補を出して落とす。
+# 「無い」とだけ言われても次の手が分からない。
+die_no_such_slug() {
+	_slug=$1
+	warn "ccs: そのセッションはありません: ${CCS_PREFIX}${_slug}"
+	warn ''
+
+	_slugs=$(list_slugs)
+	if [ -n "$_slugs" ]; then
+		warn '立っているのは:'
+		printf '%s\n' "$_slugs" | while IFS= read -r _s; do
+			[ -n "$_s" ] || continue
+			warn "  ${_s}"
+		done
+	else
+		warn '立っているセッションはありません。'
+		warn '  立てる: ccs new <target>'
+	fi
+	exit "$EX_FAIL"
+}
+
 cmd_attach() {
 	require_deps
 	[ $# -ge 1 ] || die "$EX_USAGE" 'attach: <slug> を指定してください'
-	die "$EX_TODO" 'attach: 未実装です（ROADMAP S8）'
+
+	_slug=$1
+	_session="${CCS_PREFIX}${_slug}"
+
+	tmux_session_exists "$_session" || die_no_such_slug "$_slug"
+
+	# **すでに tmux の中にいるなら attach ではなく switch-client。**
+	# 入れ子の attach は tmux が拒む（"sessions should be nested with care"）。
+	# ハブが tmux の中で動いていることは十分ありうる。
+	if [ -n "${TMUX:-}" ]; then
+		exec "$CCS_TMUX_BIN" switch-client -t "$_session"
+	else
+		exec "$CCS_TMUX_BIN" attach-session -t "$_session"
+	fi
 }
 
 cmd_kill() {
 	require_deps
-	[ $# -ge 1 ] || die "$EX_USAGE" 'kill: <slug> を指定してください'
-	die "$EX_TODO" 'kill: 未実装です（ROADMAP S8）'
+
+	_force=''
+	_slug=''
+	while [ $# -gt 0 ]; do
+		case $1 in
+		-f | --force) _force=1 ;;
+		-*) die "$EX_USAGE" "kill: 知らないオプション: $1" ;;
+		*)
+			[ -z "$_slug" ] || die "$EX_USAGE" "kill: <slug> は 1 つだけです: ${_slug} と $1"
+			_slug=$1
+			;;
+		esac
+		shift
+	done
+
+	[ -n "$_slug" ] || die "$EX_USAGE" 'kill: <slug> を指定してください'
+
+	_session="${CCS_PREFIX}${_slug}"
+	tmux_session_exists "$_session" || die_no_such_slug "$_slug"
+
+	# **畳む前に集める。** 畳んだあとでは tmux からもレジストリからも
+	# 何も引けなくなり、復帰の手掛かりを出せない。
+	_id=$(live_session_id_for "$_slug" || true)
+	[ -n "$_id" ] || _id=$(pane_session_id_for "$_session")
+	_cwd=$(pane_or_registry_cwd "$_slug")
+
+	# 作業中のセッションは黙って落とさない。
+	#
+	# ハブのエージェントが打ち間違えて実行することを想定すると、
+	# 走っている作業を巻き込むのは取り返しがつきにくい。会話自体は
+	# transcript に残るので --resume で戻せるが、走っていたコマンドの
+	# 途中経過は戻らない。
+	if [ -z "$_force" ]; then
+		# `|| true` が要る。set -e の下では `var=$(失敗する関数)` で
+		# その場で終了する。claude が既に終了しているとレジストリに
+		# 項目が無く、status を引けないのが正常な経路。
+		_status=$(session_status_for "$_slug" || true)
+		if [ "$_status" = 'working' ]; then
+			warn "ccs: ${_slug} は作業中です。畳みませんでした。"
+			warn ''
+			warn '  様子を見る:   ccs attach '"${_slug}"
+			warn '  それでも畳む: ccs kill --force '"${_slug}"
+			exit "$EX_FAIL"
+		fi
+	fi
+
+	"$CCS_TMUX_BIN" kill-session -t "$_session" ||
+		die "$EX_FAIL" "畳めませんでした: ${_session}"
+
+	printf '%s を畳みました。\n' "$_session"
+
+	# **uuid を必ず添える。** v1 に resume が無いので、あとで同じ会話に
+	# 戻りたくなったときの手掛かりはこれしかない。
+	if [ -n "$_id" ]; then
+		printf '\n同じ会話に戻るには:\n  cd %s && claude --resume %s\n' \
+			"$(tilde_path "$_cwd")" "$_id"
+	fi
+}
+
+# status を引く。取れなければ空。
+session_status_for() {
+	_slug=$1
+	for _f in "$CCS_SESSIONS_DIR"/*.json; do
+		[ -e "$_f" ] || continue
+		if grep -q "\"tmux\":\"${CCS_PREFIX}${_slug}:" "$_f" 2>/dev/null; then
+			registry_field "$_f" status
+			return 0
+		fi
+	done
+	return 1
+}
+
+# cwd を引く。レジストリに無ければペインから。
+pane_or_registry_cwd() {
+	_slug=$1
+	if _c=$(live_cwd_for "$_slug") && [ -n "$_c" ]; then
+		printf '%s' "$_c"
+		return 0
+	fi
+	"$CCS_TMUX_BIN" list-panes -t "${CCS_PREFIX}${_slug}" -F '#{pane_current_path}' 2>/dev/null | head -1
 }
 
 cmd_gc() {

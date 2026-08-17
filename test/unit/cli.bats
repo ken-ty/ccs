@@ -146,14 +146,6 @@ teardown() {
 	run "$CCS_BIN" gc
 	[ "$status" -eq 3 ]
 	[[ "$output" == *"S9"* ]]
-
-	run "$CCS_BIN" attach someslug
-	[ "$status" -eq 3 ]
-	[[ "$output" == *"S8"* ]]
-
-	run "$CCS_BIN" kill someslug
-	[ "$status" -eq 3 ]
-	[[ "$output" == *"S8"* ]]
 }
 
 # --- 安全策 ----------------------------------------------------------------
