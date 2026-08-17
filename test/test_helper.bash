@@ -141,6 +141,28 @@ ccs_use_fake_claude() {
 	export CCS_CLAUDE_BIN="$CCS_FAKE_CLAUDE"
 }
 
+# **注意: tmux サーバの環境はサーバ起動時に固定される。**
+# 最初の `ccs new` でサーバが立ち上がるので、それ以降に export した
+# FAKE_CLAUDE_* は、あとから立てるセッションには届かない。
+# セッションごとに挙動を変えたいときは、この関数でプロセスを落とす。
+#
+# ccs_kill_claude_of <slug> — その slug の claude だけを終了させる
+# （tmux セッションは残る = 「ペインは生きているが claude は死んだ」状態）。
+ccs_kill_claude_of() {
+	local _slug=$1
+	local _f _pid
+	for _f in "$CCS_SESSIONS_DIR"/*.json; do
+		[ -e "$_f" ] || continue
+		if grep -q "\"tmux\":\"cc/${_slug}:" "$_f" 2>/dev/null; then
+			_pid=$(jq -r '.pid' "$_f")
+			kill "$_pid" 2>/dev/null || true
+			ccs_wait_until 5 bash -c "[ ! -f '$_f' ]"
+			return 0
+		fi
+	done
+	return 1
+}
+
 # --- 非同期を待つ ----------------------------------------------------------
 #
 # fake-claude は起動してからレジストリを書くまでに間がある（本物もそう）。

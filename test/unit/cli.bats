@@ -143,10 +143,6 @@ teardown() {
 	# 「未知（2）」と「未実装（3）」を区別する。前者は打ち間違い、後者は待てば直る。
 	ccs_stub_deps
 
-	run "$CCS_BIN" ls
-	[ "$status" -eq 3 ]
-	[[ "$output" == *"S7"* ]]
-
 	run "$CCS_BIN" gc
 	[ "$status" -eq 3 ]
 	[[ "$output" == *"S9"* ]]

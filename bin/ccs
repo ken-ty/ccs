@@ -707,9 +707,137 @@ cmd_new() {
 	emit_session_json "$_slug" "$_uuid" "$_path" "$_session" "$_transcript" true true
 }
 
+# ---------------------------------------------------------------------------
+# 一覧
+#
+# **`claude agents --json` では絞れない。** 実測したところ、あちらの出力は
+# cwd / kind / name / pid / sessionId / startedAt だけで、**tmux フィールドを
+# 持たない**（それはレジストリのファイル側にしか無い）。したがって
+# 「cc/ で始まるセッション」をあの出力から選び出すことはできない。
+#
+# 代わりに tmux を起点にする。`cc/` が付いているのは ccs が立てたものだけ
+# なので、そこは ccs の管轄として正しい。各セッションの中身
+# （sessionId・status・cwd）はレジストリのファイルから引く。
+# ---------------------------------------------------------------------------
+
+# ccs が立てた tmux セッションの slug を、名前順に並べる。
+list_slugs() {
+	"$CCS_TMUX_BIN" list-sessions -F '#{session_name}' 2>/dev/null |
+		sed -n "s|^${CCS_PREFIX}||p" |
+		sort
+}
+
+registry_field() {
+	sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p" "$1"
+}
+
+# 表示用にホーム配下を ~ に畳む。
+tilde_path() {
+	case $1 in
+	"$HOME"/*) printf '~%s' "${1#"$HOME"}" ;;
+	*) printf '%s' "$1" ;;
+	esac
+}
+
+# 1 セッションぶんの情報を集めて、タブ区切りで 1 行出す。
+#   slug<TAB>status<TAB>sessionId<TAB>path
+collect_session_row() {
+	_slug=$1
+	_session="${CCS_PREFIX}${_slug}"
+	_file=''
+
+	for _f in "$CCS_SESSIONS_DIR"/*.json; do
+		[ -e "$_f" ] || continue
+		if grep -q "\"tmux\":\"${_session}:" "$_f" 2>/dev/null; then
+			_file=$_f
+			break
+		fi
+	done
+
+	if [ -n "$_file" ]; then
+		_id=$(registry_field "$_file" sessionId)
+		_status=$(registry_field "$_file" status)
+		[ -n "$_status" ] || _status='running'
+		_path=$(registry_field "$_file" cwd)
+	else
+		# claude は動いていない。**ここで uuid を落とすと復帰路が消える** ──
+		# v1 に resume が無いので、手で `claude --resume` するしかない。
+		_status='stopped'
+		_id=$(pane_session_id_for "$_session")
+		[ -n "$_id" ] || _id='-'
+		_path=$("$CCS_TMUX_BIN" list-panes -t "$_session" -F '#{pane_current_path}' 2>/dev/null | head -1)
+	fi
+
+	[ -n "$_path" ] || _path='-'
+	printf '%s\t%s\t%s\t%s\n' "$_slug" "$_status" "$_id" "$_path"
+}
+
+ls_as_json() {
+	_rows=$1
+	printf '['
+	_first=1
+	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path; do
+		[ -n "$_slug" ] || continue
+		[ "$_first" = 1 ] || printf ','
+		_first=0
+		printf '{"slug":%s,"status":%s,"sessionId":%s,"path":%s,"tmux":%s}' \
+			"$(json_str "$_slug")" "$(json_str "$_status")" \
+			"$(json_str "$_id")" "$(json_str "$_path")" \
+			"$(json_str "${CCS_PREFIX}${_slug}")"
+	done
+	printf ']\n'
+}
+
+ls_as_table() {
+	_rows=$1
+
+	# slug の最大幅に合わせる。固定幅だと長い slug で崩れる。
+	_w=$(printf '%s\n' "$_rows" |
+		awk -F'\t' 'NF && length($1) > m { m = length($1) } END { print (m < 4 ? 4 : m) }')
+
+	printf "%-${_w}s  %-8s  %-36s  %s\n" 'SLUG' 'STATUS' 'SESSION ID' 'PATH'
+	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path; do
+		[ -n "$_slug" ] || continue
+		printf "%-${_w}s  %-8s  %-36s  %s\n" \
+			"$_slug" "$_status" "$_id" "$(tilde_path "$_path")"
+	done
+}
+
 cmd_ls() {
 	require_deps
-	die "$EX_TODO" 'ls: 未実装です（ROADMAP S7）'
+
+	_json=''
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--json) _json=1 ;;
+		*) die "$EX_USAGE" "ls: 知らないオプション: $1" ;;
+		esac
+		shift
+	done
+
+	_slugs=$(list_slugs)
+
+	if [ -z "$_slugs" ]; then
+		if [ -n "$_json" ]; then
+			printf '[]\n'
+		else
+			printf '立っているセッションはありません。\n'
+			printf "\n  立てる: ccs new <target>\n"
+		fi
+		return 0
+	fi
+
+	_rows=''
+	for _slug in $_slugs; do
+		_rows="${_rows}$(collect_session_row "$_slug")
+"
+	done
+
+	if [ -n "$_json" ]; then
+		ls_as_json "$_rows"
+	else
+		ls_as_table "$_rows"
+	fi
 }
 
 cmd_attach() {
