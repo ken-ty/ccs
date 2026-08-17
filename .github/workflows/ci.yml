@@ -1,0 +1,52 @@
+# shellcheck と bats をかける。
+#
+# **integration テストも CI で走る。** 本物の claude を起動しないので
+# （test/fixtures/fake-claude を使う）、API キーもログインも要らない。
+# ここが本物を起動する作りになったら、CI は課金され、ログイン状態に依存し、
+# 実行のたびに結果が変わる ── そうなっていないことの番人がこのワークフロー。
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 依存を入れる
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck tmux jq bats
+
+      - name: バージョンを記録する
+        # 落ちたときに、どの版で落ちたかを追えるようにしておく。
+        run: |
+          shellcheck --version | head -3
+          bats --version
+          tmux -V
+          jq --version
+
+      - name: lint
+        run: make lint
+
+      - name: test
+        run: make test
+
+      - name: 本物の claude を起動していないことを確かめる
+        # 保険。CI ランナーに claude は入っていないので、もし
+        # テストが本物を呼んでいれば、この時点より前に落ちているはず。
+        run: |
+          if command -v claude >/dev/null 2>&1; then
+            echo '::error::CI ランナーに claude が存在します。テストが本物を起動しうるので確認してください'
+            exit 1
+          fi
+          echo 'ok: claude は存在しない'

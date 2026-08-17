@@ -27,7 +27,6 @@
 
 | # | 内容 | サイズ | 依存 |
 | --- | --- | --- | --- |
-| S1 | `bin/ccs` の骨格 — サブコマンド分岐 / `--help` / 依存チェック（tmux・jq）/ AGENTS.md の env 差し替え点を定義。`test/` に bats の骨格と CI（shellcheck + bats）を通す | S | — |
 | S2 | `test/fixtures/fake-claude` — レジストリ JSON を書いてアイドルするスタブ。**これが無いと以降の integration が全部書けない** | S | S1 |
 | S3 | `resolve_target` — リポジトリ名 / ghq パス / `tmp` → 絶対パス + slug。ghq はスタブ。同名衝突時は `<owner>-<repo>` | S | S1 |
 | S4 | `ccs new` — tmux 起動 → レジストリに uuid が現れるまで待つ → JSON を返す。ペインは `exec $SHELL` で残す。fake claude で integration | S | S2, S3 |
@@ -41,7 +40,7 @@
 | S12 | `docs/hands-on.md` — 人間が本物の claude で触るときのステップバイステップ確認手順。各手順に「期待される出力」を書く | S | S9 |
 | S13 | `cross-session-hub` スキルの改訂（`agent-skills-store` 側）— 二層の使い分けと `ccs new` の呼び方。**このリポジトリの外なので、別途 PR を立てる** | S | S12 |
 
-**S1 → S2 → S3 の順は動かせない。** S2 が無いと integration が書けず、テストの無いまま
+**S2 → S3 の順は動かせない。** S2 が無いと integration が書けず、テストの無いまま
 S4 以降を積むことになる。
 
 ## 完了ログ
@@ -49,3 +48,4 @@ S4 以降を積むことになる。
 | 日付 | 内容 |
 | --- | --- |
 | 2026-08-17 | 設計調査を実施し、自作範囲を 4 つに確定（`545e370`） |
+| 2026-08-17 | S1 `bin/ccs` の骨格。終了コードを対外契約として固定（0/1/2/3/4）し、「未知(2)」と「未実装(3)」を区別。テストのサンドボックス化は `test_helper.bash` に集約（1 箇所でも漏れると実環境を壊すため）。CI に「本物の claude が存在しないこと」の番人を置いた |
