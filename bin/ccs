@@ -52,7 +52,8 @@ EX_OK=0       # 成功
 # shellcheck disable=SC2034  # S4 以降で使う。終了コードの契約として先に固定する
 EX_FAIL=1     # 一般的な失敗
 EX_USAGE=2    # 使い方の誤り（未知のサブコマンド、引数不足）
-EX_TODO=3     # 未実装
+# shellcheck disable=SC2034  # v1 の全コマンドが揃ったので今は誰も返さない。resume / worktree の予約
+EX_TODO=3     # 未実装（v2 以降のサブコマンドのために番号を空けてある）
 EX_DEPS=4     # 依存コマンドが無い
 
 # ---------------------------------------------------------------------------
@@ -82,7 +83,8 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
   ccs attach <slug>                       セッションに乗り込む
   ccs kill [--force] <slug>               セッションを畳む
                                           （作業中は --force が要る）
-  ccs gc                                  死んだペイン・空の作業枠を掃除する
+  ccs gc [--yes]                          止まったセッションと空の作業枠を掃除する
+                                          （既定は見せるだけ。--yes で実行）
 
   ccs resolve <target> [--json]           <target> がどこに解決されるかを見る
   ccs help                                このヘルプ
@@ -969,9 +971,139 @@ pane_or_registry_cwd() {
 	"$CCS_TMUX_BIN" list-panes -t "${CCS_PREFIX}${_slug}" -F '#{pane_current_path}' 2>/dev/null | head -1
 }
 
+# ---------------------------------------------------------------------------
+# 掃除
+#
+# **既定は dry-run。** 消す操作は必ず一度見せてから実行する
+# （`ghq rm --dry-run` と同じ作法）。ハブのエージェントが打つことを
+# 想定すると、確認なしで消える設計は割に合わない。
+#
+# 扱うのは 3 種類:
+#
+#   1. claude が終了した cc/ セッション  … 畳む（uuid を控えてから）
+#   2. 空のまま残った作業枠のディレクトリ … 消す（次に使うとき作り直される）
+#   3. 中身が残っている作業枠            … **報告だけ。絶対に消さない**
+#
+# 3 を消さないのは、そこにあるのが利用者のファイルだから。枠を塞いでいるのは
+# 事実だが、それは人が見て判断すること。
+# ---------------------------------------------------------------------------
+
+# tmux セッションが立っていない作業枠を、空かどうかで分けて出す。
+#   <empty|used><TAB><path>
+orphan_slots() {
+	[ -d "$CCS_SCRATCH_ROOT" ] || return 0
+
+	_i=1
+	while [ "$_i" -le "$CCS_SCRATCH_SLOTS" ]; do
+		_slot="${CCS_SCRATCH_ROOT}/${_i}"
+		if [ -d "$_slot" ] && ! tmux_session_exists "${CCS_PREFIX}tmp-${_i}"; then
+			if dir_is_empty "$_slot"; then
+				printf 'empty\t%s\n' "$_slot"
+			else
+				printf 'used\t%s\n' "$_slot"
+			fi
+		fi
+		_i=$((_i + 1))
+	done
+}
+
 cmd_gc() {
 	require_deps
-	die "$EX_TODO" 'gc: 未実装です（ROADMAP S9）'
+
+	_apply=''
+	while [ $# -gt 0 ]; do
+		case $1 in
+		-y | --yes) _apply=1 ;;
+		*) die "$EX_USAGE" "gc: 知らないオプション: $1" ;;
+		esac
+		shift
+	done
+
+	# 1. 止まっているセッション
+	_stopped=''
+	for _slug in $(list_slugs); do
+		if live_session_id_for "$_slug" >/dev/null 2>&1; then
+			continue
+		fi
+		_uuid=$(pane_session_id_for "${CCS_PREFIX}${_slug}")
+		[ -n "$_uuid" ] || _uuid='-'
+		_stopped="${_stopped}${_slug}	${_uuid}
+"
+	done
+
+	# 2, 3. 使われていない作業枠
+	_slots=$(orphan_slots)
+	_empty_slots=$(printf '%s\n' "$_slots" | sed -n 's/^empty\t//p')
+	_used_slots=$(printf '%s\n' "$_slots" | sed -n 's/^used\t//p')
+
+	_found=''
+	[ -n "$_stopped" ] && _found=1
+	[ -n "$_empty_slots" ] && _found=1
+
+	# --- 報告 ---
+
+	if [ -n "$_stopped" ]; then
+		printf '止まっているセッション（畳む対象）:\n'
+		printf '%s' "$_stopped" | while IFS="$(printf '\t')" read -r _s _u; do
+			[ -n "$_s" ] || continue
+			printf '  %-20s claude --resume %s\n' "$_s" "$_u"
+		done
+		printf '\n'
+	fi
+
+	if [ -n "$_empty_slots" ]; then
+		printf '空のまま残った作業枠（消す対象）:\n'
+		printf '%s\n' "$_empty_slots" | while IFS= read -r _p; do
+			[ -n "$_p" ] || continue
+			printf '  %s\n' "$(tilde_path "$_p")"
+		done
+		printf '\n'
+	fi
+
+	# **中身のある枠は消さない。** 枠を塞いでいるのは事実だが、
+	# そこにあるのは利用者のファイル。見て判断するのは人。
+	if [ -n "$_used_slots" ]; then
+		printf '中身が残っている作業枠（ccs は消しません。中を見て判断してください）:\n'
+		printf '%s\n' "$_used_slots" | while IFS= read -r _p; do
+			[ -n "$_p" ] || continue
+			printf '  %s\n' "$(tilde_path "$_p")"
+		done
+		printf '\n'
+	fi
+
+	if [ -z "$_found" ]; then
+		if [ -z "$_used_slots" ]; then
+			printf '掃除するものはありません。\n'
+		fi
+		return 0
+	fi
+
+	if [ -z "$_apply" ]; then
+		printf '実行するには: ccs gc --yes\n'
+		return 0
+	fi
+
+	# --- 実行 ---
+
+	printf '%s' "$_stopped" | while IFS="$(printf '\t')" read -r _s _u; do
+		[ -n "$_s" ] || continue
+		if "$CCS_TMUX_BIN" kill-session -t "${CCS_PREFIX}${_s}" 2>/dev/null; then
+			printf '畳みました: %s%s\n' "$CCS_PREFIX" "$_s"
+		else
+			warn "ccs: 畳めませんでした: ${CCS_PREFIX}${_s}"
+		fi
+	done
+
+	printf '%s\n' "$_empty_slots" | while IFS= read -r _p; do
+		[ -n "$_p" ] || continue
+		# rmdir を使う。中身があれば失敗して止まる ── rm -rf だと
+		# 「空だと思ったら空ではなかった」ときに黙って消してしまう。
+		if rmdir "$_p" 2>/dev/null; then
+			printf '消しました: %s\n' "$(tilde_path "$_p")"
+		else
+			warn "ccs: 消せませんでした（空ではない可能性）: ${_p}"
+		fi
+	done
 }
 
 # ---------------------------------------------------------------------------
