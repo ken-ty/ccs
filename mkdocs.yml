@@ -58,6 +58,7 @@ markdown_extensions:
 
 nav:
   - はじめに: index.md
+  - なぜ要るのか: why.md
   - 使い方:
       - はじめてのセッション: tutorial.md
       - 手を動かして確かめる: hands-on.md
