@@ -9,6 +9,19 @@ git clone git@github.com:ken-ty/ccs.git ~/ghq/github.com/ken-ty/ccs
 ln -sf ~/ghq/github.com/ken-ty/ccs/bin/ccs ~/.local/bin/ccs
 ```
 
+## なぜ要るのか
+
+**素の Claude Code セッションに「新しいセッションを立てて」と頼んでも、素直には通らない。**
+セッションのツールから起動したプロセスには pty が無く、対話モードの `claude` は
+黙って `--print` に落ちて即死する。組み込みの `SendMessage` は既存セッション宛にしか送れず、
+`Agent` ツールはサブエージェントであって独立したセッションではない。
+
+手で tmux を叩けば立つ。ただし **trust ダイアログで固まり、`cc/` を付け忘れると
+`ccs ls` からも `kill` からも漏れ、冪等でない**。`ccs` が変えるのは「立つ」ではなく
+**「毎回同じ形で立ち、立った後も管理下に残る」**こと。
+
+実測と、tmux・CLI という選択の理由は **[なぜ ccs が要るのか](docs/why.md)** に置いた。
+
 ## なぜ薄いのか
 
 セッション管理でやりたいことの大半は、Claude Code 2.1.x が既に持っている
