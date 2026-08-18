@@ -27,6 +27,13 @@
 #   FAKE_CLAUDE_STATUS           registry に書く status。既定 idle
 #   FAKE_CLAUDE_LOG              指定すると、受け取った引数をこのファイルに追記する
 #                                 ccs が渡した引数を検証するのに使う
+#   FAKE_CLAUDE_NO_BRIDGE        1 なら --remote-control を渡されても
+#                                 bridgeSessionId を書かない。**実機で起きる**
+#                                 「対話セッションとしては正常なのに Remote
+#                                 Control が付かない」の再現（docs/hub.md）
+#   FAKE_CLAUDE_BRIDGE_DELAY     bridgeSessionId を書くまでの待ち秒数。既定 0
+#   FAKE_CLAUDE_ECHO             起動時にこの文字列をペインへ出す。
+#                                 認証切れの画面（/login）の再現に使う
 
 set -eu
 
@@ -40,6 +47,9 @@ FAKE_CLAUDE_VERSION='0.0.0-fake'
 : "${FAKE_CLAUDE_EXIT_CODE:=0}"
 : "${FAKE_CLAUDE_STATUS:=idle}"
 : "${FAKE_CLAUDE_LOG:=}"
+: "${FAKE_CLAUDE_NO_BRIDGE:=}"
+: "${FAKE_CLAUDE_BRIDGE_DELAY:=0}"
+: "${FAKE_CLAUDE_ECHO:=}"
 
 # ---------------------------------------------------------------------------
 # 共通
@@ -111,6 +121,7 @@ write_registry() {
 	_name=$1
 	_session_id=$2
 	_cwd=$3
+	_bridge=${4:-}
 
 	# tmux の中にいれば、本物と同じ形式（<session>:<window>.<pane>）で書く。
 	# 本物がこれを自分で書くので、ccs は自分で対応づけを持たなくてよい。
@@ -135,6 +146,13 @@ write_registry() {
 		printf '"entrypoint":"fake-claude",'
 		printf '%s' "$_tmux_field"
 		printf '"name":"%s",' "$(json_escape "$_name")"
+		# 本物は Remote Control に登録できると bridgeSessionId を埋め、
+		# 登録できないと null のまま残す（実測）。両方を再現する。
+		if [ -n "$_bridge" ]; then
+			printf '"bridgeSessionId":"%s",' "$(json_escape "$_bridge")"
+		else
+			printf '"bridgeSessionId":null,'
+		fi
 		printf '"status":"%s"}' "$(json_escape "$FAKE_CLAUDE_STATUS")"
 	} >"$_tmp"
 
@@ -145,6 +163,7 @@ write_registry() {
 cmd_interactive() {
 	_name=''
 	_session_id=''
+	_rc=''
 
 	while [ $# -gt 0 ]; do
 		case $1 in
@@ -155,6 +174,25 @@ cmd_interactive() {
 		--session-id)
 			_session_id=${2:-}
 			shift 2 || shift
+			;;
+		# 本物は --resume <id> でその会話を再開する。**sessionId は変わらない**
+		# ので、ccs の hub restart --resume はそれを前提にしている。
+		-r | --resume)
+			_session_id=${2:-}
+			shift 2 || shift
+			;;
+		# --remote-control は値が任意（`--remote-control` 単体でも
+		# `--remote-control <名前>` でも通る）。本物と同じく、次の引数が
+		# オプションでなければ名前として食う。
+		--remote-control)
+			_rc='(auto)'
+			case ${2:-} in
+			'' | -*) shift ;;
+			*)
+				_rc=$2
+				shift 2
+				;;
+			esac
 			;;
 		# 値を取るが中身は見ないもの。本物に渡している間は落ちてはいけない。
 		--permission-mode | --model | --effort | --agent | --add-dir | --settings)
@@ -179,6 +217,9 @@ cmd_interactive() {
 	trap 'cleanup; exit 143' TERM
 	trap 'cleanup; exit 130' INT
 
+	# ペインに出す文字列。認証切れの画面を作るのに使う。
+	[ -n "$FAKE_CLAUDE_ECHO" ] && printf '%s\n' "$FAKE_CLAUDE_ECHO"
+
 	if [ -n "$FAKE_CLAUDE_NEVER_REGISTER" ]; then
 		# 登録しないまま生き続ける。ccs 側のタイムアウトを検証するため。
 		while :; do sleep 1; done
@@ -190,7 +231,19 @@ cmd_interactive() {
 		sleep "$FAKE_CLAUDE_REGISTER_DELAY"
 	fi
 
-	write_registry "$_name" "$_session_id" "$PWD"
+	# Remote Control を頼まれていて、かつ「付かない」つまみが無ければ、
+	# bridgeSessionId を埋める。遅延を入れられるのは、ccs 側の待ちを
+	# 検証するため。
+	_bridge=''
+	if [ -n "$_rc" ] && [ -z "$FAKE_CLAUDE_NO_BRIDGE" ]; then
+		if [ "$FAKE_CLAUDE_BRIDGE_DELAY" -gt 0 ] 2>/dev/null; then
+			write_registry "$_name" "$_session_id" "$PWD" ''
+			sleep "$FAKE_CLAUDE_BRIDGE_DELAY"
+		fi
+		_bridge="session_fake$$"
+	fi
+
+	write_registry "$_name" "$_session_id" "$PWD" "$_bridge"
 
 	if [ -n "$FAKE_CLAUDE_EXIT_AFTER" ]; then
 		sleep "$FAKE_CLAUDE_EXIT_AFTER"

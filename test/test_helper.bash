@@ -190,6 +190,17 @@ ccs_start_fake_claude() {
 	export CCS_FAKE_PID
 }
 
+# tmux の外にいる claude を再現する。
+#
+# **TMUX を明示的に外す。** ccs はまさに tmux の中から使う道具なので、
+# テストを tmux の中から走らせている人がいる。環境任せにすると
+# 「tmux の外なら tmux フィールドは無い」が、走らせる場所で結果が変わる。
+ccs_start_fake_claude_outside_tmux() {
+	env -u TMUX -u TMUX_PANE "$CCS_FAKE_CLAUDE" "$@" &
+	CCS_FAKE_PID=$!
+	export CCS_FAKE_PID
+}
+
 # ccs_start_fake_claude で起動したものを止める。teardown から呼ぶ。
 ccs_stop_fake_claude() {
 	[ -n "${CCS_FAKE_PID:-}" ] || return 0

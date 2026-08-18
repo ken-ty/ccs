@@ -406,6 +406,54 @@ rm ~/.local/bin/ccs
 
 ---
 
+## 11. hub を 1 周する（**未実施**）
+
+!!! danger "ここだけは、まだ本物で走らせていない"
+    上の 0〜10 は実機で上から順に走らせた結果を書いているが、**この節はまだ**。
+    fake claude では確かめられない部分（Remote Control の登録、launchd から
+    見た tmux サーバ、アプリ上の名前）が含まれる。
+    走らせたら、結果でこの節を置き換える（ROADMAP の H7）。
+
+手順そのものは次のとおり。
+
+```bash
+ccs hub up            # JSON が返り、bridge が空でないこと
+ccs hub status        # state healthy、終了コード 0
+ccs ls                # hub が一覧に出ること
+```
+
+確かめたいこと:
+
+- [ ] スマホ / デスクトップのアプリの一覧に **`hub` という名前で**出るか
+      （会話を数往復させても名前が変わらないか）
+- [ ] `ccs hub restart` のあと、アプリの一覧に**新しい hub が出て、古いものが
+      offline で残り続けないか**
+- [ ] `ccs hub restart --resume` で同じ会話に戻り、そのとき Remote Control が
+      張り直されるか
+- [ ] `remoteControlAtStartup: true` を設定している環境で、`--remote-control` の
+      明示指定が二重登録にならないか
+- [ ] **launchd から起動した `ccs hub up` が、手元と同じ tmux サーバに入るか**
+
+```bash
+ccs hub agent --print > ~/Library/LaunchAgents/local.ccs.hub.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.ccs.hub.plist
+ccs hub down          # わざと止めて、5 分後に立っているか見る
+tail ~/.cc-hub/hub.log
+```
+
+!!! note "`hub down` のまま放置しない"
+    `paused` がある間は自動起動も止まる。確認が終わったら `ccs hub up --force`。
+
+元に戻す:
+
+```bash
+launchctl bootout gui/$(id -u)/local.ccs.hub
+rm ~/Library/LaunchAgents/local.ccs.hub.plist
+ccs hub down && rm -rf ~/.cc-hub     # 中身を確かめてから
+```
+
+---
+
 ## 通ったかどうかの一覧
 
 - [ ] 0. 依存が揃っている
@@ -418,6 +466,7 @@ rm ~/.local/bin/ccs
 - [ ] 8. `gc` が既定では何も消さない
 - [ ] 9. 使い捨ての作業枠が、信頼確認なしで 2 本とも立った
 - [ ] 10. 元に戻せた
+- [ ] 11. hub（**未実施**。fake claude では確かめられない部分）
 
 **4 が通れば、この道具が解こうとしていた問題は解けている。**
 他が引っかかっても、それは使い勝手の話。
@@ -434,7 +483,9 @@ rm ~/.local/bin/ccs
 | `ccs new --tmp` が「枠が全部埋まっています」 | `ccs gc` で状況を見る。中身のある枠は `ccs` が消さないので自分で確認する |
 | `ccs new tmp` が「同名のリポジトリもあります」 | ghq に `tmp` がある。作業枠なら `--tmp`、リポジトリなら `<owner>/tmp` |
 | `ccs kill` が「作業中です」で止まる | 意図した動き。`ccs attach` で様子を見てから `--force` |
-| 終了コードの意味 | 0 成功 / 1 失敗 / 2 使い方の誤り / 4 依存が無い |
+| `ccs hub up` が `no-rc`（10）で終わる | Remote Control が付いていない。`ccs config` で `CCS_REMOTE_CONTROL` を見る。使わない環境なら `off` |
+| `ccs hub up` が `needs-attention`（15）で止まる | 再起動を繰り返している。`ccs hub attach` と `~/.cc-hub/hub.log` を見る |
+| 終了コードの意味 | 0 成功 / 1 失敗 / 2 使い方の誤り / 4 依存が無い / 10〜15 は hub の状態（[hub](hub.md#状態)） |
 
 それでも分からなければ、**このチャットにそのまま貼ってほしい。**
 `ccs` が出すメッセージは、次の手が分かるように書いてある。

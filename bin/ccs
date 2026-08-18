@@ -8,15 +8,160 @@
 
 set -eu
 
-CCS_VERSION='0.1.0'
+CCS_VERSION='0.2.0'
 
 # ---------------------------------------------------------------------------
-# 差し替え点
+# 出力
 #
-# AGENTS.md「テストの方針」。テストはここを差し替えることで、本物の claude を
-# 起動せず、本物の ~/.claude.json を書き換えずに済ませる。**新しく外部コマンドや
-# 外部パスに触るときは、必ずここに差し替え点を足してから使うこと。**
+# 人間向けのメッセージは stderr に出す。stdout は機械可読な結果だけに使う
+# （`ccs new` の JSON、`ccs ls --json`、`ccs hub status --json`）。混ぜると
+# ハブ側でパースできなくなる。
+#
+# **この 2 つだけは設定より先に定義する。** 設定ファイルの読み込み自体が
+# 警告を出すため。
 # ---------------------------------------------------------------------------
+warn() {
+	printf '%s\n' "$*" >&2
+}
+
+die() {
+	_code=$1
+	shift
+	warn "ccs: $*"
+	exit "$_code"
+}
+
+# ---------------------------------------------------------------------------
+# 設定（差し替え点）
+#
+# **優先順位は env > 設定ファイル > 既定値。**
+#
+# 設定ファイルは `${XDG_CONFIG_HOME:-~/.config}/ccs/config`（`CCS_CONFIG_FILE`
+# で移動できる）。`KEY=VALUE` を 1 行 1 つ、`#` 以降はコメント。値の先頭の
+# `~/` はホームに展開する。
+#
+#   # ~/.config/ccs/config
+#   CCS_HUB_SLUG=orchestrator   # hub という名前のリポジトリを持っている人向け
+#   CCS_HUB_AUTOSTART=off       # 自動起動を入れない
+#
+# **書けるキーは CCS_CONFIG_KEYS に列挙したものだけ。** 知らないキーは黙って
+# 無視せず警告する（綴り間違いが「設定したのに効かない」で終わるのを防ぐ）。
+# ファイルを sh として source しないのも同じ理由で、設定ファイルに任意の
+# コマンドを書けてしまうと、設定と実行の境界が無くなる。
+#
+# テストはここを差し替えることで、本物の claude を起動せず、本物の
+# ~/.claude.json を書き換えずに済ませる（AGENTS.md「テストの方針」）。
+# **新しく外部コマンドや外部パスに触るときは、必ずここに差し替え点を
+# 足してから使うこと。**
+# ---------------------------------------------------------------------------
+
+: "${CCS_CONFIG_FILE:=${XDG_CONFIG_HOME:-${HOME}/.config}/ccs/config}"
+
+CCS_CONFIG_KEYS='
+CCS_PREFIX
+CCS_CLAUDE_BIN
+CCS_TMUX_BIN
+CCS_GHQ_BIN
+CCS_JQ_BIN
+CCS_SESSIONS_DIR
+CCS_TRUST_FILE
+CCS_SCRATCH_ROOT
+CCS_SCRATCH_SLOTS
+CCS_PROJECTS_DIR
+CCS_NEW_TIMEOUT
+CCS_REMOTE_CONTROL
+CCS_HUB_SLUG
+CCS_HUB_HOME
+CCS_HUB_RC_TIMEOUT
+CCS_HUB_BACKOFF_WINDOW
+CCS_HUB_BACKOFF_MAX
+CCS_HUB_AUTOSTART
+CCS_HUB_AGENT_LABEL
+CCS_HUB_AGENT_INTERVAL
+'
+
+# どこから来た値かを覚えておく（`ccs config` が出す）。
+# 「設定したのに効かない」を人が自力で切り分けられるようにするための情報。
+config_mark_env_sources() {
+	for _k in $CCS_CONFIG_KEYS; do
+		if eval "[ \"\${${_k}+set}\" = set ]"; then
+			eval "CCS_SRC_${_k}=env"
+		else
+			eval "CCS_SRC_${_k}=default"
+		fi
+	done
+}
+
+config_key_is_known() {
+	for _k in $CCS_CONFIG_KEYS; do
+		[ "$_k" = "$1" ] && return 0
+	done
+	return 1
+}
+
+config_trim() {
+	printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
+load_config() {
+	[ -f "$CCS_CONFIG_FILE" ] || return 0
+	[ -r "$CCS_CONFIG_FILE" ] || {
+		warn "ccs: 設定ファイルを読めません（無視して続けます）: ${CCS_CONFIG_FILE}"
+		return 0
+	}
+
+	_lineno=0
+	# `|| [ -n "$_line" ]` は、最終行に改行が無いファイルを取りこぼさないため。
+	while IFS= read -r _line || [ -n "$_line" ]; do
+		_lineno=$((_lineno + 1))
+		_line=${_line%%#*}
+		_line=$(config_trim "$_line")
+		[ -n "$_line" ] || continue
+
+		case $_line in
+		*=*) ;;
+		*)
+			warn "ccs: ${CCS_CONFIG_FILE}:${_lineno}: KEY=VALUE の形ではありません: ${_line}"
+			continue
+			;;
+		esac
+
+		_key=$(config_trim "${_line%%=*}")
+		_val=$(config_trim "${_line#*=}")
+
+		# 値の囲みクォートを外す。KEY="~/foo bar" と書けるようにするため。
+		case $_val in
+		\"*\") _val=${_val#\"}; _val=${_val%\"} ;;
+		\'*\') _val=${_val#\'}; _val=${_val%\'} ;;
+		esac
+
+		case $_val in
+		\~/*) _val="${HOME}/${_val#\~/}" ;;
+		esac
+
+		if ! config_key_is_known "$_key"; then
+			warn "ccs: ${CCS_CONFIG_FILE}:${_lineno}: 知らない設定キーです: ${_key}"
+			warn '  設定できるキーの一覧: ccs config'
+			continue
+		fi
+
+		# **env が勝つ。** 一時的に環境変数で上書きして試す、が成立しなくなる。
+		_src=''
+		eval "_src=\${CCS_SRC_${_key}}"
+		[ "$_src" = 'env' ] && continue
+
+		eval "${_key}=\$_val"
+		# shellcheck disable=SC2163  # 変数名が変数なのは意図どおり（キーは白名簿で検査済み）
+		export "$_key"
+		eval "CCS_SRC_${_key}=config"
+	done <"$CCS_CONFIG_FILE"
+}
+
+config_mark_env_sources
+load_config
+
+# --- 既定値 ---------------------------------------------------------------
+
 : "${CCS_CLAUDE_BIN:=claude}"
 : "${CCS_TMUX_BIN:=tmux}"
 : "${CCS_GHQ_BIN:=ghq}"
@@ -25,6 +170,9 @@ CCS_VERSION='0.1.0'
 : "${CCS_TRUST_FILE:=${HOME}/.claude.json}"
 : "${CCS_SCRATCH_ROOT:=${HOME}/.cc-scratch}"
 : "${CCS_PROJECTS_DIR:=${HOME}/.claude/projects}"
+
+# tmux セッション名の接頭辞。手で開いた tmux セッションを巻き込まないための境界。
+: "${CCS_PREFIX:=cc/}"
 
 # 起動してからレジストリに載るまで待つ秒数。
 #
@@ -39,39 +187,73 @@ CCS_VERSION='0.1.0'
 # セッションが無限に増える。枠なら人が最初の 1 回だけ信頼すれば済む。
 : "${CCS_SCRATCH_SLOTS:=8}"
 
-# tmux セッション名の接頭辞。手で開いた tmux セッションを巻き込まないための境界。
+# Remote Control（スマホ・デスクトップからセッションを触る仕組み）の扱い。
 #
+#   auto … hub だけに `--remote-control <名前>` を渡す（既定）
+#   on   … ccs が立てる全セッションに渡す
+#   off  … 一切渡さない。hub の健全性判定でも RC を要求しない
+#
+# **off を用意しているのは、RC を使わない・使えない環境があるため。**
+# その環境で hub の健全性が常に no-rc になると、自動再起動が永久に空回りする。
+: "${CCS_REMOTE_CONTROL:=auto}"
+
+# --- hub -------------------------------------------------------------------
+#
+# hub は「スマホから唯一触る 1 本」。落ちると ccs を叩く経路ごと消えるので、
+# 名前・置き場所・自動起動を全部設定で変えられるようにしてある。
+# 詳細は docs/hub.md。
+
+# hub の slug。tmux では `<CCS_PREFIX><CCS_HUB_SLUG>` になる。
+# **`hub` というリポジトリを持っている人はここを変える。**
+: "${CCS_HUB_SLUG:=hub}"
+
+# hub の作業ディレクトリ。ccs が作り、CLAUDE.md と権限設定を置く。
+: "${CCS_HUB_HOME:=${HOME}/.cc-hub}"
+
+# Remote Control の登録（bridgeSessionId）が付くまで待つ秒数。
+: "${CCS_HUB_RC_TIMEOUT:=45}"
+
+# 再起動の暴走を止める窓（秒）と、その窓で許す再起動の回数。
+#
+# **無限再起動は課金とレート制限に直結する。** 直っていないものを 5 分ごとに
+# 立て直し続けるより、止まって人を待つほうがいい。
+: "${CCS_HUB_BACKOFF_WINDOW:=600}"
+: "${CCS_HUB_BACKOFF_MAX:=3}"
+
+# 自動起動（launchd / systemd）の設定。`ccs hub agent` が読む。
+#
+#   on    … ログイン時 + 一定間隔で `ccs hub up`（既定）
+#   login … ログイン時だけ
+#   off   … 生成しない（手で `ccs hub up` を叩く運用）
+: "${CCS_HUB_AUTOSTART:=on}"
+: "${CCS_HUB_AGENT_LABEL:=local.ccs.hub}"
+: "${CCS_HUB_AGENT_INTERVAL:=300}"
+
 # ---------------------------------------------------------------------------
 # 終了コード
 #
-# 呼び出し側（ハブのエージェント）が分岐できるよう、意味を固定する。
+# 呼び出し側（ハブのエージェント、launchd）が分岐できるよう、意味を固定する。
 # **これは対外的な契約なので、まだ使っていない番号も消さない。**
-# shellcheck disable=SC2034  # S4 以降で使う。命名規約の契約として先に固定する
-CCS_PREFIX='cc/'
+# ---------------------------------------------------------------------------
 EX_OK=0       # 成功
-# shellcheck disable=SC2034  # S4 以降で使う。終了コードの契約として先に固定する
 EX_FAIL=1     # 一般的な失敗
 EX_USAGE=2    # 使い方の誤り（未知のサブコマンド、引数不足）
-# shellcheck disable=SC2034  # v1 の全コマンドが揃ったので今は誰も返さない。resume / worktree の予約
-EX_TODO=3     # 未実装（v2 以降のサブコマンドのために番号を空けてある）
+# shellcheck disable=SC2034  # v2 以降のサブコマンドのために番号を空けてある
+EX_TODO=3     # 未実装
 EX_DEPS=4     # 依存コマンドが無い
 
-# ---------------------------------------------------------------------------
-# 出力
-# ---------------------------------------------------------------------------
+# hub の状態。`ccs hub status` の終了コードであり、`ccs hub up` が
+# 「直せなかった理由」を返すときの値でもある（docs/hub.md の表）。
+EX_HUB_NO_RC=10        # claude は生きているが Remote Control が付いていない
+EX_HUB_STOPPED=11      # ペインは残っているが claude が死んでいる
+EX_HUB_ABSENT=12       # tmux セッションごと無い
+EX_HUB_NEEDS_LOGIN=13  # 認証が切れている（人が /login するしかない）
+EX_HUB_PAUSED=14       # 人が意図的に止めている
+EX_HUB_ATTENTION=15    # 再起動を繰り返している（backoff 発動）
 
-# 人間向けのメッセージは stderr に出す。stdout は機械可読な結果だけに使う
-# （`ccs new` の JSON、`ccs ls --json`）。混ぜるとハブ側でパースできなくなる。
-warn() {
-	printf '%s\n' "$*" >&2
-}
-
-die() {
-	_code=$1
-	shift
-	warn "ccs: $*"
-	exit "$_code"
-}
+# ---------------------------------------------------------------------------
+# 使い方
+# ---------------------------------------------------------------------------
 
 usage() {
 	cat <<'EOF'
@@ -80,15 +262,23 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
 使い方:
   ccs new <target> [-- <初期プロンプト>]  セッションを立てる
   ccs new --tmp [-- <初期プロンプト>]     使い捨ての作業枠に立てる
-  ccs ls [--json]                         cc/ のセッションを一覧する
+  ccs ls [--json]                         ccs のセッションを一覧する
   ccs attach <slug>                       セッションに乗り込む
   ccs kill [--force] <slug>               セッションを畳む
                                           （作業中は --force が要る）
   ccs gc [--yes]                          止まったセッションと空の作業枠を掃除する
                                           （既定は見せるだけ。--yes で実行）
 
+  ccs hub up [--force] [--quiet]          hub を立てる（生きていれば何もしない）
+  ccs hub status [--json]                 hub の状態を見る（終了コードで分岐できる）
+  ccs hub restart [--resume]              hub を立て直す（--resume で同じ会話）
+  ccs hub down                            hub を止める（自動起動も止まる）
+  ccs hub attach                          hub に乗り込む
+  ccs hub agent [--print]                 自動起動（launchd / systemd）の設定を出す
+
   ccs resolve <target> [--json]           <target> がどこに解決されるかを見る
   ccs resolve --tmp [--json]              次に取る作業枠を見る
+  ccs config [--json]                     効いている設定と、その出どころを見る
   ccs help                                このヘルプ
   ccs version                             バージョン
 
@@ -98,19 +288,21 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
   tmp           使い捨ての作業枠（--tmp の短い綴り。ghq に tmp という
                 リポジトリがあるときは曖昧なので受け付けない）
 
-環境変数（テストと特殊な環境のための差し替え点）:
-  CCS_CLAUDE_BIN     claude の実体            [既定: claude]
-  CCS_TMUX_BIN       tmux の実体              [既定: tmux]
-  CCS_GHQ_BIN        ghq の実体               [既定: ghq]
-  CCS_JQ_BIN         jq の実体                [既定: jq]
-  CCS_SESSIONS_DIR   セッションレジストリ     [既定: ~/.claude/sessions]
-  CCS_TRUST_FILE     trust 状態のファイル     [既定: ~/.claude.json]
-  CCS_SCRATCH_ROOT   使い捨て作業枠の親       [既定: ~/.cc-scratch]
-  CCS_SCRATCH_SLOTS  使い捨て作業枠の本数     [既定: 8]
-  CCS_PROJECTS_DIR   transcript の親          [既定: ~/.claude/projects]
-  CCS_NEW_TIMEOUT    登録を待つ秒数           [既定: 30]
+設定:
+  env > 設定ファイル > 既定値 の順で効く。設定ファイルは
+  ${XDG_CONFIG_HOME:-~/.config}/ccs/config（KEY=VALUE を 1 行 1 つ）。
 
-詳細は docs/design.md。
+  よく変えるもの:
+    CCS_HUB_SLUG       hub の名前            [既定: hub]
+                       （hub という名前のリポジトリを持っている人はここを変える）
+    CCS_HUB_HOME       hub の作業ディレクトリ [既定: ~/.cc-hub]
+    CCS_HUB_AUTOSTART  自動起動 on/login/off [既定: on]
+    CCS_REMOTE_CONTROL Remote Control auto/on/off [既定: auto]
+    CCS_PREFIX         tmux 名の接頭辞       [既定: cc/]
+    CCS_SCRATCH_SLOTS  使い捨て作業枠の本数  [既定: 8]
+
+  いま効いている値と出どころは `ccs config` で見られる。
+  一覧と意味は docs/configuration.md、hub の運用は docs/hub.md。
 EOF
 }
 
@@ -203,7 +395,11 @@ slug_for_path() {
 		;;
 	esac
 
-	if repo_basename_is_ambiguous "$_base"; then
+	# **hub と同じ名前のリポジトリは、owner を足して避ける。**
+	# `cc/<hub>` は hub のものなので、他のリポジトリに使わせると、
+	# 立てた瞬間に hub の生死判定が壊れる。
+	if repo_basename_is_ambiguous "$_base" ||
+		[ "$(sanitize_slug "$_base")" = "$(sanitize_slug "$CCS_HUB_SLUG")" ]; then
 		_owner=$(basename "$(dirname "$_path")")
 		sanitize_slug "${_owner}-${_base}"
 	else
@@ -333,6 +529,19 @@ resolve_target() {
 	\~/*) _target="${HOME}/${_target#\~/}" ;;
 	esac
 
+	# hub は予約語。**リポジトリ名と名前空間を共有しているので、
+	# 同名のリポジトリを持っている人がいる前提で扱う。**
+	if [ "$_target" = "$CCS_HUB_SLUG" ]; then
+		warn "ccs: ${CCS_HUB_SLUG} は hub を指す予約語です。"
+		warn ''
+		warn '  hub を立てる:           ccs hub up'
+		warn "  同名のリポジトリを開く: ccs new <owner>/${CCS_HUB_SLUG}"
+		warn '  hub の名前を変える:     設定ファイルに CCS_HUB_SLUG=<別名>'
+		warn ''
+		warn 'いま効いている設定: ccs config'
+		exit "$EX_FAIL"
+	fi
+
 	case $_target in
 	tmp)
 		if scratch_word_conflicts; then
@@ -455,6 +664,16 @@ path_is_under_ghq() {
 	return 1
 }
 
+# hub の作業ディレクトリか。
+#
+# ccs が作り、ccs と使う人しか触らない場所なので、ghq 配下と同じ理由で
+# 自動承認してよい（**中身が空である必要は無い** — ccs 自身が CLAUDE.md と
+# 権限設定を置くため）。
+path_is_hub_home() {
+	_home=$(abs_dir "$CCS_HUB_HOME" 2>/dev/null) || return 1
+	[ "$1" = "$_home" ]
+}
+
 # 使い捨て作業枠のうち、いま空のものか。
 #
 # **空であることを毎回確かめる**のがこの判定の要点。枠を渡すのは
@@ -530,6 +749,12 @@ ensure_trust() {
 	if path_is_scratch_slot "$_p"; then
 		trust_accept "$_p"
 		warn "ccs: 空の使い捨て作業枠なので信頼済みにしました: ${_p}"
+		return 0
+	fi
+
+	if path_is_hub_home "$_p"; then
+		trust_accept "$_p"
+		warn "ccs: hub の作業ディレクトリなので信頼済みにしました: ${_p}"
 		return 0
 	fi
 
@@ -642,21 +867,39 @@ emit_session_json() {
 		"$(json_str "$4")" "$(json_str "$5")" "$6" "$7"
 }
 
-# 立っているセッションの sessionId を引く。
+# <slug> のセッションが書いたレジストリファイルを引く。無ければ 1 を返す。
 #
 # レジストリの tmux フィールドは `cc/<slug>:<window>.<pane>` の形なので、
 # `cc/<slug>:` を前方一致で探す。slug 単体で探すと `x01` が `x011` に
 # 当たるので、区切りの `:` まで含めて見る。
-live_session_id_for() {
+registry_file_for_slug() {
 	_slug=$1
 	for _f in "$CCS_SESSIONS_DIR"/*.json; do
 		[ -e "$_f" ] || continue
 		if grep -q "\"tmux\":\"${CCS_PREFIX}${_slug}:" "$_f" 2>/dev/null; then
-			sed -n 's/.*"sessionId":"\([^"]*\)".*/\1/p' "$_f"
+			registry_is_live "$_f" || continue
+			printf '%s\n' "$_f"
 			return 0
 		fi
 	done
 	return 1
+}
+
+# そのレジストリファイルを書いたプロセスが、まだ生きているか。
+#
+# **残骸を「生きている」と読まない。** claude は終了時に自分のファイルを消すが、
+# SIGKILL やクラッシュでは消えずに残る。残骸を信じると、hub は永久に healthy に
+# 見えたまま二度と戻らない ── 自動復帰の意味が消える。
+registry_is_live() {
+	_pid=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$1" 2>/dev/null | head -1)
+	[ -n "$_pid" ] || return 1
+	kill -0 "$_pid" 2>/dev/null
+}
+
+# 立っているセッションの sessionId を引く。
+live_session_id_for() {
+	_f=$(registry_file_for_slug "$1") || return 1
+	registry_field "$_f" sessionId
 }
 
 # claude が終了したあとの sessionId を、ペインの起動コマンドから拾う。
@@ -672,15 +915,20 @@ pane_session_id_for() {
 
 # 立っているセッションの cwd を引く。取れなければ空。
 live_cwd_for() {
-	_slug=$1
-	for _f in "$CCS_SESSIONS_DIR"/*.json; do
-		[ -e "$_f" ] || continue
-		if grep -q "\"tmux\":\"${CCS_PREFIX}${_slug}:" "$_f" 2>/dev/null; then
-			sed -n 's/.*"cwd":"\([^"]*\)".*/\1/p' "$_f"
-			return 0
-		fi
-	done
-	return 1
+	_f=$(registry_file_for_slug "$1") || return 1
+	registry_field "$_f" cwd
+}
+
+# 立っているセッションの Remote Control 登録（bridgeSessionId）を引く。
+#
+# **付いていないとスマホのアプリに出ない。** 実測で、対話セッションとしては
+# 正常なのに bridgeSessionId が null のまま残ることがある。hub にとっては
+# 「アプリから見えない = 実質死んでいる」なので、生死判定の材料にする。
+live_bridge_for() {
+	_f=$(registry_file_for_slug "$1") || return 1
+	_b=$(registry_field "$_f" bridgeSessionId)
+	[ -n "$_b" ] || return 1
+	printf '%s\n' "$_b"
 }
 
 cmd_new() {
@@ -922,6 +1170,24 @@ cmd_ls() {
 # 乗り込む / 畳む
 # ---------------------------------------------------------------------------
 
+# いま自分がいる tmux セッション名。tmux の外なら空。
+#
+# **同じ tmux サーバにいるときだけ意味がある。** `$TMUX` は自分が繋がって
+# いるサーバのソケットを指すので、ccs が管理しているサーバ（テストでは
+# `-L` 付きの専用サーバ）と違えば、名前が偶然一致しても自分ではない。
+# セッション名ではなくペイン ID で引くのも同じ理由 ── 名前は当てにならない。
+current_tmux_session() {
+	[ -n "${TMUX:-}" ] || return 0
+	[ -n "${TMUX_PANE:-}" ] || return 0
+
+	_my_socket=${TMUX%%,*}
+	_managed_socket=$("$CCS_TMUX_BIN" display-message -p '#{socket_path}' 2>/dev/null || true)
+	[ -n "$_managed_socket" ] || return 0
+	[ "$_managed_socket" = "$_my_socket" ] || return 0
+
+	"$CCS_TMUX_BIN" display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null || true
+}
+
 # その slug が無いときに、候補を出して落とす。
 # 「無い」とだけ言われても次の手が分からない。
 die_no_such_slug() {
@@ -982,7 +1248,29 @@ cmd_kill() {
 	[ -n "$_slug" ] || die "$EX_USAGE" 'kill: <slug> を指定してください'
 
 	_session="${CCS_PREFIX}${_slug}"
+
+	# **hub は kill では畳まない（--force でも）。**
+	# hub を落とすと、スマホから ccs を叩く経路そのものが消える。
+	# 止めたいなら意図を持って `ccs hub down`、直したいなら `ccs hub restart`。
+	if [ "$_slug" = "$CCS_HUB_SLUG" ]; then
+		warn "ccs: ${_slug} は hub です。kill では畳みません。"
+		warn ''
+		warn '  立て直す:       ccs hub restart'
+		warn '  意図的に止める: ccs hub down'
+		exit "$EX_FAIL"
+	fi
+
 	tmux_session_exists "$_session" || die_no_such_slug "$_slug"
+
+	# **いま自分が動いているセッションは、うっかりでは畳ませない。**
+	# ハブのエージェントが自分自身を指したとき、会話ごと消えて
+	# 「なぜ落ちたか」を聞く相手もいなくなる。
+	if [ -z "$_force" ] && [ "$_session" = "$(current_tmux_session)" ]; then
+		warn "ccs: ${_slug} は、いまあなた自身が動いているセッションです。"
+		warn ''
+		warn '  それでも畳む: ccs kill --force '"${_slug}"
+		exit "$EX_FAIL"
+	fi
 
 	# **畳む前に集める。** 畳んだあとでは tmux からもレジストリからも
 	# 何も引けなくなり、復帰の手掛かりを出せない。
@@ -1025,15 +1313,8 @@ cmd_kill() {
 
 # status を引く。取れなければ空。
 session_status_for() {
-	_slug=$1
-	for _f in "$CCS_SESSIONS_DIR"/*.json; do
-		[ -e "$_f" ] || continue
-		if grep -q "\"tmux\":\"${CCS_PREFIX}${_slug}:" "$_f" 2>/dev/null; then
-			registry_field "$_f" status
-			return 0
-		fi
-	done
-	return 1
+	_f=$(registry_file_for_slug "$1") || return 1
+	registry_field "$_f" status
 }
 
 # cwd を引く。レジストリに無ければペインから。
@@ -1095,9 +1376,18 @@ cmd_gc() {
 	done
 
 	# 1. 止まっているセッション
+	#
+	# **hub は対象外。** 止まっていても畳まない ── 畳むと
+	# `pane_start_command` ごと消えて復帰の手掛かりが減るうえ、
+	# hub は `ccs hub up`（自動起動）が立て直すので gc の仕事ではない。
 	_stopped=''
+	_hub_stopped=''
 	for _slug in $(list_slugs); do
 		if live_session_id_for "$_slug" >/dev/null 2>&1; then
+			continue
+		fi
+		if [ "$_slug" = "$CCS_HUB_SLUG" ]; then
+			_hub_stopped=1
 			continue
 		fi
 		_uuid=$(pane_session_id_for "${CCS_PREFIX}${_slug}")
@@ -1116,6 +1406,11 @@ cmd_gc() {
 	[ -n "$_empty_slots" ] && _found=1
 
 	# --- 報告 ---
+
+	if [ -n "$_hub_stopped" ]; then
+		printf 'hub が止まっています（gc の対象外）:\n'
+		printf '  %-20s ccs hub up\n\n' "$CCS_HUB_SLUG"
+	fi
 
 	if [ -n "$_stopped" ]; then
 		printf '止まっているセッション（畳む対象）:\n'
@@ -1182,6 +1477,833 @@ cmd_gc() {
 }
 
 # ---------------------------------------------------------------------------
+# 設定の検査と表示
+# ---------------------------------------------------------------------------
+
+is_uint() {
+	case ${1:-} in
+	'' | *[!0-9]*) return 1 ;;
+	esac
+	return 0
+}
+
+# 設定が壊れた状態で走らせない。
+#
+# **落とすのは、黙って既定値に戻すより良いから。** 綴りを間違えた設定が
+# 無言で無視されると、hub の名前が変わっていないことに誰も気づかない。
+validate_config() {
+	case $CCS_REMOTE_CONTROL in
+	auto | on | off) ;;
+	*) die "$EX_USAGE" "CCS_REMOTE_CONTROL は auto / on / off のどれかです: ${CCS_REMOTE_CONTROL}" ;;
+	esac
+
+	case $CCS_HUB_AUTOSTART in
+	on | login | off) ;;
+	*) die "$EX_USAGE" "CCS_HUB_AUTOSTART は on / login / off のどれかです: ${CCS_HUB_AUTOSTART}" ;;
+	esac
+
+	[ -n "$CCS_HUB_SLUG" ] ||
+		die "$EX_USAGE" 'CCS_HUB_SLUG が空です'
+	[ "$CCS_HUB_SLUG" = "$(sanitize_slug "$CCS_HUB_SLUG")" ] ||
+		die "$EX_USAGE" "CCS_HUB_SLUG に tmux で使えない文字が入っています（使えるのは A-Z a-z 0-9 _ @ -）: ${CCS_HUB_SLUG}"
+	[ "$CCS_HUB_SLUG" != 'tmp' ] ||
+		die "$EX_USAGE" 'CCS_HUB_SLUG に tmp は使えません（使い捨て作業枠の予約語です）'
+
+	for _v in CCS_SCRATCH_SLOTS CCS_NEW_TIMEOUT CCS_HUB_RC_TIMEOUT CCS_HUB_BACKOFF_WINDOW CCS_HUB_BACKOFF_MAX CCS_HUB_AGENT_INTERVAL; do
+		eval "_n=\$$_v"
+		is_uint "$_n" || die "$EX_USAGE" "${_v} は 0 以上の整数です: ${_n}"
+	done
+}
+
+config_source_of() {
+	eval "printf '%s' \"\${CCS_SRC_$1:-default}\""
+}
+
+cmd_config() {
+	_json=''
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--json) _json=1 ;;
+		*) die "$EX_USAGE" "config: 知らないオプション: $1" ;;
+		esac
+		shift
+	done
+
+	if [ -n "$_json" ]; then
+		printf '{"configFile":%s,"configFileExists":%s,"settings":{' \
+			"$(json_str "$CCS_CONFIG_FILE")" \
+			"$([ -f "$CCS_CONFIG_FILE" ] && printf 'true' || printf 'false')"
+		_first=1
+		for _k in $CCS_CONFIG_KEYS; do
+			[ "$_first" = 1 ] || printf ','
+			_first=0
+			eval "_v=\$$_k"
+			printf '%s:{"value":%s,"source":%s}' \
+				"$(json_str "$_k")" "$(json_str "$_v")" \
+				"$(json_str "$(config_source_of "$_k")")"
+		done
+		printf '}}\n'
+	else
+		printf '%-24s %-40s %s\n' 'KEY' 'VALUE' 'SOURCE'
+		for _k in $CCS_CONFIG_KEYS; do
+			eval "_v=\$$_k"
+			printf '%-24s %-40s %s\n' "$_k" "$(tilde_path "$_v")" "$(config_source_of "$_k")"
+		done
+		printf '\n設定ファイル: %s' "$(tilde_path "$CCS_CONFIG_FILE")"
+		if [ -f "$CCS_CONFIG_FILE" ]; then
+			printf '\n'
+		else
+			printf '（まだありません）\n'
+		fi
+		printf 'env > 設定ファイル > 既定値 の順で効きます。詳細は docs/configuration.md。\n'
+	fi
+
+	# **表を出してから検査する。** 値が不正なときこそ、その値を見たい。
+	validate_config
+}
+
+# ---------------------------------------------------------------------------
+# hub
+#
+# hub は「スマホから唯一触る 1 本」。落ちると ccs を叩く経路ごと消えるので、
+# 他のセッションと違って **自動で戻ってくる**ことを保証する。設計と運用は
+# docs/hub.md。
+#
+# 名前も置き場所も自動起動も設定で変えられる（docs/configuration.md）。
+# `hub` という名前のリポジトリを持っている人が詰まないようにするため。
+# ---------------------------------------------------------------------------
+
+hub_session() {
+	printf '%s%s' "$CCS_PREFIX" "$CCS_HUB_SLUG"
+}
+
+hub_state_file() {
+	printf '%s/state.json' "$CCS_HUB_HOME"
+}
+
+hub_log_file() {
+	printf '%s/hub.log' "$CCS_HUB_HOME"
+}
+
+hub_pause_file() {
+	printf '%s/paused' "$CCS_HUB_HOME"
+}
+
+# Remote Control を要求するか（auto / on なら要求する）。
+hub_rc_wanted() {
+	[ "$CCS_REMOTE_CONTROL" != 'off' ]
+}
+
+# JSONL で 1 行残す。
+#
+# **healthy のたびには書かない。** 5 分ごとの監視で「異常なし」を積むと、
+# 肝心の異常が埋もれる。残すのは変化と失敗だけ。
+hub_log() {
+	_hb_event=$1
+	_hb_detail=${2:-}
+	# shellcheck disable=SC2016  # $ts / $event / $detail は jq の変数
+	_hb_log_filter='{ts:$ts,event:$event,detail:$detail}'
+	mkdir -p "$CCS_HUB_HOME" 2>/dev/null || return 0
+	"$CCS_JQ_BIN" -c -n \
+		--arg ts "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+		--arg event "$_hb_event" \
+		--arg detail "$_hb_detail" \
+		"$_hb_log_filter" >>"$(hub_log_file)" 2>/dev/null || true
+}
+
+# state.json を jq のフィルタで更新する。
+# 壊れた JSON を書かないよう、書いてから検査して mv する（trust_accept と同じ作法）。
+hub_state_update() {
+	_hb_filter=$1
+	shift
+	mkdir -p "$CCS_HUB_HOME" 2>/dev/null || return 1
+	_hb_file=$(hub_state_file)
+	[ -f "$_hb_file" ] || printf '{"restarts":[]}\n' >"$_hb_file"
+
+	_hb_tmp="${_hb_file}.ccs.$$"
+	if "$CCS_JQ_BIN" "$@" "$_hb_filter" "$_hb_file" >"$_hb_tmp" 2>/dev/null &&
+		"$CCS_JQ_BIN" -e . "$_hb_tmp" >/dev/null 2>&1; then
+		mv "$_hb_tmp" "$_hb_file"
+		return 0
+	fi
+
+	rm -f "$_hb_tmp"
+	warn "ccs: hub の状態ファイルを更新できませんでした: ${_hb_file}"
+	return 1
+}
+
+hub_state_get() {
+	_hb_file=$(hub_state_file)
+	[ -f "$_hb_file" ] || return 1
+	_hb_v=$("$CCS_JQ_BIN" -r "$1 // empty" "$_hb_file" 2>/dev/null) || return 1
+	[ -n "$_hb_v" ] || return 1
+	printf '%s\n' "$_hb_v"
+}
+
+hub_record_restart() {
+	# 直近 20 件だけ残す。履歴そのものが目的ではなく、暴走の検知が目的。
+	# shellcheck disable=SC2016  # $now は jq の変数。シェルに展開させてはいけない
+	hub_state_update '.restarts = (((.restarts // []) + [($now | tonumber)]) | .[-20:])' \
+		--arg now "$(date +%s)" || true
+}
+
+# 窓の中で規定回数以上の再起動をしていれば真。
+hub_backoff_tripped() {
+	_hb_file=$(hub_state_file)
+	[ -f "$_hb_file" ] || return 1
+	[ "$CCS_HUB_BACKOFF_MAX" -gt 0 ] || return 1
+	# shellcheck disable=SC2016  # $now / $w は jq の変数
+	_hb_n=$("$CCS_JQ_BIN" -r \
+		--arg now "$(date +%s)" --arg w "$CCS_HUB_BACKOFF_WINDOW" \
+		'[(.restarts // [])[] | select(. > (($now | tonumber) - ($w | tonumber)))] | length' \
+		"$_hb_file" 2>/dev/null) || return 1
+	[ "${_hb_n:-0}" -ge "$CCS_HUB_BACKOFF_MAX" ]
+}
+
+# ペインに認証要求が出ていないか。
+#
+# **これが出ているときは自動で直せない。** 立て直しても同じ画面で止まるだけ
+# なので、再起動を試みずに人を待つ（docs/hub.md「認証切れ」）。
+hub_pane_needs_login() {
+	"$CCS_TMUX_BIN" capture-pane -p -t "$(hub_session)" 2>/dev/null |
+		tail -40 |
+		grep -qiE '/login|login expire|invalid api key|not logged in|authentication (failed|error)'
+}
+
+# hub の状態を 1 語で返す。**副作用を持たない。**
+hub_state() {
+	[ -f "$(hub_pause_file)" ] && {
+		printf 'paused\n'
+		return 0
+	}
+
+	if ! tmux_session_exists "$(hub_session)"; then
+		printf 'absent\n'
+		return 0
+	fi
+
+	if ! live_session_id_for "$CCS_HUB_SLUG" >/dev/null 2>&1; then
+		if hub_pane_needs_login; then
+			printf 'needs-login\n'
+		else
+			printf 'stopped\n'
+		fi
+		return 0
+	fi
+
+	if hub_rc_wanted && ! live_bridge_for "$CCS_HUB_SLUG" >/dev/null 2>&1; then
+		printf 'no-rc\n'
+		return 0
+	fi
+
+	printf 'healthy\n'
+}
+
+hub_exit_code_for() {
+	case $1 in
+	healthy) printf '%s\n' "$EX_OK" ;;
+	no-rc) printf '%s\n' "$EX_HUB_NO_RC" ;;
+	stopped) printf '%s\n' "$EX_HUB_STOPPED" ;;
+	absent) printf '%s\n' "$EX_HUB_ABSENT" ;;
+	needs-login) printf '%s\n' "$EX_HUB_NEEDS_LOGIN" ;;
+	paused) printf '%s\n' "$EX_HUB_PAUSED" ;;
+	needs-attention) printf '%s\n' "$EX_HUB_ATTENTION" ;;
+	*) printf '%s\n' "$EX_FAIL" ;;
+	esac
+}
+
+# hub の作業ディレクトリを用意する。
+#
+# **既にあるファイルは上書きしない。** ここに置くのは出発点であって、
+# 中身は使う人のもの。
+# CCS_HUB_HOME を symlink を辿った形に揃える。
+#
+# **揃えないと trust の比較が外れる。** ccs が渡す cwd は pwd -P を通った形に
+# なるので、片方だけ生のままだと一致しない（macOS の /var → /private/var で
+# 実際に踏んだ。ghq root でも同じことが起きている）。
+hub_normalize_home() {
+	_home=$(abs_dir "$CCS_HUB_HOME" 2>/dev/null) || return 0
+	CCS_HUB_HOME=$_home
+}
+
+hub_ensure_home() {
+	mkdir -p "${CCS_HUB_HOME}/.claude" ||
+		die "$EX_FAIL" "hub の作業ディレクトリを作れません: ${CCS_HUB_HOME}"
+	hub_normalize_home
+
+	if [ ! -f "${CCS_HUB_HOME}/CLAUDE.md" ]; then
+		cat >"${CCS_HUB_HOME}/CLAUDE.md" <<EOF
+# hub
+
+このセッションは **hub** です（ccs が用意しました）。役割は 1 つだけ。
+
+**自分では作業しない。立てる・聞く・畳むの司令塔に徹する。**
+
+- 仕事は \`ccs new <target>\` で別セッションを立て、\`SendMessage\` で頼む
+- 全体を見るときは \`ListAgents\`（生きているもの）と \`ccs ls\`（tmux 側）
+- 他のセッションに頼むのは**読み取りだけ**。コミット・PR 作成・外部送信のような
+  副作用のある作業を投げない（権限を判断した主体と手を動かす主体がずれるため）
+- **自分自身（\`${CCS_PREFIX}${CCS_HUB_SLUG}\`）を畳まない。** 落とすと、スマホから
+  操作する経路そのものが消える。立て直しは \`ccs hub restart\`
+- \`ccs kill\` / \`ccs gc --yes\` は、人がそう言ったときだけ
+
+このファイルは編集して構いません（ccs は上書きしません）。
+EOF
+	fi
+
+	if [ ! -f "${CCS_HUB_HOME}/.claude/settings.json" ]; then
+		cat >"${CCS_HUB_HOME}/.claude/settings.json" <<'EOF'
+{
+  "permissions": {
+    "ask": [
+      "Bash(ccs kill:*)",
+      "Bash(ccs gc:*)",
+      "Bash(tmux kill-session:*)",
+      "Bash(tmux kill-server:*)"
+    ],
+    "deny": [
+      "Bash(ccs hub down:*)"
+    ]
+  }
+}
+EOF
+	fi
+}
+
+# hub を tmux に立てる。立てるだけで、待ちも報告もしない。
+# 使った uuid は CCS_HUB_LAUNCHED_UUID に入る（サブシェルで呼ばないこと）。
+hub_launch() {
+	_hb_resume=${1:-}
+
+	hub_ensure_home
+	ensure_trust "$CCS_HUB_HOME" "$CCS_HUB_SLUG"
+
+	if [ -n "$_hb_resume" ]; then
+		CCS_HUB_LAUNCHED_UUID=$_hb_resume
+		_hb_cmd="$(shq "$CCS_CLAUDE_BIN") --resume $(shq "$_hb_resume") -n $(shq "$CCS_HUB_SLUG")"
+	else
+		CCS_HUB_LAUNCHED_UUID=$(new_uuid)
+		_hb_cmd="$(shq "$CCS_CLAUDE_BIN") -n $(shq "$CCS_HUB_SLUG") --session-id $(shq "$CCS_HUB_LAUNCHED_UUID")"
+	fi
+
+	# **RC の名前を明示する。** 渡さないと、アプリ側の名前は会話の内容から
+	# 自動で決まり、日によって変わる。hub だけは名前が動くと見失う。
+	if hub_rc_wanted; then
+		_hb_cmd="${_hb_cmd} --remote-control $(shq "$CCS_HUB_SLUG")"
+	fi
+
+	_hb_cmd="${_hb_cmd}; exec $(shq "${SHELL:-/bin/sh}")"
+
+	"$CCS_TMUX_BIN" new-session -d -s "$(hub_session)" -c "$CCS_HUB_HOME" sh -c "$_hb_cmd" ||
+		die "$EX_FAIL" "tmux セッションを作れませんでした: $(hub_session)"
+}
+
+# Remote Control の登録が付くまで待つ。
+hub_wait_bridge() {
+	_hb_deadline=$(($(date +%s) + CCS_HUB_RC_TIMEOUT))
+	while [ "$(date +%s)" -lt "$_hb_deadline" ]; do
+		if live_bridge_for "$CCS_HUB_SLUG" >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 0.2
+	done
+	return 1
+}
+
+hub_emit_json() {
+	printf '{"slug":%s,"state":%s,"sessionId":%s,"previousSessionId":%s,"path":%s,"tmux":%s,"bridge":%s,"transcript":%s,"created":%s}\n' \
+		"$(json_str "$CCS_HUB_SLUG")" "$(json_str "$1")" "$(json_str "$2")" \
+		"$(json_str "$3")" "$(json_str "$CCS_HUB_HOME")" "$(json_str "$(hub_session)")" \
+		"$(json_str "$4")" "$(json_str "$(transcript_path "$CCS_HUB_HOME" "$2")")" "$5"
+}
+
+# 立てて、登録を待って、結果を報告する。up と restart の共通部分。
+#   $1 resume する uuid（空なら新規）
+#   $2 直前の uuid（記録用。空でよい）
+#   $3 ログに残すイベント名
+#   $4 quiet なら 1
+hub_start_and_report() {
+	_hb_resume=$1
+	_hb_prev=$2
+	_hb_event=$3
+	_hb_quiet=$4
+
+	hub_launch "$_hb_resume"
+	_hb_uuid=$CCS_HUB_LAUNCHED_UUID
+
+	if ! wait_for_registration "$_hb_uuid"; then
+		hub_log 'failed' "登録されませんでした（${CCS_NEW_TIMEOUT} 秒）"
+		warn "ccs: hub が ${CCS_NEW_TIMEOUT} 秒で登録されませんでした。"
+		warn ''
+		warn 'ペインの中身:'
+		warn '---'
+		"$CCS_TMUX_BIN" capture-pane -p -t "$(hub_session)" 2>/dev/null | tail -20 >&2 || true
+		warn '---'
+		warn ''
+		warn '信頼確認かログインで止まっている可能性があります。'
+		warn '  乗り込んで確かめる: ccs hub attach'
+		# **消さない。** 何に詰まっていたのかが分からなくなる。
+		exit "$EX_FAIL"
+	fi
+
+	# shellcheck disable=SC2016  # $id / $prev / $now は jq の変数
+	hub_state_update '.sessionId = $id | .previousSessionId = $prev | .startedAt = ($now | tonumber)' \
+		--arg id "$_hb_uuid" --arg prev "$_hb_prev" --arg now "$(date +%s)" || true
+
+	_hb_bridge=''
+	if hub_rc_wanted; then
+		if hub_wait_bridge; then
+			_hb_bridge=$(live_bridge_for "$CCS_HUB_SLUG" || printf '')
+		else
+			hub_log 'no-rc' "Remote Control が ${CCS_HUB_RC_TIMEOUT} 秒で付きませんでした"
+			warn "ccs: hub は立ちましたが、Remote Control が付きませんでした（${CCS_HUB_RC_TIMEOUT} 秒）。"
+			warn 'スマホのアプリには出ません。ローカルからは使えます。'
+			warn ''
+			warn '  設定を確かめる: ccs config'
+			warn '  RC を使わない運用にする: CCS_REMOTE_CONTROL=off'
+			warn '  乗り込んで確かめる: ccs hub attach'
+			hub_emit_json 'no-rc' "$_hb_uuid" "$_hb_prev" '' true
+			exit "$EX_HUB_NO_RC"
+		fi
+	fi
+
+	hub_log "$_hb_event" "sessionId=${_hb_uuid}"
+	[ -n "$_hb_quiet" ] || hub_emit_json 'healthy' "$_hb_uuid" "$_hb_prev" "$_hb_bridge" true
+}
+
+# 立っている hub の uuid を回収してから畳む。回収した uuid を返す。
+hub_teardown() {
+	_hb_old=$(live_session_id_for "$CCS_HUB_SLUG" 2>/dev/null || true)
+	[ -n "$_hb_old" ] || _hb_old=$(pane_session_id_for "$(hub_session)" 2>/dev/null || true)
+
+	if tmux_session_exists "$(hub_session)"; then
+		"$CCS_TMUX_BIN" kill-session -t "$(hub_session)" 2>/dev/null || true
+	fi
+
+	printf '%s' "$_hb_old"
+}
+
+cmd_hub_up() {
+	require_deps
+
+	_hb_force=''
+	_hb_quiet=''
+	while [ $# -gt 0 ]; do
+		case $1 in
+		-f | --force) _hb_force=1 ;;
+		-q | --quiet) _hb_quiet=1 ;;
+		*) die "$EX_USAGE" "hub up: 知らないオプション: $1" ;;
+		esac
+		shift
+	done
+
+	_hb_state=$(hub_state)
+
+	if [ "$_hb_state" = 'paused' ]; then
+		if [ -n "$_hb_force" ]; then
+			rm -f "$(hub_pause_file)"
+			hub_log 'resumed' '--force で再開'
+			_hb_state=$(hub_state)
+		else
+			[ -n "$_hb_quiet" ] || warn "ccs: hub は止められています（$(tilde_path "$(hub_pause_file)")）。"
+			[ -n "$_hb_quiet" ] || warn '  再開する: ccs hub up --force'
+			exit "$EX_HUB_PAUSED"
+		fi
+	fi
+
+	if [ "$_hb_state" = 'healthy' ]; then
+		if [ -z "$_hb_quiet" ]; then
+			hub_emit_json 'healthy' \
+				"$(live_session_id_for "$CCS_HUB_SLUG" || printf '')" \
+				"$(hub_state_get '.previousSessionId' || printf '')" \
+				"$(live_bridge_for "$CCS_HUB_SLUG" 2>/dev/null || printf '')" false
+		fi
+		exit "$EX_OK"
+	fi
+
+	if [ "$_hb_state" = 'needs-login' ]; then
+		hub_log 'needs-login' 'ペインに認証要求が出ています'
+		warn 'ccs: hub の認証が切れています。**自動では直せません。**'
+		warn ''
+		warn '  乗り込んで /login する: ccs hub attach'
+		warn ''
+		warn '直したあとは自動監視がそのまま拾います（何もしなくて構いません）。'
+		exit "$EX_HUB_NEEDS_LOGIN"
+	fi
+
+	if [ -z "$_hb_force" ] && hub_backoff_tripped; then
+		hub_log 'backoff' "直近 ${CCS_HUB_BACKOFF_WINDOW} 秒で ${CCS_HUB_BACKOFF_MAX} 回以上再起動しています"
+		warn "ccs: hub の再起動が続いているため止めています（直近 ${CCS_HUB_BACKOFF_WINDOW} 秒で ${CCS_HUB_BACKOFF_MAX} 回以上）。"
+		warn ''
+		warn "  何が起きているか見る: ccs hub attach / tail $(tilde_path "$(hub_log_file)")"
+		warn '  それでも立てる:       ccs hub up --force'
+		exit "$EX_HUB_ATTENTION"
+	fi
+
+	_hb_prev=''
+	case $_hb_state in
+	no-rc | stopped)
+		# **畳んでから立て直す。** ペインを使い回すと、前の claude の
+		# 出力が残ったまま新しいものが動き、状態が読めなくなる。
+		_hb_prev=$(hub_teardown)
+		hub_record_restart
+		hub_start_and_report '' "$_hb_prev" 'restart' "$_hb_quiet"
+		;;
+	absent)
+		hub_record_restart
+		hub_start_and_report '' '' 'start' "$_hb_quiet"
+		;;
+	*)
+		die "$EX_FAIL" "hub の状態を判定できませんでした: ${_hb_state}"
+		;;
+	esac
+}
+
+cmd_hub_status() {
+	require_deps
+
+	_hb_json=''
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--json) _hb_json=1 ;;
+		*) die "$EX_USAGE" "hub status: 知らないオプション: $1" ;;
+		esac
+		shift
+	done
+
+	_hb_state=$(hub_state)
+	if [ "$_hb_state" != 'healthy' ] && [ "$_hb_state" != 'paused' ] && hub_backoff_tripped; then
+		_hb_state='needs-attention'
+	fi
+
+	_hb_id=$(live_session_id_for "$CCS_HUB_SLUG" 2>/dev/null || true)
+	[ -n "$_hb_id" ] || _hb_id=$(pane_session_id_for "$(hub_session)" 2>/dev/null || true)
+	[ -n "$_hb_id" ] || _hb_id=$(hub_state_get '.sessionId' || printf '')
+	_hb_bridge=$(live_bridge_for "$CCS_HUB_SLUG" 2>/dev/null || printf '')
+	_hb_restarts=$("$CCS_JQ_BIN" -r '(.restarts // []) | length' "$(hub_state_file)" 2>/dev/null || printf '0')
+
+	if [ -n "$_hb_json" ]; then
+		printf '{"slug":%s,"state":%s,"sessionId":%s,"tmux":%s,"path":%s,"bridge":%s,"remoteControl":%s,"restarts":%s,"paused":%s}\n' \
+			"$(json_str "$CCS_HUB_SLUG")" "$(json_str "$_hb_state")" "$(json_str "$_hb_id")" \
+			"$(json_str "$(hub_session)")" "$(json_str "$CCS_HUB_HOME")" \
+			"$(json_str "$_hb_bridge")" "$(json_str "$CCS_REMOTE_CONTROL")" \
+			"${_hb_restarts:-0}" \
+			"$([ -f "$(hub_pause_file)" ] && printf 'true' || printf 'false')"
+	else
+		printf 'slug        %s\n' "$CCS_HUB_SLUG"
+		printf 'state       %s\n' "$_hb_state"
+		printf 'tmux        %s\n' "$(hub_session)"
+		printf 'path        %s\n' "$(tilde_path "$CCS_HUB_HOME")"
+		printf 'sessionId   %s\n' "${_hb_id:--}"
+		printf 'bridge      %s\n' "${_hb_bridge:--}"
+		printf 'RC          %s\n' "$CCS_REMOTE_CONTROL"
+		case $_hb_state in
+		healthy) ;;
+		absent | stopped | no-rc) printf '\n直すには: ccs hub up\n' ;;
+		needs-login) printf '\n認証が切れています。ccs hub attach して /login してください。\n' ;;
+		paused) printf '\n止められています。再開: ccs hub up --force\n' ;;
+		needs-attention) printf '\n再起動が続いています。ccs hub attach で中を見てください（強行: ccs hub up --force）。\n' ;;
+		esac
+	fi
+
+	exit "$(hub_exit_code_for "$_hb_state")"
+}
+
+cmd_hub_restart() {
+	require_deps
+
+	_hb_resume=''
+	_hb_quiet=''
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--resume) _hb_resume=1 ;;
+		-q | --quiet) _hb_quiet=1 ;;
+		*) die "$EX_USAGE" "hub restart: 知らないオプション: $1" ;;
+		esac
+		shift
+	done
+
+	# 止められていても restart は通す。**人が明示的に打っているため。**
+	if [ -f "$(hub_pause_file)" ]; then
+		rm -f "$(hub_pause_file)"
+		hub_log 'resumed' 'restart で再開'
+	fi
+
+	_hb_prev=$(hub_teardown)
+
+	_hb_with=''
+	if [ -n "$_hb_resume" ]; then
+		[ -n "$_hb_prev" ] || _hb_prev=$(hub_state_get '.sessionId' || printf '')
+		if [ -n "$_hb_prev" ]; then
+			_hb_with=$_hb_prev
+		else
+			warn 'ccs: 直前の sessionId が分からないので、新しい会話で立てます。'
+		fi
+	fi
+
+	# **人が打った restart は歯止めに数えない。** 歯止めは「自動で立て直し
+	# 続けるのを止める」ためのもので、人がその場にいるなら要らない。
+	# ここで数えると、手で 3 回直した直後に自動復帰が止まる。
+	hub_start_and_report "$_hb_with" "$_hb_prev" 'restart' "$_hb_quiet"
+}
+
+cmd_hub_down() {
+	require_deps
+
+	while [ $# -gt 0 ]; do
+		case $1 in
+		*) die "$EX_USAGE" "hub down: 知らないオプション: $1" ;;
+		esac
+	done
+
+	mkdir -p "$CCS_HUB_HOME" 2>/dev/null || true
+	_hb_prev=$(hub_teardown)
+	date -u '+%Y-%m-%dT%H:%M:%SZ' >"$(hub_pause_file)"
+	# shellcheck disable=SC2016  # $prev は jq の変数
+	hub_state_update '.previousSessionId = $prev' --arg prev "$_hb_prev" || true
+	hub_log 'paused' "sessionId=${_hb_prev}"
+
+	printf 'hub を止めました。自動起動も止まります（%s があるあいだ）。\n' \
+		"$(tilde_path "$(hub_pause_file)")"
+	printf '\n  再開する:           ccs hub up --force\n'
+	if [ -n "$_hb_prev" ]; then
+		printf '  同じ会話に戻る:     ccs hub restart --resume\n'
+	fi
+}
+
+cmd_hub_attach() {
+	cmd_attach "$CCS_HUB_SLUG"
+}
+
+# 自分自身の絶対パス。自動起動の設定ファイルに書き込むため。
+ccs_self_path() {
+	case $0 in
+	/*) printf '%s\n' "$0" ;;
+	*/*) printf '%s/%s\n' "$(cd "$(dirname "$0")" && pwd -P)" "$(basename "$0")" ;;
+	*) command -v "$0" 2>/dev/null || printf 'ccs\n' ;;
+	esac
+}
+
+hub_agent_unit_name() {
+	printf '%s' "$CCS_HUB_AGENT_LABEL" | sed 's/[^A-Za-z0-9_-]/-/g'
+}
+
+hub_agent_plist() {
+	_hb_mode=$1
+	_hb_self=$(ccs_self_path)
+
+	cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>${CCS_HUB_AGENT_LABEL}</string>
+
+	<!-- ccs hub up は冪等。生きていれば何もせず、死んでいれば立て直す。 -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>${SHELL:-/bin/sh}</string>
+		<string>-lc</string>
+		<string>exec ${_hb_self} hub up --quiet</string>
+	</array>
+
+	<key>RunAtLoad</key>
+	<true/>
+EOF
+
+	if [ "$_hb_mode" = 'on' ]; then
+		cat <<EOF
+
+	<key>StartInterval</key>
+	<integer>${CCS_HUB_AGENT_INTERVAL}</integer>
+EOF
+	fi
+
+	cat <<EOF
+
+	<key>StandardOutPath</key>
+	<string>${CCS_HUB_HOME}/agent.log</string>
+	<key>StandardErrorPath</key>
+	<string>${CCS_HUB_HOME}/agent.log</string>
+</dict>
+</plist>
+EOF
+}
+
+hub_agent_systemd_service() {
+	_hb_self=$(ccs_self_path)
+	cat <<EOF
+[Unit]
+Description=ccs hub (${CCS_HUB_SLUG})
+
+[Service]
+Type=oneshot
+# ccs hub up は冪等。生きていれば何もせず、死んでいれば立て直す。
+ExecStart=${SHELL:-/bin/sh} -lc 'exec ${_hb_self} hub up --quiet'
+
+[Install]
+WantedBy=default.target
+EOF
+}
+
+hub_agent_systemd_timer() {
+	cat <<EOF
+[Unit]
+Description=ccs hub の死活監視 (${CCS_HUB_SLUG})
+
+[Timer]
+OnStartupSec=1min
+OnUnitActiveSec=${CCS_HUB_AGENT_INTERVAL}
+Unit=$(hub_agent_unit_name).service
+
+[Install]
+WantedBy=timers.target
+EOF
+}
+
+cmd_hub_agent() {
+	_hb_print=''
+	_hb_mode=$CCS_HUB_AUTOSTART
+	_hb_unit_only=''
+
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--print) _hb_print=1 ;;
+		--autostart)
+			_hb_mode=${2:-}
+			shift
+			;;
+		# systemd は service と timer の 2 ファイルに分かれる。
+		# **両方を 1 つのファイルに書くと壊れる**ので、片方だけ出せるようにする。
+		--unit)
+			_hb_unit_only=${2:-}
+			shift
+			;;
+		*) die "$EX_USAGE" "hub agent: 知らないオプション: $1" ;;
+		esac
+		shift
+	done
+
+	case $_hb_mode in
+	on | login | off) ;;
+	*) die "$EX_USAGE" "hub agent: --autostart は on / login / off のどれかです: ${_hb_mode}" ;;
+	esac
+
+	case $_hb_unit_only in
+	'' | service | timer) ;;
+	*) die "$EX_USAGE" "hub agent: --unit は service / timer のどちらかです: ${_hb_unit_only}" ;;
+	esac
+
+	if [ "$_hb_mode" = 'off' ]; then
+		warn 'ccs: 自動起動は off です（CCS_HUB_AUTOSTART=off）。'
+		warn ''
+		warn '  一時的に中身を見る:   ccs hub agent --print --autostart on'
+		warn '  常時 on にする:       設定ファイルに CCS_HUB_AUTOSTART=on'
+		warn '  手で立てる運用のまま: ccs hub up'
+		exit "$EX_FAIL"
+	fi
+
+	_hb_unit=$(hub_agent_unit_name)
+
+	case $(uname -s) in
+	Darwin)
+		_hb_dest="${HOME}/Library/LaunchAgents/${CCS_HUB_AGENT_LABEL}.plist"
+		if [ -n "$_hb_print" ]; then
+			hub_agent_plist "$_hb_mode"
+			return 0
+		fi
+		printf '自動起動（launchd）の入れ方:\n\n'
+		printf '  ccs hub agent --print > %s\n' "$(tilde_path "$_hb_dest")"
+		# shellcheck disable=SC2016  # $(id -u) は人がそのまま打つ文字列
+		printf '  launchctl bootstrap gui/$(id -u) %s\n' "$(tilde_path "$_hb_dest")"
+		printf '\n止めるとき:\n\n'
+		# shellcheck disable=SC2016  # 同上
+		printf '  launchctl bootout gui/$(id -u)/%s\n' "$CCS_HUB_AGENT_LABEL"
+		printf '  rm %s\n' "$(tilde_path "$_hb_dest")"
+		printf '\n間隔 %s 秒 / モード %s。ログは %s。\n' \
+			"$CCS_HUB_AGENT_INTERVAL" "$_hb_mode" "$(tilde_path "${CCS_HUB_HOME}/agent.log")"
+		;;
+	Linux)
+		_hb_dest="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user"
+		if [ -n "$_hb_print" ]; then
+			case $_hb_unit_only in
+			service)
+				hub_agent_systemd_service
+				return 0
+				;;
+			timer)
+				[ "$_hb_mode" = 'on' ] ||
+					die "$EX_USAGE" "hub agent: timer は --autostart on のときだけです（いまは ${_hb_mode}）"
+				hub_agent_systemd_timer
+				return 0
+				;;
+			esac
+
+			# 指定が無ければ両方を見出しつきで出す（読むため）。
+			# **そのままリダイレクトしないこと。** 書き出すときは --unit を使う。
+			printf '# --- %s/%s.service ---\n' "$_hb_dest" "$_hb_unit"
+			hub_agent_systemd_service
+			if [ "$_hb_mode" = 'on' ]; then
+				printf '\n# --- %s/%s.timer ---\n' "$_hb_dest" "$_hb_unit"
+				hub_agent_systemd_timer
+			fi
+			return 0
+		fi
+		printf '自動起動（systemd --user）の入れ方:\n\n'
+		printf '  mkdir -p %s\n' "$(tilde_path "$_hb_dest")"
+		printf '  ccs hub agent --print --unit service > %s/%s.service\n' \
+			"$(tilde_path "$_hb_dest")" "$_hb_unit"
+		if [ "$_hb_mode" = 'on' ]; then
+			printf '  ccs hub agent --print --unit timer   > %s/%s.timer\n' \
+				"$(tilde_path "$_hb_dest")" "$_hb_unit"
+		fi
+		printf '  systemctl --user enable --now %s.service\n' "$_hb_unit"
+		if [ "$_hb_mode" = 'on' ]; then
+			printf '  systemctl --user enable --now %s.timer\n' "$_hb_unit"
+		fi
+		printf '\n間隔 %s 秒 / モード %s。\n' "$CCS_HUB_AGENT_INTERVAL" "$_hb_mode"
+		;;
+	*)
+		warn "ccs: この OS 向けの自動起動の雛形は用意していません: $(uname -s)"
+		warn ''
+		warn '任意のスケジューラから、次を定期実行してください（冪等です）:'
+		warn "  $(ccs_self_path) hub up --quiet"
+		exit "$EX_FAIL"
+		;;
+	esac
+}
+
+cmd_hub() {
+	[ $# -ge 1 ] || {
+		warn 'ccs: hub のサブコマンドを指定してください'
+		warn ''
+		warn '  ccs hub up        立てる（生きていれば何もしない）'
+		warn '  ccs hub status    状態を見る'
+		warn '  ccs hub restart   立て直す'
+		warn '  ccs hub down      止める（自動起動も止まる）'
+		warn '  ccs hub attach    乗り込む'
+		warn '  ccs hub agent     自動起動の設定を出す'
+		exit "$EX_USAGE"
+	}
+
+	_hb_sub=$1
+	shift
+
+	hub_normalize_home
+
+	case $_hb_sub in
+	up) cmd_hub_up "$@" ;;
+	status) cmd_hub_status "$@" ;;
+	restart) cmd_hub_restart "$@" ;;
+	down) cmd_hub_down "$@" ;;
+	attach) cmd_hub_attach "$@" ;;
+	agent) cmd_hub_agent "$@" ;;
+	*) die "$EX_USAGE" "hub: 未知のサブコマンド: ${_hb_sub}" ;;
+	esac
+}
+
+# ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
 
@@ -1194,13 +2316,23 @@ main() {
 	_cmd=$1
 	shift
 
+	# **help / version / config は設定の検査を通さない。**
+	# 設定が壊れているときこそ、値と直し方を見たい。
+	# （config は表を出したあとに自分で検査する）
+	case $_cmd in
+	help | --help | -h | version | --version | -V | config) ;;
+	*) validate_config ;;
+	esac
+
 	case $_cmd in
 	new) cmd_new "$@" ;;
 	ls) cmd_ls "$@" ;;
 	attach) cmd_attach "$@" ;;
 	kill) cmd_kill "$@" ;;
 	gc) cmd_gc "$@" ;;
+	hub) cmd_hub "$@" ;;
 	resolve) cmd_resolve "$@" ;;
+	config) cmd_config "$@" ;;
 	help | --help | -h) usage ;;
 	version | --version | -V) printf '%s\n' "$CCS_VERSION" ;;
 	*)
