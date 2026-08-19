@@ -26,6 +26,7 @@
 | 通知 | hub の異常は `hub.log`（JSONL）にだけ書く。**外部送信はしない** | design.md §8.1 |
 | テスト | integration では **本物の `claude` を起動しない**（fake claude スタブを使う） | AGENTS.md |
 | 言語 | POSIX sh。依存は `tmux` と `jq` のみ | design.md §6 |
+| ccb との境界 | `ccs` は**タスクを知らない**。紐付けは `--label` の不透明な文字列で運ぶ。tmux を触るのは `ccs` だけで、ポーリングするのは `ccb` 側 | design.md §9 |
 
 ## 着手可能
 
@@ -34,6 +35,11 @@
 | H7 | **本物の claude で hub を 1 周する**（docs/hub.md「まだ実測できていないこと」の 5 項目）。とくに launchd から起動した ccs が手元と同じ tmux サーバに入るか。結果を hands-on.md に足す | S | — |
 | P1 | **アプリからペインの中身を読む手段**（`ccs peek <slug>` 等。`tmux capture-pane` をハブ経由で返す） | M | [#19](https://github.com/ken-ty/ccs/issues/19)。**先に設計を決める。`/loop` で拾わない** |
 | P2 | **アプリからペインへコマンドを送る手段** | M | P1 の後。**`tmux send-keys` によるプロンプト注入は設計方針で禁じている**（design.md §3）。シェルへ送るのと claude へ送るのを混同しないこと |
+| C1 | **worktree 対応** `ccs new <repo>@<branch>`。**1 リポジトリに 2 本目が立たない**のが唯一の構造的ブロッカー（V2 から昇格） | M | — |
+| C2 | **`ccs new --label k=v`**（反復可）。tmux のユーザオプションに保存し、`ls --json` が返す。`ccs` は中身を解釈しない | S | — |
+| C3 | **`ls --json` の情報追加** — `idle/busy`・`startedAt`・`pid`・`transcript`・`labels`・`worktree`。既存フィールドは変えない | S | C2 |
+| C4 | **`--session-id` の外部指定**と**`--prompt-file`**。数 KB の仕様を argv で渡すと引用と長さで壊れる | S | — |
+| C5 | **`ccs new --json` で失敗理由も機械可読に**。いまは人間向けの文が stderr、終了コード 1 だけ | S | — |
 
 ## v2 の候補（着手しない。判断待ち）
 
@@ -42,7 +48,6 @@ v1 の範囲外と決めたもの。**拾う前に人の判断が要る。**
 | # | 内容 | 出所 |
 | --- | --- | --- |
 | V1 | `ccs resume <slug>` — 止まったペインに `claude --resume <uuid>` を流し込む（hub には `hub restart --resume` として入っている。汎用化するかは未決） | design.md §6 で v1 から外した。いまは手で打つ |
-| V2 | worktree 対応（`ccs new <repo>@<branch>`） | design.md §6。`git-worktree` スキルの規約に合わせる必要がある |
 | V4 | ドキュメントの公開先（Artifacts のままか、public + Pages か） | 可視性の変更なので人の判断 |
 
 ## 完了ログ
