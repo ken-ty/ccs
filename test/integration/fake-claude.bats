@@ -214,6 +214,12 @@ teardown() {
 }
 
 @test "tmux の外で起動すると tmux フィールドは無い" {
+	# **周囲の $TMUX を明示的に外す。** ccs は tmux のためのツールなので、
+	# 開発者は tmux の中で make check を回す。ambient の $TMUX を継承すると
+	# 「tmux の外」という前提を作れず、このテストは必ず落ちる。
+	# CI は tmux の外なので通り、**手元でだけ落ちる**という形になっていた。
+	unset TMUX TMUX_PANE
+
 	ccs_start_fake_claude -n s --session-id dddddddd-dddd-dddd-dddd-dddddddddddd
 	ccs_wait_registry_count 1
 

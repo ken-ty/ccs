@@ -4,13 +4,40 @@
 # （test/fixtures/fake-claude を使う）、API キーもログインも要らない。
 # ここが本物を起動する作りになったら、CI は課金され、ログイン状態に依存し、
 # 実行のたびに結果が変わる ── そうなっていないことの番人がこのワークフロー。
+#
+# ## PR 側では回さない
+#
+# 検証は push 前に手元で終わっている前提を取る。担保は `hooks/pre-push` で、
+# `make check` を回して落ちたら push させない（`make setup-hooks` で有効になる）。
+#
+# 以前は `pull_request` でも回していた。やめた理由は 2 つ。
+#
+# 1. **PR のチェックは元々「関門」ではなかった。** このリポジトリは Free プランの
+#    private なので branch protection が使えず（/branches/main/protection は
+#    403 "Upgrade to GitHub Pro or make this repository public"）、required check
+#    にできない。赤くてもマージボタンは押せる状態だった
+# 2. **PR と main への push が数分差で対になっており、同じ内容を 2 回検証していた**
+#
+# 2026-08 の実測では、PR 側の実行だけで 29 分/月を使っていた。
+# → ken-ty/cost-management#11
+#
+# ## ただし、下の「本物の claude を起動していないことを確かめる」だけは
+# ## 手元で再現できない
+#
+# あのステップは **ランナーに claude が入っていないこと**を利用した保険で、
+# claude が入っている開発機では意味を持たない。**ここだけは main への push で
+# しか検証されない。** テストが本物を起動する作りに変わってしまった場合、
+# 気づくのはマージ後になる。それを承知でこの形にしている。
+#
+# 手元は macOS + bash 3.2、ここは ubuntu + bash 5.x。shellcheck は手元も CI も
+# 0.11.0 で揃えてあるが、bash と coreutils の差は残る。
+# **main で落ちたら revert せず fix-forward で直す。**
 
 name: ci
 
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
