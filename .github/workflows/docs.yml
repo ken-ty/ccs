@@ -25,9 +25,19 @@ on:
 permissions:
   contents: read
 
+# Artifacts に上げるだけでどこにも publish しないので、途中で切っても
+# 中途半端に反映されることはない。cancel-in-progress: true でよい。
+# （デプロイするワークフローなら false にすること）
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    # 書かないと既定 360 分。2026-08 の実測は 14 run すべて 0.4 分以内
+    # （平均 0.29 分）なので、pip が遅い日を見込んでも 5 分あれば足りる。
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 
