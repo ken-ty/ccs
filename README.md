@@ -71,6 +71,11 @@ ccs: IceCubesApp に当てはまるリポジトリが複数あります:
 <owner>/<repo> の形で指定し直してください。
 ```
 
+> **制約**: `ccs` のセッションは tmux が pty を持つため、**Claude アプリからは端末の画面が見えない**。
+> `ccs attach` は同じマシンのターミナルからしか使えない。
+> 詳細と回避策は [なぜ ccs が要るのか §4](docs/why.md#その独立には代償がある--アプリからターミナルが見えない)、
+> 追跡は [#19](https://github.com/ken-ty/ccs/issues/19)。
+
 ハブ（Remote Control を張ったセッション）から `ccs new` で立て、あとは組み込みの
 [`SendMessage`](docs/agent-tools.md#sendmessage) で指示し、
 [`ListAgents`](docs/agent-tools.md#listagents) で状態を見る。ターミナルを閉じても
