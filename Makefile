@@ -19,7 +19,7 @@ help:
 	@echo 'make check  lint + test'
 	@echo 'make docs   ドキュメントをローカルで配信する'
 	@echo
-	@echo 'make setup-hooks  git のフックを張る（新しい clone / worktree で毎回）'
+	@echo 'make setup-hooks  git のフックを張る（clone したら 1 度。worktree では不要）'
 
 .PHONY: lint
 lint:
@@ -37,12 +37,16 @@ lint:
 	fi
 
 # core.hooksPath は .git/config に入る**リポジトリごとのローカル設定**で、
-# clone にも worktree の追加にも付いてこない。だから作業ディレクトリごとに
-# 明示的に張る必要がある。hooks/ をそのまま指すので、フックを直せば
-# すぐ反映される（.git/hooks へコピーする方式だと配ったきり古くなる）。
+# **clone には付いてこない**（.git/config は複製されない）。だから clone したら
+# 1 度張る必要がある。hooks/ をそのまま指すので、フックを直せばすぐ反映される
+# （.git/hooks へコピーする方式だと配ったきり古くなる）。
+#
+# **同じリポジトリの worktree には引き継がれる。** core.hooksPath は共有の
+# .git/config にあり、worktree もそれを読むため。worktree を足すたびに
+# 実行し直す必要は無い。
 #
 # **CI は main への push でしか回らない。**このフックが唯一の関門なので、
-# 新しい clone / worktree では必ずこれを実行すること。
+# 新しい clone では必ずこれを実行すること。
 .PHONY: setup-hooks
 setup-hooks:
 	git config core.hooksPath hooks
