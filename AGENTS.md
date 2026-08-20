@@ -33,8 +33,9 @@
 ## 開発の作法
 
 - ブランチは 1 トピック 1 本。`main` へ直接コミットしない
-- **新しい clone / worktree では `make setup-hooks` を実行する。**
-  `core.hooksPath` は `.git/config` のローカル設定なので付いてこない → 「検証ゲート」
+- **新しい clone では `make setup-hooks` を実行する。**
+  `core.hooksPath` は `.git/config` のローカル設定で clone には付いてこない
+  （**同じリポジトリの worktree には引き継がれる**ので、worktree ごとには不要）→ 「検証ゲート」
 - コミットは Conventional Commits。理由 (why) は body に書く
 - **判断が要ることはチャットで聞かず GitHub Issue に上げる**（`question` ラベル）。
   ループは非同期で走るので、チャットでの質問は人間が気づかない
@@ -94,7 +95,11 @@ make setup-hooks    # git config core.hooksPath hooks
 ```
 
 `core.hooksPath` は `.git/config` に入るリポジトリごとのローカル設定で、
-**clone にも worktree の追加にも付いてこない**。作業ディレクトリごとに実行する。
+**clone には付いてこない**（`.git/config` は複製されない）。clone したら 1 度実行する。
+
+**同じリポジトリの worktree には引き継がれる。** `core.hooksPath` は共有の
+`.git/config` にあり、worktree もそれを読むため（`extensions.worktreeConfig` を
+有効にしていない限り）。worktree を足すたびに実行し直す必要は無い。
 
 フックが回すのは CI と同じもの。
 
