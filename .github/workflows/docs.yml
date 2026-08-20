@@ -12,14 +12,15 @@ name: docs
 on:
   push:
     branches: [main]
+    # 以前は pull_request 側でもこの paths を参照していた（*docs_paths）。
+    # PR 側で回すのをやめたので、参照は push だけになった。
+    # hooks/pre-push はこのリストと同じパスを見て docs のビルドを回すか決める。
     paths: &docs_paths
       - 'docs/**'
       - 'mkdocs.yml'
       - 'requirements-docs.txt'
       - 'scripts/termshot.py'
       - '.github/workflows/docs.yml'
-  pull_request:
-    paths: *docs_paths
   workflow_dispatch:
 
 permissions:

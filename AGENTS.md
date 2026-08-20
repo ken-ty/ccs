@@ -33,6 +33,8 @@
 ## 開発の作法
 
 - ブランチは 1 トピック 1 本。`main` へ直接コミットしない
+- **新しい clone / worktree では `make setup-hooks` を実行する。**
+  `core.hooksPath` は `.git/config` のローカル設定なので付いてこない → 「検証ゲート」
 - コミットは Conventional Commits。理由 (why) は body に書く
 - **判断が要ることはチャットで聞かず GitHub Issue に上げる**（`question` ラベル）。
   ループは非同期で走るので、チャットでの質問は人間が気づかない
@@ -68,6 +70,55 @@ tmux を起動し `claude` を立ち上げるツールなので、素朴に書�
 
 **integration で本物の `claude` を起動しない。** これを破ると CI が課金され、
 ローカルのテストがログイン状態に依存し、実行のたびに結果が変わる。
+
+### 手元の環境に依存させない
+
+CI（ubuntu / tmux の外 / C ロケール）と手元（macOS / **tmux の中** / ja_JP.UTF-8）は
+違う。ここを踏むと「CI では通るのに手元でだけ落ちる」が起きて、
+**検証ゲート（下記）が使い物にならなくなる**。実際に 2 つ踏んだ。
+
+- **ロケール**: macOS 標準の bash 3.2 + bats だと、日本語を含むテスト名が化けて
+  「unknown test name」になり **1 件も実行されない**。Makefile の
+  `BATS_ENV ?= LC_ALL=C` が固定する
+- **tmux**: ccs は tmux のためのツールなので、開発者は **tmux の中**で
+  `make check` を回す。「tmux の外」を前提にするテストは ambient の `$TMUX` を
+  継承しないよう、**テスト側で明示的に `unset TMUX TMUX_PANE` する**
+
+## 検証ゲート — push 前に手元で回す
+
+**CI は `main` への push でしか回らない。** PR 側では回らないので、壊れたものを
+push しないための関門は `hooks/pre-push` にある。
+
+```sh
+make setup-hooks    # git config core.hooksPath hooks
+```
+
+`core.hooksPath` は `.git/config` に入るリポジトリごとのローカル設定で、
+**clone にも worktree の追加にも付いてこない**。作業ディレクトリごとに実行する。
+
+フックが回すのは CI と同じもの。
+
+| いつ | 何を | 対応する CI |
+| --- | --- | --- |
+| 毎回 | `make check`（lint + unit + integration） | `ci.yml` |
+| `docs/` `mkdocs.yml` `requirements-docs.txt` `scripts/termshot.py` `.github/workflows/docs.yml` が変わったとき | `make docs-build` | `docs.yml` |
+
+**docs のパス一覧は `docs.yml` の `&docs_paths` と `hooks/pre-push` の 2 箇所にある。
+片方を変えたら両方直すこと。**
+
+逃げ道は `git push --no-verify`。使ってよいのは「CI で確かめたい」ときだけ。
+
+### 手元で再現できないものが 1 つある
+
+`ci.yml` の**「本物の claude を起動していないことを確かめる」だけは手元で意味を持たない。**
+あれはランナーに `claude` が入っていないことを利用した保険で、`claude` が入っている
+開発機では常に素通りする。**このステップだけは `main` への push でしか検証されない** —
+テストが本物を起動する作りに変わってしまった場合、気づくのはマージ後になる。
+
+shellcheck は手元も CI も 0.11.0 で揃えてあるが、bash と coreutils の差は残る。
+**main で落ちたら revert せず fix-forward で直す。**
+
+経緯 → [ken-ty/cost-management#11](https://github.com/ken-ty/cost-management/issues/11)
 
 ## 依存
 

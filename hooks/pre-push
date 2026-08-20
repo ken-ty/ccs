@@ -1,0 +1,86 @@
+#!/usr/bin/env sh
+#
+# push する前に、CI と同じ検証を手元で回す。
+#
+# **CI（.github/workflows/ci.yml / docs.yml）は main への push でしか回らない。**
+# PR 側では回らないので、壊れたものを push しないための関門はここしかない。
+# 理由は ci.yml の冒頭コメントと ken-ty/cost-management#11 を参照。
+#
+# 有効化: make setup-hooks   （git config core.hooksPath hooks）
+#
+# 逃げ道: git push --no-verify
+#   使ってよいのは「CI で確かめたい」ときだけ。落ちると分かっているものを
+#   通すために使うと、main が赤いまま積み上がる。
+#
+# **ci.yml の「本物の claude を起動していないことを確かめる」は再現しない。**
+# あれはランナーに claude が入っていないことを利用した保険で、claude が入って
+# いる開発機では意味を持たない。あのステップだけは main でしか検証されない。
+set -eu
+
+zero='0000000000000000000000000000000000000000'
+
+# stdin は "<local_ref> <local_sha> <remote_ref> <remote_sha>" の並び。
+ranges=''
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue          # ブランチ削除は検証しない
+  if [ "$remote_sha" = "$zero" ]; then
+    ranges="$ranges origin/main..$local_sha"      # 新しいブランチ
+  else
+    ranges="$ranges $remote_sha..$local_sha"
+  fi
+done
+[ -n "$ranges" ] || exit 0
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+# 変更ファイルの一覧を、GIT_* を消す前に取っておく。
+changed=''
+for r in $ranges; do
+  changed="$changed
+$(git diff --name-only "$r" 2>/dev/null || true)"
+done
+
+# git が push 時にフックへ渡す GIT_* を消す。残っていると、この下で走る
+# git 呼び出しが push 対象の ref を見てしまう。
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_QUARANTINE_PATH \
+      GIT_REFLOG_ACTION GIT_EXEC_PATH GIT_INTERNAL_GETTEXT_SH_SCHEME || true
+
+cd "$repo_root"
+
+fail() {
+  cat >&2 <<MSG
+
+pre-push: $1 が落ちました。push を中止します。
+
+  直してから push し直してください。
+  どうしても今 push したいなら: git push --no-verify
+  （CI は main への push でしか回りません。壊れたまま push すると main が赤くなります）
+MSG
+  exit 1
+}
+
+# ---- ci.yml と同じもの（常に回す）----
+# make check = lint(shellcheck) + test(unit + integration)。
+# LC_ALL=C は Makefile が付ける ── ここで足すと二重になる。
+echo 'pre-push: make check を回します（ci.yml と同じ）'
+make check || fail 'make check'
+
+# ---- docs.yml と同じもの（docs 系のパスが変わったときだけ）----
+#
+# docs.yml の `paths` (&docs_paths) と同じリスト。**片方を変えたら両方直すこと。**
+docs_changed=0
+for f in $changed; do
+  case "$f" in
+    docs/*|mkdocs.yml|requirements-docs.txt|scripts/termshot.py|.github/workflows/docs.yml)
+      docs_changed=1; break ;;
+  esac
+done
+
+if [ "$docs_changed" -eq 1 ]; then
+  echo 'pre-push: docs 系の変更を検出。make docs-build を回します（docs.yml と同じ）'
+  make docs-build >/dev/null || fail 'make docs-build'
+else
+  echo 'pre-push: docs 系の変更なし。docs のビルドは省略します'
+fi
+
+echo 'pre-push: ok'
