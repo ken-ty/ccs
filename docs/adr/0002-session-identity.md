@@ -24,12 +24,18 @@
 | 3 | `orphan_slots`（`ccs gc`） | 1 と 2 の組み合わせ | 稼働中の枠を「孤児」として報告する |
 | 4 | `list_slugs` | tmux 名の `cc/` 接頭辞以降 | slug が変わる。`cc/` を外されると一覧から消える |
 | 5 | `registry_file_for_slug` | レジストリの `tmux` を `cc/<slug>:` で前方一致 | 元の slug で引けなくなる |
-| 6 | `collect_session_row` | 同上 | `ccs ls` が status を `stopped` と誤る |
+| 6 | `collect_session_row` | 同上 | 引けなければ status が `stopped` になる |
 | 7 | `pane_session_id_for` | `pane_start_command` の中の `--session-id <uuid>` | — （名前ではなく**起動コマンド**に依存） |
 | 8 | `path_is_scratch_slot` | scratch root の直下 + 空 | — （後述の印と正面から衝突する） |
 | 9 | `path_is_ccs_worktree` | worktree root 配下 + 解決時の変数 `CCS_RESOLVED_WORKTREE_REPO` | — （実パスで指すと判定できない） |
 | 10 | `resolve_as_worktree` | パスの組み立て `<root>/<repo>/<branch>` だけ | — （ディレクトリ側に印が無い） |
 | 11 | `cmd_new` の冪等性 | 同一 slug の tmux があるか | **同じ作業ツリーに 2 本目の claude が立つ** |
+
+**5 と 6 には未検証が残る。** レジストリの `tmux` フィールドが tmux 側の改名に追従するのか、
+claude の起動時に書かれたきりなのかを確かめていない（手元の全セッションで両者は一致していたが、
+枠 4/6/8 は**改名の後に**手で立て直されているので、どちらの説明でも同じ観測になる）。
+**どちらであっても「名前で照合するのは当てにならない」という結論は変わらない**ので、この ADR の
+判断には効かない。確かめるなら `tmux rename-session` の前後でレジストリの `tmux` を読む。
 
 11 は枠の話ではない。`ccs new x01` で立てたセッションを `cc/x01-refactor` に改名すると、
 次の `ccs new x01` は「無い」と判断して**同じリポジトリにもう 1 本立てる**。冪等性
