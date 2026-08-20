@@ -2,7 +2,8 @@
 
 - **状態**: Accepted
 - **日付**: 2026-08-20
-- **関連**: `docs/design.md` §2.6 / §4.2 / §4.4 / §6、[#6](https://github.com/ken-ty/ccs/issues/6)、`bin/ccs` の `resolve_as_scratch` / `path_is_scratch_slot` / `ensure_trust` / `orphan_slots`
+- **関連**: `docs/design.md` §2.6 / §4.2 / §4.4 / §6、[#6](https://github.com/ken-ty/ccs/issues/6)、`bin/ccs` の `resolve_as_scratch` / `path_is_scratch_slot` / `ensure_trust` / `orphan_slots`、
+  [ADR-0002](0002-session-identity.md)（同一性をどう表現するかを決めた続き）
 - **覆すもの**: `docs/design.md` §6 決定表の「trust の扱い = §4.4 案 B + 限定的な A」、および §4.4 の案 B（固定枠を人が一度だけ信頼する）
 - **実装**: 本 ADR では行わない。ドキュメントとコメントだけを直し、`bin/ccs` の変更は別 PR に分ける
 

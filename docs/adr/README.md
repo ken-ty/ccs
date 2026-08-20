@@ -58,3 +58,4 @@
 | # | 決定 | 状態 | 日付 |
 | --- | --- | --- | --- |
 | [0001](0001-scratch-workspace-identity.md) | 使い捨て作業枠は固定 8 枠をやめ、セッションごとに一意なディレクトリを作る | Accepted | 2026-08-20 |
+| [0002](0002-session-identity.md) | 同一性は `workspaceId` と `sessionId` で表し、名前は表示用のラベルに落とす | Accepted | 2026-08-21 |
