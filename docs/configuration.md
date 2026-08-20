@@ -66,6 +66,7 @@ CCS_SCRATCH_SLOTS=4           # 使い捨て枠は 4 本で足りる
 | `CCS_REMOTE_CONTROL` | `auto` | Remote Control を使わない環境では `off`、全セッションに付けたいなら `on` |
 | `CCS_PREFIX` | `cc/` | 既に `cc/` を別の用途で使っているとき |
 | `CCS_SCRATCH_ROOT` | `~/.cc-scratch` | 使い捨て作業枠の置き場所 |
+| `CCS_WORKTREE_ROOT` | `~/.cc-worktrees` | `ccs new <repo>@<branch>` が切る worktree の置き場所。**ghq root の外に置くこと**（`ghq list` が worktree をリポジトリとして拾い、名前解決が誤爆する） |
 | `CCS_SCRATCH_SLOTS` | `8` | 使い捨て枠の本数。**有限であること自体が歯止め** |
 
 ### `hub` という名前のリポジトリを持っている場合
@@ -107,6 +108,7 @@ ccs: hub は hub を指す予約語です。
 | `CCS_CLAUDE_BIN` | `claude` |
 | `CCS_TMUX_BIN` | `tmux` |
 | `CCS_GHQ_BIN` | `ghq` |
+| `CCS_GIT_BIN` | `git` |
 | `CCS_JQ_BIN` | `jq` |
 | `CCS_SESSIONS_DIR` | `~/.claude/sessions` |
 | `CCS_TRUST_FILE` | `~/.claude.json` |

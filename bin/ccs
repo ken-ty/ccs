@@ -62,11 +62,13 @@ CCS_PREFIX
 CCS_CLAUDE_BIN
 CCS_TMUX_BIN
 CCS_GHQ_BIN
+CCS_GIT_BIN
 CCS_JQ_BIN
 CCS_SESSIONS_DIR
 CCS_TRUST_FILE
 CCS_SCRATCH_ROOT
 CCS_SCRATCH_SLOTS
+CCS_WORKTREE_ROOT
 CCS_PROJECTS_DIR
 CCS_NEW_TIMEOUT
 CCS_REMOTE_CONTROL
@@ -165,10 +167,20 @@ load_config
 : "${CCS_CLAUDE_BIN:=claude}"
 : "${CCS_TMUX_BIN:=tmux}"
 : "${CCS_GHQ_BIN:=ghq}"
+: "${CCS_GIT_BIN:=git}"
 : "${CCS_JQ_BIN:=jq}"
 : "${CCS_SESSIONS_DIR:=${HOME}/.claude/sessions}"
 : "${CCS_TRUST_FILE:=${HOME}/.claude.json}"
 : "${CCS_SCRATCH_ROOT:=${HOME}/.cc-scratch}"
+
+# worktree の置き場所。`ccs new <repo>@<branch>` が使う。
+#
+# **ghq root の外に置く。** `ghq list` は `<repo>.worktrees/<name>` のような
+# 配置を独立したリポジトリとして列挙してしまう（実測）。ghq 配下に置くと
+# `resolve_as_repo` の末尾一致が worktree にも当たり、`ccs new <branch-slug>`
+# が worktree を掴む。**worktree はリポジトリではない**ので、名前解決の
+# 名前空間に混ぜない。
+: "${CCS_WORKTREE_ROOT:=${HOME}/.cc-worktrees}"
 : "${CCS_PROJECTS_DIR:=${HOME}/.claude/projects}"
 
 # tmux セッション名の接頭辞。手で開いた tmux セッションを巻き込まないための境界。
@@ -268,6 +280,7 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
 
 使い方:
   ccs new <target> [-- <初期プロンプト>]  セッションを立てる
+  ccs new <repo>@<branch> [-- ...]        worktree を切ってそこに立てる
   ccs new --tmp [-- <初期プロンプト>]     使い捨ての作業枠に立てる
   ccs ls [--json]                         ccs のセッションを一覧する
   ccs attach <slug>                       セッションに乗り込む
@@ -292,6 +305,10 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
 <target>:
   <repo>        ghq 配下のリポジトリ名（例: x01）
   <path>        絶対パスまたは相対パス
+  <repo>@<branch>
+                そのリポジトリの worktree（無ければ作る）。
+                同じリポジトリに 2 本以上のセッションを立てる唯一の手段。
+                置き場所は CCS_WORKTREE_ROOT/<repo>/<branch>
   tmp           使い捨ての作業枠（--tmp の短い綴り。ghq に tmp という
                 リポジトリがあるときは曖昧なので受け付けない）
 
@@ -307,6 +324,7 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
     CCS_REMOTE_CONTROL Remote Control auto/on/off [既定: auto]
     CCS_PREFIX         tmux 名の接頭辞       [既定: cc/]
     CCS_SCRATCH_SLOTS  使い捨て作業枠の本数  [既定: 8]
+    CCS_WORKTREE_ROOT  worktree の置き場所   [既定: ~/.cc-worktrees]
 
   いま効いている値と出どころは `ccs config` で見られる。
   一覧と意味は docs/configuration.md、hub の運用は docs/hub.md。
@@ -351,6 +369,8 @@ require_deps() {
 
 CCS_RESOLVED_PATH=''
 CCS_RESOLVED_SLUG=''
+CCS_RESOLVED_WORKTREE_REPO=''
+CCS_RESOLVED_WORKTREE_BRANCH=''
 
 # tmux セッション名として安全な形にする。
 #
@@ -463,6 +483,157 @@ resolve_as_repo() {
 	esac
 }
 
+# ---------------------------------------------------------------------------
+# worktree（`ccs new <repo>@<branch>`）
+#
+# **1 リポジトリに 2 本目のセッションを立てるための唯一の手段。**
+# slug はリポジトリ名なので（design.md §4.2）、同じリポジトリを 2 回頼まれても
+# 冪等に 1 本目が返る。タスクごとにセッションを立てたいなら、作業ツリーごと
+# 分けるしかない（design.md §9.1）。
+#
+# 置き場所は `<CCS_WORKTREE_ROOT>/<repo-slug>/<branch-slug>`。
+# slug は `<repo-slug>@<branch-slug>`（design.md §4.2）。
+# ---------------------------------------------------------------------------
+
+# ブランチ名を slug に落とす。`feat/foo` → `feat-foo`。
+#
+# `/` を潰すのは tmux のためではなくパスのため — 枝分かれしたディレクトリを
+# 作ると、`feat` と `feat/foo` が同時に存在できなくなる。
+branch_slug() {
+	sanitize_slug "$1"
+}
+
+# <target> を repo 部とブランチ部に割る。**最後の `@` で割る。**
+# リポジトリ名に `@` が入ることはあるが、ブランチ名の `@` より後ろに来ない。
+worktree_split_repo() {
+	printf '%s' "${1%@*}"
+}
+
+worktree_split_branch() {
+	printf '%s' "${1##*@}"
+}
+
+# worktree の根を実在させ、絶対パスにして返す。
+#
+# **根だけは作る。** macOS の /tmp は /private/tmp への symlink なので、
+# 実在しないパスは正規化できず、前方一致（`path_is_ccs_worktree`）と
+# trust に書くキーが噛み合わなくなる（design.md §6 の ghq root で
+# 一度踏んだのと同じ形）。根は空ディレクトリなので作っても害が無い。
+worktree_root_abs() {
+	mkdir -p "$CCS_WORKTREE_ROOT" ||
+		die "$EX_FAIL" "worktree の置き場所を作れません: ${CCS_WORKTREE_ROOT}"
+	abs_dir "$CCS_WORKTREE_ROOT" ||
+		die "$EX_FAIL" "worktree の置き場所を解決できません: ${CCS_WORKTREE_ROOT}"
+}
+
+# その worktree があるべき絶対パス。**worktree 自体は作らない。**
+worktree_path_for() {
+	printf '%s/%s/%s\n' "$(worktree_root_abs)" "$1" "$(branch_slug "$2")"
+}
+
+# `<repo>@<branch>` を解決する。**ここでは作らない。**
+#
+# 作業枠（`--tmp`）は「空いている枠はどれか」で識別子が決まるので、
+# 解決の時点で枠を取る（＝ディレクトリを作る）必要がある。worktree は
+# repo と branch から一意に決まるので、その必要が無い。
+# **実体を作るのは `ccs new` だけ**（`ccs resolve` に副作用を持たせない）。
+resolve_as_worktree() {
+	_target=$1
+	_repo_q=$(worktree_split_repo "$_target")
+	_branch=$(worktree_split_branch "$_target")
+
+	[ -n "$_repo_q" ] ||
+		die "$EX_USAGE" "worktree の指定に対象がありません: ${_target}（<repo>@<branch> の形で書きます）"
+	[ -n "$_branch" ] ||
+		die "$EX_USAGE" "worktree の指定にブランチがありません: ${_target}（<repo>@<branch> の形で書きます）"
+
+	# repo 部は通常の解決に通す。`x01@feat` でも `ken-ty/x01@feat` でも
+	# `/path/to/x01@feat` でも同じ worktree に落ちる。
+	case $_repo_q in
+	/* | ./* | ../*) resolve_as_path "$_repo_q" ;;
+	*)
+		if [ -d "$_repo_q" ]; then
+			resolve_as_path "$_repo_q"
+		else
+			resolve_as_repo "$_repo_q"
+		fi
+		;;
+	esac
+
+	_repo_path=$CCS_RESOLVED_PATH
+	_repo_slug=$CCS_RESOLVED_SLUG
+
+	# **worktree の worktree は作らせない。** 入れ子にすると、どのブランチの
+	# どの作業ツリーなのかが slug から辿れなくなる。
+	case $_repo_path in
+	"$(worktree_root_abs)"/*)
+		warn "ccs: それは既に worktree です: ${_repo_path}"
+		warn ''
+		warn "  元のリポジトリを指してください: ccs new <repo>@${_branch}"
+		exit "$EX_FAIL"
+		;;
+	esac
+
+	CCS_RESOLVED_WORKTREE_REPO=$_repo_path
+	CCS_RESOLVED_WORKTREE_BRANCH=$_branch
+	CCS_RESOLVED_PATH=$(worktree_path_for "$_repo_slug" "$_branch")
+	CCS_RESOLVED_SLUG="${_repo_slug}@$(branch_slug "$_branch")"
+}
+
+# 解決済みの worktree を実在させる。冪等。
+#
+# **既にあるものは作り直さない。** 作り直すと、そこに残っている未コミットの
+# 作業が消える。`git worktree add` は既存のディレクトリを拒むので、
+# 先に「もう worktree として登録されているか」を見る。
+ensure_worktree() {
+	_repo=$1
+	_branch=$2
+	_path=$3
+
+	have "$CCS_GIT_BIN" ||
+		die "$EX_FAIL" "worktree を使うには git が要ります（${CCS_GIT_BIN} が見つかりません）"
+
+	"$CCS_GIT_BIN" -C "$_repo" rev-parse --git-dir >/dev/null 2>&1 ||
+		die "$EX_FAIL" "git リポジトリではありません: ${_repo}"
+
+	# 既にある。ここで戻るのが冪等性の本体。
+	if [ -d "$_path" ]; then
+		"$CCS_GIT_BIN" -C "$_path" rev-parse --git-dir >/dev/null 2>&1 ||
+			die "$EX_FAIL" "worktree のあるべき場所に、git 管理下でないものがあります: ${_path}"
+		return 0
+	fi
+
+	mkdir -p "$(dirname "$_path")" ||
+		die "$EX_FAIL" "worktree の置き場所を作れません: $(dirname "$_path")"
+
+	# ブランチが既にあるなら開く、無ければ作る。
+	# **既存ブランチを -b で作ろうとすると落ちる**ので、先に見る。
+	if "$CCS_GIT_BIN" -C "$_repo" show-ref --verify --quiet "refs/heads/${_branch}"; then
+		_out=$("$CCS_GIT_BIN" -C "$_repo" worktree add "$_path" "$_branch" 2>&1) || {
+			warn "ccs: worktree を作れませんでした: ${_path}"
+			warn ''
+			printf '%s\n' "$_out" >&2
+			exit "$EX_FAIL"
+		}
+		warn "ccs: 既存のブランチ ${_branch} を ${_path} に開きました。"
+	else
+		_out=$("$CCS_GIT_BIN" -C "$_repo" worktree add -b "$_branch" "$_path" 2>&1) || {
+			warn "ccs: worktree を作れませんでした: ${_path}"
+			warn ''
+			printf '%s\n' "$_out" >&2
+			warn ''
+			warn "  同じ名前のブランチが他の worktree で開かれているかもしれません:"
+			warn "    ${CCS_GIT_BIN} -C $(shq "$_repo") worktree list"
+			exit "$EX_FAIL"
+		}
+		warn "ccs: ブランチ ${_branch} を作って ${_path} に開きました。"
+	fi
+
+	# **追跡されていないものは付いてこない**（node_modules・.env・ビルド成果物）。
+	# 「元では動くのに worktree でだけ落ちる」の原因になるので先に言う。
+	warn '     追跡されていないファイル（依存・.env・ビルド成果物）は入っていません。'
+}
+
 dir_is_empty() {
 	[ -d "$1" ] || return 1
 	# 隠しファイルも数える。.git だけ残った枠を「空」と見なすと、
@@ -550,6 +721,15 @@ resolve_target() {
 	fi
 
 	case $_target in
+	*@*)
+		# **実在するディレクトリが優先。** `@` を含むディレクトリ名は
+		# 珍しくない（`foo@2` など）。実物があるならそれを指している。
+		if [ -d "$_target" ]; then
+			resolve_as_path "$_target"
+		else
+			resolve_as_worktree "$_target"
+		fi
+		;;
 	tmp)
 		if scratch_word_conflicts; then
 			warn 'ccs: tmp は使い捨ての作業枠を指す予約語ですが、同名のリポジトリもあります:'
@@ -693,6 +873,24 @@ path_is_scratch_slot() {
 	dir_is_empty "$1"
 }
 
+# ccs が作った worktree か。
+#
+# **元のリポジトリが ghq 配下なら、その worktree も信頼してよい。**
+# そこにあるのは人が意図して clone したリポジトリの中身そのもので、
+# 信頼確認が守ろうとしている「知らないコード」ではない（design.md §4.4 の
+# ghq と同じ理由）。これが無いと、タスクごとに worktree を切る運用で
+# **毎回 30 秒の信頼確認に固まる**。
+path_is_ccs_worktree() {
+	_wt_root=$(abs_dir "$CCS_WORKTREE_ROOT" 2>/dev/null) || return 1
+	case $1 in
+	"${_wt_root}"/*) ;;
+	*) return 1 ;;
+	esac
+	# 元のリポジトリが分からないときは自動承認しない。
+	[ -n "$CCS_RESOLVED_WORKTREE_REPO" ] || return 1
+	path_is_under_ghq "$CCS_RESOLVED_WORKTREE_REPO"
+}
+
 # hasTrustDialogAccepted を立てる。
 #
 # **~/.claude.json は Claude Code の状態がまとめて入っている 100KB 級の
@@ -750,6 +948,12 @@ ensure_trust() {
 	if path_is_under_ghq "$_p"; then
 		trust_accept "$_p"
 		warn "ccs: ghq 配下なので信頼済みにしました: ${_p}"
+		return 0
+	fi
+
+	if path_is_ccs_worktree "$_p"; then
+		trust_accept "$_p"
+		warn "ccs: ghq 配下のリポジトリの worktree なので信頼済みにしました: ${_p}"
 		return 0
 	fi
 
@@ -1005,6 +1209,14 @@ cmd_new() {
 		fi
 		warn "  畳んで立て直す:     ccs kill ${_slug} && ccs new ${_target}"
 		exit "$EX_FAIL"
+	fi
+
+	# **worktree の実体はここで初めて作る。** 解決（`ccs resolve`）に
+	# 副作用を持たせないため。既に立っているセッションを返す場合はここへ
+	# 来ないので、無駄な worktree も生えない。
+	if [ -n "$CCS_RESOLVED_WORKTREE_REPO" ]; then
+		ensure_worktree "$CCS_RESOLVED_WORKTREE_REPO" \
+			"$CCS_RESOLVED_WORKTREE_BRANCH" "$_path"
 	fi
 
 	ensure_trust "$_path" "$_slug"
