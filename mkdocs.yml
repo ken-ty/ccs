@@ -72,3 +72,4 @@ nav:
   - 決定記録 (ADR):
       - ADR とは: adr/README.md
       - 'ADR-0001: 使い捨て作業枠の同一性': adr/0001-scratch-workspace-identity.md
+      - 'ADR-0002: セッションの同一性': adr/0002-session-identity.md
