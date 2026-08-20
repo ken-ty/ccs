@@ -36,14 +36,23 @@ teardown() {
 	[[ "$output" == *"ccs new"* ]]
 }
 
-@test "help: 差し替え点が一覧に載っている" {
-	# 差し替え点はテストの生命線なので、ヘルプから消えたら気づけるようにする。
+@test "help: 設定の入口（ccs config）を案内している" {
+	# 差し替え点の一覧は `ccs config` が持つ（キーが 20 個あり、ヘルプに
+	# 全部並べると読めなくなったため）。ヘルプからそこへ辿れることを見る。
 	run "$CCS_BIN" help
 	[ "$status" -eq 0 ]
+	[[ "$output" == *"ccs config"* ]]
+}
+
+@test "config: 差し替え点が全部一覧に載っている" {
+	# 差し替え点はテストの生命線なので、一覧から消えたら気づけるようにする。
+	run "$CCS_BIN" config
+	[ "$status" -eq 0 ]
 	for var in CCS_CLAUDE_BIN CCS_TMUX_BIN CCS_GHQ_BIN CCS_JQ_BIN \
-		CCS_SESSIONS_DIR CCS_TRUST_FILE CCS_SCRATCH_ROOT CCS_PROJECTS_DIR; do
+		CCS_SESSIONS_DIR CCS_TRUST_FILE CCS_SCRATCH_ROOT CCS_PROJECTS_DIR \
+		CCS_HUB_SLUG CCS_HUB_HOME CCS_HUB_AUTOSTART CCS_REMOTE_CONTROL; do
 		[[ "$output" == *"$var"* ]] || {
-			echo "ヘルプに $var が無い"
+			echo "ccs config に $var が無い"
 			return 1
 		}
 	done

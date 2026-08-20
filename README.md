@@ -2,7 +2,8 @@
 
 ハブ 1 本から、tmux 上に複数の Claude Code セッションを立て・見つけ・畳むための CLI。
 
-**v1 のコマンドが揃った。** → [チュートリアル](docs/tutorial.md) / [動作確認の手順](docs/hands-on.md) / [設計調査](docs/design.md)
+**v1 のコマンドが揃い、常時稼働のハブ（`ccs hub`）が入った。**
+→ [チュートリアル](docs/tutorial.md) / [hub](docs/hub.md) / [設定](docs/configuration.md) / [設計調査](docs/design.md)
 
 ```bash
 git clone git@github.com:ken-ty/ccs.git ~/ghq/github.com/ken-ty/ccs
@@ -52,7 +53,14 @@ ccs attach <slug>                        # 人間が乗り込む
 ccs kill <slug>                          # ペインごと畳む
 ccs gc                                   # 死んだペイン・空の一時ディレクトリを掃除
 
+ccs hub up                               # ハブを立てる（生きていれば何もしない）
+ccs hub status [--json]                  # ハブの状態（終了コードで分岐できる）
+ccs hub restart [--resume]               # ハブを立て直す
+ccs hub down                             # ハブを止める（自動起動も止まる）
+ccs hub agent [--print]                  # 自動起動（launchd / systemd）の設定
+
 ccs resolve <target> [--json]            # <target> がどこに解決されるかを見る
+ccs config [--json]                      # 効いている設定と、その出どころ
 ```
 
 `resolve` は副作用を持たない（使い捨て枠の確保を除く）。**立てる前に、どのリポジトリの
@@ -94,6 +102,44 @@ $ ccs new agent-skills
 > `transcript` は**予測したパス**で、この時点ではまだファイルが無い。本物は最初の
 > やり取りが発生してから `.jsonl` を作る。
 
+## ハブを常時立てておく
+
+スマホや別のマシンから触るなら、**ハブ 1 本が常に生きていること**が前提になる。
+アプリから届くのは生きているセッションだけなので、ハブが死ぬと `ccs` を叩く
+経路ごと消える。
+
+```console
+$ ccs hub up
+{"slug":"hub","state":"healthy","sessionId":"…","tmux":"cc/hub","bridge":"session_…","created":true}
+
+$ ccs hub agent --print > ~/Library/LaunchAgents/local.ccs.hub.plist
+$ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.ccs.hub.plist
+```
+
+`ccs hub up` は冪等（生きていれば何もしない）なので、定期実行するだけで
+死活監視になる。落ちていれば立て直し、**認証切れと再起動の暴走は自動で直さず
+人を待つ**。詳しくは [docs/hub.md](docs/hub.md)。
+
+`ccs kill` と `ccs gc` はハブを対象にしない。ハブを畳むのは `ccs hub down`、
+作り直すのは `ccs hub restart`。
+
+## 自分の環境に合わせる
+
+既定値は作者の環境に合わせてある。**困るところは設定で変えられる。**
+
+```sh
+# ~/.config/ccs/config
+CCS_HUB_SLUG=orchestrator   # hub という名前のリポジトリを持っている
+CCS_HUB_AUTOSTART=off       # 自動起動は入れない
+CCS_REMOTE_CONTROL=off      # Remote Control を使わない
+```
+
+`env > 設定ファイル > 既定値` の順で効く。いま効いている値と出どころは
+`ccs config`、キーの一覧は [docs/configuration.md](docs/configuration.md)。
+
+**ghq には依存する**（リポジトリ名から場所を引く部分）。使っていない環境では
+パスで渡せばよい。
+
 ## 要件
 
 - `tmux`
@@ -101,10 +147,12 @@ $ ccs new agent-skills
 - `claude` 2.1.x 以降 — `--session-id` と `claude agents --json` に依存する
 - macOS / Linux。**Windows は対象外**（POSIX sh 前提）
 
-## v1 の範囲
+## 範囲
 
-`new` / `ls` / `attach` / `kill` / `gc` / `resolve` まで。**`resume` と worktree 対応は
-v1 に含めない。** 理由と派生する縛りは [docs/design.md §6](docs/design.md#6-決定事項2026-08-17)。
+`new` / `ls` / `attach` / `kill` / `gc` / `resolve` / `config` と、`hub` 一式。
+**汎用の `resume` と worktree 対応は入れていない**（`hub restart --resume` だけは
+ハブの復帰に要るので実装してある）。理由と派生する縛りは
+[docs/design.md §6](docs/design.md#6-決定事項2026-08-17)。
 
 ## ドキュメント
 
@@ -118,5 +166,6 @@ GitHub Pages へは出していない。private リポジトリ + Free プラン
 
 ## 関連
 
+- [hub の運用](docs/hub.md) / [設定](docs/configuration.md)
 - スキル側（ハブがいつ・どう呼ぶかの判断）は `agent-skills-store` の `cross-session-hub`
 - 調査で参照した資料は [docs/references.md](docs/references.md)
