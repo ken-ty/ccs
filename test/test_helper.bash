@@ -25,6 +25,9 @@ ccs_setup_sandbox() {
 	export CCS_TRUST_FILE="${CCS_TEST_TMP}/claude.json"
 	export CCS_SCRATCH_ROOT="${CCS_TEST_TMP}/scratch"
 	export CCS_PROJECTS_DIR="${CCS_TEST_TMP}/projects"
+	# **worktree の置き場所も必ず逃がす。** 漏れると本物の ~/.cc-worktrees に
+	# ブランチごとチェックアウトが生える。
+	export CCS_WORKTREE_ROOT="${CCS_TEST_TMP}/worktrees"
 	mkdir -p "$CCS_SESSIONS_DIR" "$CCS_SCRATCH_ROOT" "$CCS_PROJECTS_DIR"
 
 	# スタブを置く場所。PATH の先頭に差し込む。
@@ -63,6 +66,25 @@ has-session) exit 1 ;;
 esac
 '
 	export CCS_TMUX_BIN="${CCS_STUB_BIN}/tmux"
+}
+
+# テスト用の git リポジトリを作る。worktree のテストで使う。
+#
+# **本物の git を使う。** worktree の生成はまさに git の挙動そのものなので、
+# スタブに置き換えると「スタブが正しいこと」しか確かめられない。
+# git は claude と違って課金されないし、ネットワークにも出ない。
+ccs_make_git_repo() {
+	local _path=$1
+	mkdir -p "$_path"
+	git -C "$_path" init -q -b main
+	git -C "$_path" config user.email 'test@example.com'
+	git -C "$_path" config user.name 'ccs test'
+	# **hook を継承させない。** 利用者の core.hooksPath が効くと、
+	# テストの commit が本物の pre-commit を走らせる。
+	git -C "$_path" config core.hooksPath /dev/null
+	printf 'seed\n' >"${_path}/README.md"
+	git -C "$_path" add -A
+	git -C "$_path" commit -q -m 'seed'
 }
 
 # ghq を「決まったリポジトリ一覧を返すもの」に差し替える。

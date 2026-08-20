@@ -35,7 +35,6 @@
 | H7 | **本物の claude で hub を 1 周する**（docs/hub.md「まだ実測できていないこと」の 5 項目）。とくに launchd から起動した ccs が手元と同じ tmux サーバに入るか。結果を hands-on.md に足す | S | — |
 | P1 | **アプリからペインの中身を読む手段**（`ccs peek <slug>` 等。`tmux capture-pane` をハブ経由で返す） | M | [#19](https://github.com/ken-ty/ccs/issues/19)。**先に設計を決める。`/loop` で拾わない** |
 | P2 | **アプリからペインへコマンドを送る手段** | M | P1 の後。**`tmux send-keys` によるプロンプト注入は設計方針で禁じている**（design.md §3）。シェルへ送るのと claude へ送るのを混同しないこと |
-| C1 | **worktree 対応** `ccs new <repo>@<branch>`。**1 リポジトリに 2 本目が立たない**のが唯一の構造的ブロッカー（V2 から昇格） | M | — |
 | C2 | **`ccs new --label k=v`**（反復可）。tmux のユーザオプションに保存し、`ls --json` が返す。`ccs` は中身を解釈しない | S | — |
 | C3 | **`ls --json` の情報追加** — `idle/busy`・`startedAt`・`pid`・`transcript`・`labels`・`worktree`。既存フィールドは変えない | S | C2 |
 | C4 | **`--session-id` の外部指定**と**`--prompt-file`**。数 KB の仕様を argv で渡すと引用と長さで壊れる | S | — |
@@ -54,6 +53,7 @@ v1 の範囲外と決めたもの。**拾う前に人の判断が要る。**
 
 | 日付 | 内容 |
 | --- | --- |
+| 2026-08-20 | C1 `ccs new <repo>@<branch>`。**1 リポジトリに 2 本目のセッションが立たない**のが ccb の唯一の構造的ブロッカーだった（slug がリポジトリ名なので `ccs new x01` は冪等に 1 本目を返す）。置き場所を決める過程で **`ghq list` が `<repo>.worktrees/<name>` を独立したリポジトリとして列挙する**ことが分かったので、ghq root の外（`CCS_WORKTREE_ROOT`、既定 `~/.cc-worktrees`）に置いた — 中に置くと `resolve_as_repo` の末尾一致が worktree に当たり、`ccs new <branch-slug>` が worktree を掴む。**ghq 配下のリポジトリの worktree は自動で信頼する** — 中身は人が意図して clone したものそのもので、これが無いとタスクごとに 30 秒の信頼確認で固まる。**作るのは `ccs new` だけで `ccs resolve` は作らない**（枠と違い repo と branch から一意に決まるので、解決に副作用が要らない）。`/tmp`→`/private/tmp` の正規化漏れを実装とテストの両方で踏んだ（design.md §6 と同じ形）。テスト 26 件、合計 299 件 |
 | 2026-08-19 | H1〜H6 `ccs hub`（up / status / restart / down / attach / agent）と設定層。**スマホから使うと最初に壊れるのがハブ自身**だったので、落ちても戻る形にした ── `up` は冪等で、`bridgeSessionId` が付くまで待って初めて「立った」と見なす（RC が付かないセッションはアプリに出ない＝実質死。実測で null のまま残る個体があった）。**認証切れと再起動の暴走は自動で直さず止まる**（`/login` は対話が要る／無限再起動は課金とレート制限に直結する）。合わせて、既定値が作者の環境に固定されていた問題を設定層で解いた ── `hub` はリポジトリ名としてありふれているので `CCS_HUB_SLUG` で変えられ、RC を使わない環境は `CCS_REMOTE_CONTROL=off`、自動起動は `CCS_HUB_AUTOSTART` で on/login/off。設定ファイルは **source しない**（設定と実行の境界を保つため）。`ccs kill` は hub を `--force` でも拒否し、自セッションの kill には `--force` が要る。macOS の bash 3.2 + bats で日本語のテスト名が化ける問題も `LC_ALL=C` で塞いだ（他人の環境で `make test` が 1 件も走らない状態だった）。テスト 273 件 |
 | 2026-08-19 | `ccs` のセッションは **Claude アプリから端末の画面が見えない**制約を文書化（[#19](https://github.com/ken-ty/ccs/issues/19)）。レジストリ全件で `entrypoint` が `claude-desktop` / `claude-vscode`（`tmux` 無し）と `cli`（`tmux` 有り）に二分されることを確認し、**pty を持つ主体が違う**という推定を書いた（アプリ側の実装は未確認なので未検証と明記）。`ccs` 固有ではなく手で立てた tmux セッションも同じだが、**ccs を使うと全セッションがこうなる**ので ccs の制約として現れる。`ccs attach` が同一マシン限定であることを README と docs/index.md にも書いた。**why.md §4 で tmux の利点として挙げた「デスクトップアプリからの独立」が、ここでは代償として効いている** |
 | 2026-08-18 | `docs/why.md` を追加。**README が「なぜ薄いか」だけを答えていて「なぜ要るか」が書かれていなかった** — 委譲表だけを読むと「残り 4 つは手順書で足りる」が正しい推論になってしまう。素のセッションで新しいセッションが立たない理由を実測で残した（pty が無く対話モードが `--print` に落ちて即死する / `SendMessage` は既存宛のみ / `Agent` は独立セッションではない）。禁止ではないことも実測で示した（入れ子の `claude -p` は通る）—— ここを取り違えると「外から SSH で入る」別の問題を解きに行くことになる。手で tmux を叩いた比較も実走し、trust で固まること・`cc/` を落とすと `ccs ls` から漏れることを確認。tmux を選ぶ理由に attach・長時間稼働・デスクトップアプリからの独立を明記（切断頻度の比較は未検証と明示） |
