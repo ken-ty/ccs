@@ -100,6 +100,19 @@ teardown() {
 	[ "$(ccs_registry_count)" = '0' ]
 }
 
+@test "SIGHUP でもレジストリから消える" {
+	# **tmux は kill-session / kill-pane で SIGHUP を送る。** EXIT の trap だけに
+	# 頼ると、それが走るかどうかがシェル実装に依る（macOS の /bin/sh は
+	# bash で走り、Linux の /bin/sh は dash で走らない）。走らない側では
+	# 残骸が残り、次に立てたセッションと 2 件並ぶ。
+	ccs_start_fake_claude -n s --session-id 66666666-6666-6666-6666-666666666666
+	ccs_wait_registry_count 1
+
+	kill -HUP "$CCS_FAKE_PID"
+	ccs_wait_registry_count 0
+	[ "$(ccs_registry_count)" = '0' ]
+}
+
 # --- テスト用のつまみ ------------------------------------------------------
 
 @test "FAKE_CLAUDE_REGISTER_DELAY: 登録が遅れる" {

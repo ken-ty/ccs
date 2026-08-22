@@ -177,6 +177,12 @@ ccs_kill_claude_of() {
 		[ -e "$_f" ] || continue
 		if grep -q "\"tmux\":\"cc/${_slug}:" "$_f" 2>/dev/null; then
 			_pid=$(jq -r '.pid' "$_f")
+			# **残骸を掴まない。** 同じ slug のファイルが 2 件あることがある
+			# （前のセッションの残骸 + いま立っているもの）。glob の順は pid の
+			# 文字列順なので、どちらが先に来るかはマシンに依る。死んだ方を
+			# 掴むと kill が何もせず、ファイルも消えないまま時間切れになる。
+			# ccs 側の registry_is_live と同じ判定をする。
+			kill -0 "$_pid" 2>/dev/null || continue
 			kill "$_pid" 2>/dev/null || true
 			ccs_wait_until 5 bash -c "[ ! -f '$_f' ]"
 			return 0
