@@ -247,7 +247,13 @@ cmd_interactive() {
 	}
 	[ -n "$_name" ] || _name='fake'
 
+	# **HUP を明示的に取る。** `tmux kill-session` はペインのプロセスに
+	# SIGHUP を送る。macOS の /bin/sh は bash なのでシグナル死でも EXIT trap が
+	# 走るが、**Ubuntu の /bin/sh は dash で走らない** ── 残ったレジストリを
+	# あとから `cc/<slug>:` で拾ってしまい、「手元では通るのに CI で落ちる」に
+	# なる（2026-08-23 に CI が捕まえた）。EXIT だけに頼らない。
 	trap 'cleanup' EXIT
+	trap 'cleanup; exit 129' HUP
 	trap 'cleanup; exit 143' TERM
 	trap 'cleanup; exit 130' INT
 
