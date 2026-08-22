@@ -1325,9 +1325,14 @@ collect_session_row() {
 	_session="${CCS_PREFIX}${_slug}"
 	_file=''
 
+	# **残骸を「生きている」と読まない**（`registry_is_live` と同じ理由）。
+	# claude は終了時に自分のファイルを消すが、SIGKILL やシグナル死では
+	# 残る。残骸を掴むと、**死んでいるセッションを `idle` と表示し、
+	# 立て直したあとも古い sessionId を出し続ける**。
 	for _f in "$CCS_SESSIONS_DIR"/*.json; do
 		[ -e "$_f" ] || continue
 		if grep -q "\"tmux\":\"${_session}:" "$_f" 2>/dev/null; then
+			registry_is_live "$_f" || continue
 			_file=$_f
 			break
 		fi

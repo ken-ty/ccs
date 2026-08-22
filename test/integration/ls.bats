@@ -175,6 +175,24 @@ _new() {
 	[ "$_got_a" != "$_got_b" ]
 }
 
+@test "ls: 死んだプロセスのレジストリを掴まない" {
+	# claude は終了時に自分のファイルを消すが、シグナル死では残る。
+	# 残骸を掴むと、**死んでいるセッションを idle と表示し、立て直した
+	# あとも古い sessionId を出し続ける**（2026-08-23 に CI が捕まえた）。
+	_a=$(_new x01)
+	_live=$(echo "$_a" | jq -r '.sessionId')
+
+	# 同じ tmux セッションを指す残骸を、死んだ pid で置く。
+	# ファイル名を先頭に来るものにして、live より先に当たるようにする。
+	cat >"${CCS_SESSIONS_DIR}/00000.json" <<JSON
+{"pid":999999,"sessionId":"00000000-0000-4000-8000-000000000000","cwd":"/somewhere","tmux":"cc/x01:@0.%0","name":"stale","status":"idle"}
+JSON
+
+	run --separate-stderr "$CCS_BIN" ls --json
+	[ "$status" -eq 0 ]
+	[ "$(echo "$output" | jq -r '.[] | select(.slug=="x01") | .sessionId')" = "$_live" ]
+}
+
 # --- 出力の作法 -------------------------------------------------------------
 
 @test "ls --json: 妥当な JSON" {

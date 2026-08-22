@@ -145,10 +145,15 @@ CI（ubuntu / tmux の外 / C ロケール）と手元（macOS / **tmux の中**
   `make check` を回す。「tmux の外」を前提にするテストは ambient の `$TMUX` を
   継承しないよう、**テスト側で明示的に `unset TMUX TMUX_PANE` する**
 
-## 検証ゲート — push 前に手元で回す
+## 検証ゲート — 手元とマージ前の 2 段
 
-**CI は `main` への push でしか回らない。** PR 側では回らないので、壊れたものを
-push しないための関門は `hooks/pre-push` にある。
+**CI は `main` への push と PR の両方で回る**（2026-08-23 に PR 側を戻した。
+public にしたので標準ランナーが無料になり、ruleset で required check にできる)。
+`ci.yml` の `check` は **`main` の ruleset で required** にしてあるので、
+**赤い PR はマージできない。**
+
+そのうえで、関門は手元にもある。**手元で落とすほうが速い**ので、CI は最後の
+関門であって最初の関門ではない。
 
 ```sh
 make setup-hooks    # git config core.hooksPath hooks
@@ -171,7 +176,8 @@ make setup-hooks    # git config core.hooksPath hooks
 **docs のパス一覧は `docs.yml` の `&docs_paths` と `hooks/pre-push` の 2 箇所にある。
 片方を変えたら両方直すこと。**
 
-逃げ道は `git push --no-verify`。使ってよいのは「CI で確かめたい」ときだけ。
+逃げ道は `git push --no-verify`。使ってよいのは「CI で確かめたい」ときだけ
+（**マージ前に PR で捕まる**ので、main を壊すことにはならない）。
 
 ### 手元で再現できないものが 1 つある
 
