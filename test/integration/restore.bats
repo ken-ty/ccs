@@ -1,0 +1,366 @@
+#!/usr/bin/env bats
+#
+# ccs restore
+#
+# **戻すのは会話であって、ディレクトリではない。** 立て直したセッションが
+# 元と同じ sessionId になっていることを毎回確かめる ── ここがずれると、
+# 「戻った」ように見えて別の（あるいは新しい）会話が立っているだけになる。
+#
+# 実機の出発点は PC の再起動で、そのとき消えるのは tmux セッションごと。
+# 「ペインは残っているが claude が死んでいる」場合と両方を押さえる。
+
+bats_require_minimum_version 1.5.0
+
+load '../test_helper'
+
+setup() {
+	ccs_setup_sandbox
+	ccs_use_fake_claude
+	ccs_use_own_tmux_server
+	ccs_stub_ghq ''
+	export CCS_NEW_TIMEOUT=15
+	# 会話ログが無ければ戻すものが無い。**tmux サーバの環境は起動時に
+	# 固定される**ので、最初の ccs 実行より前に export する。
+	export FAKE_CLAUDE_TRANSCRIPT=1
+}
+
+teardown() {
+	ccs_kill_own_tmux_server
+	ccs_teardown_sandbox
+}
+
+# 作業枠に 1 本立てて、その sessionId を返す。
+_new_tmp() {
+	run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 0 ]
+	printf '%s' "$output" | jq -r '.sessionId'
+}
+
+# 会話ログの置き場所（ccs と同じ規則で前向きに組み立てる）。
+_transcript_dir() {
+	printf '%s/%s' "$CCS_PROJECTS_DIR" \
+		"$(printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g')"
+}
+
+# 作業枠の絶対パス（/tmp → /private/tmp の正規化を通す）。
+_slot_path() {
+	printf '%s/%s' "$(cd "$CCS_SCRATCH_ROOT" && pwd -P)" "$1"
+}
+
+# 再起動を模す。tmux セッションごと消す。
+_wipe_session() {
+	ccs_tmux kill-session -t "=cc/$1"
+	ccs_wait_until 5 bash -c "! tmux -L '$CCS_TMUX_SOCKET' has-session -t '=cc/$1' 2>/dev/null"
+}
+
+# --- 何も無いとき ----------------------------------------------------------
+
+@test "restore: 戻すものが無ければその旨を出す" {
+	run "$CCS_BIN" restore
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"ありません"* ]]
+}
+
+@test "restore: 生きているセッションは候補に出ない" {
+	_new_tmp >/dev/null
+
+	run "$CCS_BIN" restore
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"tmp-1"* ]]
+}
+
+# --- 消えた作業枠を戻す ----------------------------------------------------
+
+@test "restore: tmux ごと消えた作業枠を、同じ会話で立て直す" {
+	local id
+	id=$(_new_tmp)
+	_wipe_session tmp-1
+
+	run "$CCS_BIN" restore --yes
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"戻しました"* ]]
+
+	ccs_tmux has-session -t '=cc/tmp-1'
+
+	# **同じ sessionId で戻っていること。** ここが本体。
+	run --separate-stderr "$CCS_BIN" ls --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].sessionId')" = "$id" ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].slug')" = 'tmp-1' ]
+}
+
+@test "restore: 既定では立てない（dry-run）" {
+	# 戻すと claude が動き出す。確認なしで N 本動き出す設計は割に合わない
+	# （ccs gc と同じ作法）。
+	_new_tmp >/dev/null
+	_wipe_session tmp-1
+
+	run "$CCS_BIN" restore
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"tmp-1"* ]]
+	[[ "$output" == *"ccs restore --yes"* ]]
+
+	run ccs_tmux has-session -t '=cc/tmp-1'
+	[ "$status" -ne 0 ]
+}
+
+@test "restore: 枠のディレクトリが gc で消えていても戻せる" {
+	# 枠は ccs が作る空のディレクトリなので、消えていても失うものが無い。
+	# 会話ログのほうは残っているので、そこに戻す。
+	local id
+	id=$(_new_tmp)
+	_wipe_session tmp-1
+	rmdir "$(_slot_path 1)"
+
+	run "$CCS_BIN" restore --yes
+	[ "$status" -eq 0 ]
+	[ -d "$(_slot_path 1)" ]
+
+	run --separate-stderr "$CCS_BIN" ls --json
+	[ "$(printf '%s' "$output" | jq -r '.[0].sessionId')" = "$id" ]
+}
+
+@test "restore: 会話の名前を上書きしない（-n を渡さない）" {
+	# 戻す会話には既に名前が付いていて、アプリの一覧に出ているのはその名前。
+	# ここで slug を被せると、探している名前のほうが消える。
+	_new_tmp >/dev/null
+	_wipe_session tmp-1
+
+	local log="${CCS_TEST_TMP}/claude-args.txt"
+	FAKE_CLAUDE_LOG="$log" run "$CCS_BIN" restore --yes
+	[ "$status" -eq 0 ]
+
+	# tmux サーバは既に起動しているので、FAKE_CLAUDE_LOG はペイン側には
+	# 届かない。ccs が組み立てたコマンド文字列を tmux から直接見る。
+	run ccs_tmux list-panes -t '=cc/tmp-1' -F '#{pane_start_command}'
+	[[ "$output" == *"--resume"* ]]
+	[[ "$output" != *" -n "* ]]
+}
+
+# --- 止まったペイン --------------------------------------------------------
+
+@test "restore: ペインが残っているだけのセッションも立て直す" {
+	local id
+	id=$(_new_tmp)
+	ccs_kill_claude_of tmp-1
+
+	run --separate-stderr "$CCS_BIN" ls --json
+	[ "$(printf '%s' "$output" | jq -r '.[0].status')" = 'stopped' ]
+
+	run "$CCS_BIN" restore --yes
+	[ "$status" -eq 0 ]
+
+	run --separate-stderr "$CCS_BIN" ls --json
+	[ "$(printf '%s' "$output" | jq -r '.[0].status')" != 'stopped' ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].sessionId')" = "$id" ]
+}
+
+@test "restore: 戻したセッションが止まっても uuid を引ける" {
+	# --resume で立てたペインは --session-id を持たない。両方を読めないと、
+	# 二度目の復帰路が消える（ccs ls の stopped 行が - になる）。
+	local id
+	id=$(_new_tmp)
+	_wipe_session tmp-1
+	"$CCS_BIN" restore --yes >/dev/null
+	ccs_kill_claude_of tmp-1
+
+	run --separate-stderr "$CCS_BIN" ls --json
+	[ "$(printf '%s' "$output" | jq -r '.[0].status')" = 'stopped' ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].sessionId')" = "$id" ]
+}
+
+# --- 名指し ----------------------------------------------------------------
+
+@test "restore: slug を名指しできる" {
+	local id
+	id=$(_new_tmp)
+	_wipe_session tmp-1
+
+	run "$CCS_BIN" restore tmp-1 --yes
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"$id"* ]]
+}
+
+@test "restore: --list はその場所の会話を並べる" {
+	local id
+	id=$(_new_tmp)
+	_wipe_session tmp-1
+
+	# 同じ枠に古い会話を 1 つ置く。
+	printf '{"type":"user","cwd":"%s","sessionId":"old"}\n' "$(_slot_path 1)" \
+		>"$(_transcript_dir "$(_slot_path 1)")/00000000-0000-4000-8000-000000000000.jsonl"
+
+	run "$CCS_BIN" restore tmp-1 --list
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"$id"* ]]
+	[[ "$output" == *"00000000-0000-4000-8000-000000000000"* ]]
+}
+
+@test "restore: --session-id で古い会話を選べる" {
+	_new_tmp >/dev/null
+	_wipe_session tmp-1
+
+	local old='00000000-0000-4000-8000-000000000000'
+	printf '{"type":"user","cwd":"%s","sessionId":"%s"}\n' "$(_slot_path 1)" "$old" \
+		>"$(_transcript_dir "$(_slot_path 1)")/${old}.jsonl"
+
+	run "$CCS_BIN" restore tmp-1 --session-id "$old" --yes
+	[ "$status" -eq 0 ]
+
+	run --separate-stderr "$CCS_BIN" ls --json
+	[ "$(printf '%s' "$output" | jq -r '.[0].sessionId')" = "$old" ]
+}
+
+@test "restore: 生きている slug を名指ししても触らない" {
+	local id
+	id=$(_new_tmp)
+
+	run "$CCS_BIN" restore tmp-1 --yes
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"生きている"* ]]
+
+	run --separate-stderr "$CCS_BIN" ls --json
+	[ "$(printf '%s' "$output" | jq -r '.[0].sessionId')" = "$id" ]
+}
+
+# --- 戻せないものを黙って戻さない ------------------------------------------
+
+@test "restore: 会話ログが無ければ理由を出して戻さない" {
+	_new_tmp >/dev/null
+	_wipe_session tmp-1
+	rm -f "$(_transcript_dir "$(_slot_path 1)")"/*.jsonl
+
+	run "$CCS_BIN" restore
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"ccs restore --yes"* ]]
+}
+
+@test "restore: 会話ログの cwd が食い違えば飛ばす" {
+	# エンコード規則の答え合わせ。規則が変わったとき、黙って別の会話を
+	# 戻すのではなく、その 1 本を飛ばす。
+	_new_tmp >/dev/null
+	_wipe_session tmp-1
+
+	local f
+	f=$(ls "$(_transcript_dir "$(_slot_path 1)")"/*.jsonl | head -1)
+	printf '{"type":"user","cwd":"/somewhere/else","sessionId":"x"}\n' >"$f"
+
+	run "$CCS_BIN" restore
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"cwd が違います"* ]]
+	[[ "$output" != *"ccs restore --yes"* ]]
+}
+
+# --- 古さ ------------------------------------------------------------------
+
+@test "restore: 古い会話は既定では拾わない" {
+	_new_tmp >/dev/null
+	_wipe_session tmp-1
+	touch -t 202001010000 "$(_transcript_dir "$(_slot_path 1)")"/*.jsonl
+
+	run "$CCS_BIN" restore
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"ありません"* ]]
+}
+
+@test "restore: --all なら古い会話も拾う" {
+	_new_tmp >/dev/null
+	_wipe_session tmp-1
+	touch -t 202001010000 "$(_transcript_dir "$(_slot_path 1)")"/*.jsonl
+
+	run "$CCS_BIN" restore --all
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"tmp-1"* ]]
+}
+
+@test "restore: 名指しなら古くても戻す" {
+	_new_tmp >/dev/null
+	_wipe_session tmp-1
+	touch -t 202001010000 "$(_transcript_dir "$(_slot_path 1)")"/*.jsonl
+
+	run "$CCS_BIN" restore tmp-1
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"tmp-1"* ]]
+}
+
+# --- hub ------------------------------------------------------------------
+
+@test "restore: hub は候補に入れない" {
+	# hub は ccs hub up（自動起動）が立て直す担当。
+	export CCS_HUB_HOME="${CCS_TEST_TMP}/hub"
+	"$CCS_BIN" hub up --quiet
+	ccs_kill_claude_of hub
+
+	run "$CCS_BIN" restore
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"hub"* ]]
+}
+
+# --- worktree --------------------------------------------------------------
+
+@test "restore: 消えた worktree セッションも候補に入る" {
+	# worktree は ccs が置き場所を決めているので、枠と同じく列挙してよい
+	# （ghq 配下のリポジトリと違い、そこに立てたのは ccs だけ）。
+	local repo="${CCS_TEST_TMP}/ghq/github.com/o/x01"
+	ccs_make_git_repo "$repo"
+	ccs_stub_ghq "$repo"
+
+	local id
+	run --separate-stderr "$CCS_BIN" new 'x01@topic'
+	[ "$status" -eq 0 ]
+	id=$(printf '%s' "$output" | jq -r '.sessionId')
+
+	_wipe_session 'x01@topic'
+
+	run "$CCS_BIN" restore --yes
+	[ "$status" -eq 0 ]
+	[[ "$output" == *'x01@topic'* ]]
+
+	run --separate-stderr "$CCS_BIN" ls --json
+	[ "$(printf '%s' "$output" | jq -r '.[0].slug')" = 'x01@topic' ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].sessionId')" = "$id" ]
+}
+
+@test "restore: ghq 配下のリポジトリは列挙しない（名指しなら戻す）" {
+	# そこの会話ログは ccs が立てたものとは限らない（デスクトップアプリや
+	# VS Code から開いたものも同じ場所に溜まる）。一括で戻さない。
+	local repo="${CCS_TEST_TMP}/ghq/github.com/o/x01"
+	ccs_make_git_repo "$repo"
+	ccs_stub_ghq "$repo"
+
+	local id
+	run --separate-stderr "$CCS_BIN" new x01
+	[ "$status" -eq 0 ]
+	id=$(printf '%s' "$output" | jq -r '.sessionId')
+
+	_wipe_session x01
+
+	run "$CCS_BIN" restore
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"x01"* ]]
+
+	run "$CCS_BIN" restore x01 --yes
+	[ "$status" -eq 0 ]
+
+	run --separate-stderr "$CCS_BIN" ls --json
+	[ "$(printf '%s' "$output" | jq -r '.[0].sessionId')" = "$id" ]
+}
+
+# --- hub up からの案内 ------------------------------------------------------
+
+@test "hub up: 立て直したときだけ、他に止まっているものがあると言う" {
+	# 再起動の直後がまさにこれ。**言うだけで、立て直しはしない** ──
+	# 自動起動から 5 分おきに走るので、ここで戻すと人が畳んだものが生き返る。
+	export CCS_HUB_HOME="${CCS_TEST_TMP}/hub"
+	_new_tmp >/dev/null
+	_wipe_session tmp-1
+
+	run "$CCS_BIN" hub up
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"ccs restore"* ]]
+
+	# 2 回目は hub が健全なので何も言わない（毎回吠えない）。
+	run "$CCS_BIN" hub up
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"ccs restore"* ]]
+}

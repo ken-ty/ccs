@@ -52,6 +52,7 @@ ccs ls [--json]                          # cc/ 接頭辞のセッションだけ
 ccs attach <slug>                        # 人間が乗り込む
 ccs kill <slug>                          # ペインごと畳む
 ccs gc                                   # 死んだペイン・空の一時ディレクトリを掃除
+ccs restore [--yes] [<slug>...]          # 止まった／消えたセッションを同じ会話で立て直す
 
 ccs hub up                               # ハブを立てる（生きていれば何もしない）
 ccs hub status [--json]                  # ハブの状態（終了コードで分岐できる）
@@ -136,6 +137,27 @@ $ ccs ls                           # hub が 1 本だけ
 `ccs kill` と `ccs gc` はハブを対象にしない。ハブを畳むのは `ccs hub down`、
 作り直すのは `ccs hub restart`。
 
+## 再起動のあとに戻す
+
+再起動すると tmux サーバごと消える。ハブは自動起動で戻るが、**他のセッションは
+誰も立て直さない。** 会話自体は `~/.claude/projects/**.jsonl` に残っているので、
+同じ場所で `claude --resume <uuid>` を立てれば同じ会話に戻る。
+
+```console
+$ ccs restore                # 戻せるものを見せる（既定。何もしない）
+立て直せるセッション:
+  tmp-1   2026-08-22 13:45  caf95a3f-...  ドキュメント整理
+  tmp-2   2026-08-22 13:45  c56885d3-...  設計メモ
+
+実行するには: ccs restore --yes
+```
+
+拾うのは **`ccs` が置き場所を決めているところだけ**（作業枠・worktree・止まった
+ペイン）。ghq 配下のリポジトリは名指ししたときだけ戻す ── そこの会話ログは
+デスクトップアプリや VS Code のものと混ざっているため。**`ccs hub up` は restore を
+しない**（自動起動から 5 分おきに走るので、人が畳んだものが生き返ってしまう）。
+詳細は [docs/restore.md](docs/restore.md)。
+
 ## 自分の環境に合わせる
 
 既定値は作者の環境に合わせてある。**困るところは設定で変えられる。**
@@ -162,10 +184,10 @@ CCS_REMOTE_CONTROL=off      # Remote Control を使わない
 
 ## 範囲
 
-`new` / `ls` / `attach` / `kill` / `gc` / `resolve` / `config` と、`hub` 一式。
-**汎用の `resume` と worktree 対応は入れていない**（`hub restart --resume` だけは
-ハブの復帰に要るので実装してある）。理由と派生する縛りは
-[docs/design.md §6](docs/design.md#6-決定事項2026-08-17)。
+`new` / `ls` / `attach` / `kill` / `gc` / `restore` / `resolve` / `config` と、`hub` 一式。
+`restore` と worktree 対応は v1 の範囲外だったが、どちらも実機で詰まったので後から入れた
+（[docs/design.md §6](docs/design.md#6-決定事項2026-08-17) の「v1 の範囲」と
+[§10](docs/design.md#10-restore止まったセッションの立て直し2026-08-22-決定)）。
 
 ## ドキュメント
 

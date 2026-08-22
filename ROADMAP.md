@@ -20,7 +20,7 @@
 | 冪等性 | 同一 slug の tmux セッションがあれば**新規に立てず既存を返す** | design.md §4.3 |
 | trust | 固定枠 `~/.cc-scratch/{1..8}`。自動承認は **ghq 配下**と**空の作業枠**だけ。**`send-keys` で答える案は採らない** | design.md §4.4 |
 | 使い捨て枠の指定 | 正式な綴りは **`--tmp`**。予約語 `tmp` も残すが、ghq に同名リポジトリがあれば選ばずに止まる | design.md §4.3 |
-| v1 の範囲 | `new` / `ls` / `attach` / `kill` / `gc` まで。**汎用の `resume` と worktree は入れない** | design.md §6 |
+| v1 の範囲 | `new` / `ls` / `attach` / `kill` / `gc` まで。~~**汎用の `resume` と worktree は入れない**~~ → どちらも後から入れた（worktree は C1、`restore` は R1） | design.md §6、§9.6、§10 |
 | hub | 常時 1 本。RC 名まで明示し、`bridgeSessionId` が付いて初めて「立った」。再起動は既定でまっさら | design.md §8 |
 | 設定 | env > 設定ファイル > 既定値。**設定ファイルを source しない**。知らないキーは警告する | design.md §8.2 |
 | 通知 | hub の異常は `hub.log`（JSONL）にだけ書く。**外部送信はしない** | design.md §8.1 |
@@ -33,26 +33,26 @@
 | # | 内容 | サイズ | 依存 |
 | --- | --- | --- | --- |
 | V4 | **ドキュメントを GitHub Pages へ出す** — `.github/workflows/docs.yml` は Artifacts に上げるだけで、その理由に「private だから」と書いてある。public になったら前提が消えるので書き換える。**可視性の変更が実行されてから着手する** | S | 可視性の変更（人が実行） |
-| H7 | **本物の claude で hub を 1 周する**の残り 4 項目（docs/hub.md「まだ実測できていないこと」）。**アプリ側の見え方だけが残っている** — 名前が維持されるか / `offline` が積み上がらないか / `--resume` で RC が張り直されるか / `remoteControlAtStartup` との二重登録。launchd の経路は 2026-08-22 に実測済み | S | — |
+| H7 | **本物の claude で hub を 1 周する**の残り（docs/hub.md「まだ実測できていないこと」）。**アプリ側の見え方だけが残っている** — 名前が維持されるか / `offline` が積み上がらないか / `remoteControlAtStartup` との二重登録。launchd の経路は 2026-08-22 に実測済み。**`--resume` で RC が張り直されることは R1 の検証で確認した**（レジストリ上は同じ `bridgeSessionId` が戻る。アプリ側の見え方は未確認） | S | — |
 | P1 | **アプリからペインの中身を読む手段**（`ccs peek <slug>` 等。`tmux capture-pane` をハブ経由で返す） | M | [#19](https://github.com/ken-ty/ccs/issues/19)。**先に設計を決める。`/loop` で拾わない** |
 | P2 | **アプリからペインへコマンドを送る手段** | M | P1 の後。**`tmux send-keys` によるプロンプト注入は設計方針で禁じている**（design.md §3）。シェルへ送るのと claude へ送るのを混同しないこと |
 | C2 | **`ccs new --label k=v`**（反復可）。tmux のユーザオプションに保存し、`ls --json` が返す。`ccs` は中身を解釈しない | S | — |
 | C3 | **`ls --json` の情報追加** — `idle/busy`・`startedAt`・`pid`・`transcript`・`labels`・`worktree`。既存フィールドは変えない | S | C2 |
 | C4 | **`--session-id` の外部指定**と**`--prompt-file`**。数 KB の仕様を argv で渡すと引用と長さで壊れる | S | — |
 | C5 | **`ccs new --json` で失敗理由も機械可読に**。いまは人間向けの文が stderr、終了コード 1 だけ | S | — |
+| R2 | **`ccs restore --json`**。いまの出力は人間向けだけなので、ハブのエージェントが結果を読めない（`ccs gc` も同じ状態） | S | R1 |
 
 ## v2 の候補（着手しない。判断待ち）
 
 v1 の範囲外と決めたもの。**拾う前に人の判断が要る。**
 
-| # | 内容 | 出所 |
-| --- | --- | --- |
-| V1 | `ccs resume <slug>` — 止まったペインに `claude --resume <uuid>` を流し込む（hub には `hub restart --resume` として入っている。汎用化するかは未決） | design.md §6 で v1 から外した。いまは手で打つ |
+いまは空（V1 は R1 として実装した）。
 
 ## 完了ログ
 
 | 日付 | 内容 |
 | --- | --- |
+| 2026-08-22 | R1 `ccs restore`（v2 候補だった V1 を、実機の要求で前倒し）。**PC の再起動で hub 以外の 8 本が offline のまま戻らなかった**のが出発点。会話は `~/.claude/projects/**.jsonl` に残るので、同じ場所で `claude --resume <uuid>` を立てれば戻る ── それを候補ごと見つけてまとめてやる。**列挙の根拠を durable な場所に置いた** ── レジストリ（`~/.claude/sessions/<pid>.json`）は**再起動を跨いで残っていなかった**（実測。pid キーなので残っても再利用と衝突する）ので、`ccs` 自身が場所を決めているところ（止まったペイン / `~/.cc-scratch/<n>` / `~/.cc-worktrees/<repo>/<branch>`）だけを舐める。**ghq 配下は列挙しない** — そこの会話ログはデスクトップアプリや VS Code のものと混ざっている。**エンコード規則は前向きにしか使えない**（`/` も `.` も `_` も `-` に潰れるので逆算不能。`claude --resume` の一覧も対話ピッカーしか無い）ので、当たった会話ログの中の `cwd` で答え合わせをして、食い違ったら飛ばす。**`ccs hub up` には混ぜない** — 5 分おきに走るので、人が畳んだものが生き返る（`ccs` は「畳んだ」と「落ちた」を durable な情報から区別できない）。代わりに hub を実際に立て直したときだけ 1 行案内する。**`-n` を渡さない**のが `ccs new` との唯一の違い ── 被せると会話に付いた名前が消える。既定は dry-run（戻した会話はその場で走り出すことがあり、止める手段は `ccs` に無い）。ついでに `pane_start_command` から uuid を拾う正規表現が `--resume` を見ていなかったのを直した（一度戻したセッションの復帰路が二度目から消えていた）。本物の claude で 1 周検証済み（同じ sessionId・会話の継続・名前の保持・`bridgeSessionId` の復帰）。テスト 31 件 |
 | 2026-08-22 | H7 のうち **launchd の経路を実測**し、そこで見つかった不具合を直した。`ccs hub agent` が出す plist は `-lc` でログインシェルを起こすだけだったので、**PATH を `~/.zshrc` で足している環境（Homebrew の既定の入れ方）では tmux も claude も見つからず、`ccs hub up` が依存不足で即死していた** ── `agent.log` に同じ依存不足が積まれるだけで、hub は永久に立たない。launchd が渡すのは `/usr/bin:/bin:/usr/sbin:/sbin` 相当で、`-lc` で読まれるのは `/etc/zprofile` と `~/.zprofile` まで（`~/.zshrc` は対話シェル専用）。**生成時に解決できた依存の在処をユニットに焼き込む**形にした（launchd は `EnvironmentVariables`、systemd は `Environment=PATH=`）。焼き込みなので**ユニットは生成した環境に紐づく** — Homebrew を動かしたら出し直す、と docs に明記した。直したうえで `tmux kill-server` → `launchctl bootstrap` を通し、**launchd から起動した ccs が手元と同じ tmux サーバ（`/private/tmp/tmux-501/default`）に入る**ことを確認 ── ここが崩れると設計ごと組み直しだった項目が閉じた。残る H7 はアプリ側の見え方だけ。テスト 302 件 |
 | 2026-08-20 | C1 `ccs new <repo>@<branch>`。**1 リポジトリに 2 本目のセッションが立たない**のが ccb の唯一の構造的ブロッカーだった（slug がリポジトリ名なので `ccs new x01` は冪等に 1 本目を返す）。置き場所を決める過程で **`ghq list` が `<repo>.worktrees/<name>` を独立したリポジトリとして列挙する**ことが分かったので、ghq root の外（`CCS_WORKTREE_ROOT`、既定 `~/.cc-worktrees`）に置いた — 中に置くと `resolve_as_repo` の末尾一致が worktree に当たり、`ccs new <branch-slug>` が worktree を掴む。**ghq 配下のリポジトリの worktree は自動で信頼する** — 中身は人が意図して clone したものそのもので、これが無いとタスクごとに 30 秒の信頼確認で固まる。**作るのは `ccs new` だけで `ccs resolve` は作らない**（枠と違い repo と branch から一意に決まるので、解決に副作用が要らない）。`/tmp`→`/private/tmp` の正規化漏れを実装とテストの両方で踏んだ（design.md §6 と同じ形）。テスト 26 件、合計 299 件 |
 | 2026-08-19 | H1〜H6 `ccs hub`（up / status / restart / down / attach / agent）と設定層。**スマホから使うと最初に壊れるのがハブ自身**だったので、落ちても戻る形にした ── `up` は冪等で、`bridgeSessionId` が付くまで待って初めて「立った」と見なす（RC が付かないセッションはアプリに出ない＝実質死。実測で null のまま残る個体があった）。**認証切れと再起動の暴走は自動で直さず止まる**（`/login` は対話が要る／無限再起動は課金とレート制限に直結する）。合わせて、既定値が作者の環境に固定されていた問題を設定層で解いた ── `hub` はリポジトリ名としてありふれているので `CCS_HUB_SLUG` で変えられ、RC を使わない環境は `CCS_REMOTE_CONTROL=off`、自動起動は `CCS_HUB_AUTOSTART` で on/login/off。設定ファイルは **source しない**（設定と実行の境界を保つため）。`ccs kill` は hub を `--force` でも拒否し、自セッションの kill には `--force` が要る。macOS の bash 3.2 + bats で日本語のテスト名が化ける問題も `LC_ALL=C` で塞いだ（他人の環境で `make test` が 1 件も走らない状態だった）。テスト 273 件 |

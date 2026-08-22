@@ -43,6 +43,7 @@ tmux・CLI を選んだ理由。
 | `ccs attach <slug>` | 乗り込む |
 | `ccs kill [--force] <slug>` | 畳む |
 | `ccs gc [--yes]` | 止まったセッションと空の作業枠を掃除する |
+| [`ccs restore [--yes]`](restore.md) | 止まった／消えたセッションを同じ会話で立て直す |
 | `ccs resolve <target> [--json]` | 立てる前に、どこに解決されるかを見る |
 | `ccs config [--json]` | 効いている設定と、その出どころを見る |
 | [`ccs hub …`](hub.md) | 常時 1 本のハブを立て、落ちても戻るようにする |
