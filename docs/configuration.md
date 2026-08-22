@@ -60,8 +60,8 @@ CCS_SCRATCH_SLOTS=4           # 使い捨て枠は 4 本で足りる
 | --- | --- | --- |
 | `CCS_HUB_SLUG` | `hub` | **`hub` という名前のリポジトリを持っているとき。** 予約語がぶつかる |
 | `CCS_HUB_HOME` | `~/.cc-hub` | ホーム直下に増やしたくないとき |
-| `CCS_HUB_AUTOSTART` | `on` | 自動起動を `login` だけにする / 入れない（`off`） |
-| `CCS_HUB_AGENT_INTERVAL` | `300` | 監視の間隔（秒） |
+| `CCS_HUB_AUTOSTART` | `on` | 自動起動を `login` だけにする / 入れない（`off`）。**既定の `on`（ログイン時 + 5 分ごと）が推奨** |
+| `CCS_HUB_AGENT_INTERVAL` | `300` | 監視の間隔（秒）。**短くても負荷にならない** ── healthy なときの `ccs hub up` は claude を起動せず 0.06 秒で終わる |
 | `CCS_HUB_AGENT_LABEL` | `local.ccs.hub` | launchd のラベル。組織の命名規約に合わせるとき |
 | `CCS_REMOTE_CONTROL` | `auto` | Remote Control を使わない環境では `off`、全セッションに付けたいなら `on` |
 | `CCS_PREFIX` | `cc/` | 既に `cc/` を別の用途で使っているとき |
@@ -85,6 +85,12 @@ ccs: hub は hub を指す予約語です。
 `<owner>/hub` で開いたときの slug は `<owner>-hub` になる。`cc/hub` は hub の
 ものなので、他のリポジトリには使わせない ── 使わせると、立てた瞬間に hub の
 生死判定が壊れる。
+
+### 自動起動の間隔を変える場合
+
+**ユニットを出し直して入れ直すまで効かない。** `ccs hub agent` は値を
+plist / timer に焼き込むので、設定ファイルや env を変えただけでは、既に置いた
+ユニットは変わらない。手順は [hub §常時起動](hub.md#間隔を変える)。
 
 ### Remote Control を使わない場合
 

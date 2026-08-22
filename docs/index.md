@@ -53,7 +53,18 @@ tmux・CLI を選んだ理由。
 届くのは生きているセッションだけなので、ハブが死ぬと `ccs` を叩く経路ごと消える。
 
 `ccs hub up` は冪等（生きていれば何もしない）なので、launchd / systemd から
-定期的に呼ぶだけで死活監視になる。詳しくは **[hub を常時立てる](hub.md)**。
+定期的に呼ぶだけで死活監視になる。**推奨は「ログイン時 + 5 分ごと」**（既定の
+`CCS_HUB_AUTOSTART=on`）── healthy なときは claude を起動せずに 0.06 秒で
+終わるので、頻度を落とす利得がない。
+
+```bash
+ccs hub up                                                    # まず手で 1 回立てる
+ccs hub agent --print > ~/Library/LaunchAgents/local.ccs.hub.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.ccs.hub.plist
+```
+
+Linux（systemd）の手順、確かめ方、外し方は
+**[hub を常時立てる](hub.md#常時起動推奨の初期設定)**。
 
 ## 自分の環境に合わせる
 

@@ -103,15 +103,137 @@ RC          auto
     直前の `sessionId` は `~/.cc-hub/state.json` の `previousSessionId` に
     残るので、続きが要るときは `ccs hub restart --resume` で戻れる。
 
-## 常時起動
+## 常時起動（**推奨の初期設定**）
 
 `ccs hub up` は冪等なので、**定期的に叩くだけで死活監視になる**。設定ファイルは
 `ccs hub agent` が出す。
 
+**推奨は「ログイン時 + 5 分ごと」（既定の `CCS_HUB_AUTOSTART=on`）。** hub を
+使うなら、立てたその日にこれも入れる ── 入れないと、hub が死んだ瞬間に
+スマホから `ccs` を叩く経路が消え、**ターミナルの前に戻るまで気づけない**。
+
+### なぜ 5 分ごとを勧めるのか
+
+**健全なときの `ccs hub up` は claude を起動しない。** 見ているのは tmux の
+セッション一覧と `~/.claude/sessions/*.json` だけで、API も叩かなければ
+claude プロセスも作らない。実測（macOS 15 / Apple Silicon）:
+
 ```console
-$ ccs hub agent                      # 入れ方の手順を出す
+$ time ccs hub up --quiet        # state が healthy のとき
+0.02s user 0.03s system  →  0.057 total
+```
+
+5 分ごとに走っても消えるのは 0.06 秒の CPU だけ。**ログも増えない**（健全な
+ときは何も書かない）。立て直しが暴走したときは[歯止め](#暴走の歯止め)が別に
+効くので、繰り返しが課金に化けることもない。
+
+対して `login`（起動時 1 回だけ）にすると、次が戻らなくなる。
+
+| 落ち方 | `on`（5 分ごと） | `login`（起動時だけ） |
+| --- | --- | --- |
+| 電源断・再起動のあとログインした | 戻る | 戻る |
+| claude がクラッシュした（`stopped`） | **戻る** | 戻らない |
+| Remote Control が外れた（`no-rc`） | **戻る** | 戻らない |
+| context が溢れて落ちた | **戻る** | 戻らない |
+
+下の 3 つは**ターミナルの前にいないときに起きる**。そのときの入口を確保するのが
+hub の目的そのものなので、定期実行はその保険にあたる。
+
+| `CCS_HUB_AUTOSTART` | 生成されるもの |
+| --- | --- |
+| `on`（既定・**推奨**） | ログイン時 + `CCS_HUB_AGENT_INTERVAL` 秒ごと（既定 300 秒） |
+| `login` | ログイン時だけ |
+| `off` | 生成しない。`ccs hub agent` は理由を出して終了する |
+
+### 入れる（macOS / launchd）
+
+打ち方が分からなくなったら `ccs hub agent`（`--print` なし）が手順を出す。
+
+**1. hub を立てる。** 自動起動を入れる前に、手で 1 回立って `bridge` が
+付くことを確かめておく。ここが通らない状態で自動起動を入れると、5 分ごとに
+同じ失敗を繰り返すだけになる。
+
+```console
+$ ccs hub up
+{"slug":"hub","state":"healthy",…,"bridge":"session_…","created":true}
+```
+
+**2. ユニットを書き出して読み込む。**
+
+```console
 $ ccs hub agent --print > ~/Library/LaunchAgents/local.ccs.hub.plist
 $ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.ccs.hub.plist
+```
+
+**3. 入ったことを確かめる。** 3 つとも見る。1 つでも欠けていたら入っていない。
+
+```console
+$ launchctl list | grep ccs        # ラベルが出て、直近の終了コードが 0
+-	0	local.ccs.hub
+
+$ ccs hub status                   # healthy（終了コード 0）
+$ ccs ls                           # hub が 1 本だけ出る
+```
+
+**4. わざと落として、戻ることを確かめる。** ここまでやって初めて「常時起動が
+入った」と言える。`ccs hub down` ではなく `tmux kill-server` を使う ──
+`down` は「止めておけ」という意思表示なので、自動起動は正しく無視する。
+
+```console
+$ tmux kill-server                 # 電源断と同じ状態を作る
+$ ccs hub status                   # absent（12）
+… 5 分以内 …
+$ ccs hub status                   # healthy（0）に戻る
+```
+
+待てないなら `launchctl kickstart -k gui/$(id -u)/local.ccs.hub` で即座に 1 回
+走らせられる。
+
+### 入れる（Linux / systemd --user）
+
+どちらを出すかは `uname` で決める。**systemd は service と timer の 2 ファイルに
+分かれる**ので、書き出すときは `--unit` で片方ずつ出す（そのままリダイレクト
+すると 1 ファイルに混ざって壊れる）。
+
+```console
+$ mkdir -p ~/.config/systemd/user
+$ ccs hub agent --print --unit service > ~/.config/systemd/user/local-ccs-hub.service
+$ ccs hub agent --print --unit timer   > ~/.config/systemd/user/local-ccs-hub.timer
+$ systemctl --user enable --now local-ccs-hub.timer
+```
+
+確かめ方は macOS と同じ（`systemctl --user list-timers` に出るか、
+`ccs hub status` が healthy か、`ccs ls` に 1 本だけか）。
+
+!!! tip "ログアウトしても走らせたいなら"
+    systemd の user unit は既定でログアウト時に止まる。`loginctl enable-linger
+    $USER` で残る。**ただし、そこで立つ hub は誰も見ていない claude なので、
+    認証切れに気づくのが遅れる**ことは承知しておく。
+
+### 間隔を変える
+
+`CCS_HUB_AGENT_INTERVAL`（秒）。**ユニットを出し直して入れ直すまで効かない**
+── 焼き込みなので、設定を変えただけでは既に置いた plist / timer は変わらない。
+
+```console
+$ CCS_HUB_AGENT_INTERVAL=1800 ccs hub agent --print > ~/Library/LaunchAgents/local.ccs.hub.plist
+$ launchctl bootout gui/$(id -u)/local.ccs.hub
+$ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.ccs.hub.plist
+```
+
+一時的に中身だけ見たいときは `ccs hub agent --print --autostart on`。
+**設定を書き換えなくても確かめられる。**
+
+### 外す
+
+```console
+$ launchctl bootout gui/$(id -u)/local.ccs.hub
+$ rm ~/Library/LaunchAgents/local.ccs.hub.plist
+```
+
+```console
+$ systemctl --user disable --now local-ccs-hub.timer
+$ rm ~/.config/systemd/user/local-ccs-hub.{service,timer}
 ```
 
 !!! warning "生成したユニットには PATH を焼き込んである"
@@ -124,38 +246,22 @@ $ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.ccs.hub.plist
     **ユニットは生成した環境に紐づく**ので、Homebrew の場所を変えたり
     `claude` を入れ直したりしたら、**出し直して置き換える**こと。
 
-Linux では systemd の user unit を出す。どちらを出すかは `uname` で決める。
-**systemd は service と timer の 2 ファイルに分かれる**ので、書き出すときは
-`--unit` で片方ずつ出す（そのままリダイレクトすると 1 ファイルに混ざって壊れる）。
-
-```console
-$ ccs hub agent --print --unit service > ~/.config/systemd/user/local-ccs-hub.service
-$ ccs hub agent --print --unit timer   > ~/.config/systemd/user/local-ccs-hub.timer
-$ systemctl --user enable --now local-ccs-hub.timer
-```
-
-| `CCS_HUB_AUTOSTART` | 生成されるもの |
-| --- | --- |
-| `on`（既定） | ログイン時 + `CCS_HUB_AGENT_INTERVAL` 秒ごと（既定 300 秒） |
-| `login` | ログイン時だけ |
-| `off` | 生成しない。`ccs hub agent` は理由を出して終了する |
-
-一時的に中身だけ見たいときは `ccs hub agent --print --autostart on`。
-**設定を書き換えなくても確かめられる。**
-
-外すとき:
-
-```console
-$ launchctl bootout gui/$(id -u)/local.ccs.hub
-$ rm ~/Library/LaunchAgents/local.ccs.hub.plist
-```
-
 !!! note "入れた直後に確かめること"
     launchd から起動した `ccs` が手元と同じ tmux サーバに入ることは
     [実測した](hands-on.md#111-launchd-の経路実測済み)（macOS 15 / Homebrew）。ただし
     環境に依るので、**入れた直後に `ccs hub status` と `ccs ls` を両方見る**。
     別のサーバに入っていれば、hub が 2 本あるように見える（`ccs ls` に出ない
     hub ができる）。立たないときは `~/.cc-hub/agent.log` に理由が出ている。
+
+!!! danger "自動起動が埋められない穴が 1 つある"
+    launchd の user agent も systemd の user unit も、**ログインセッションが
+    始まって初めて走る**。電源を入れただけで誰もログインしていない状態では、
+    hub は立たない。
+
+    macOS で FileVault を有効にしていると、起動時に人がパスワードを打つまで
+    ログインが始まらない ＝ **無人の電源投入からは復帰できない**。埋めるなら
+    自動起動の話ではなく、「電源を落とさない（スリープにする）」か
+    「常時稼働の別マシンを hub のホストにする」かの選択になる。
 
 ## 認証切れ
 
