@@ -190,6 +190,30 @@ teardown() {
 	[[ "$output" == *"${CCS_BIN}"* ]]
 }
 
+@test "hub agent --print: 依存の在処を PATH に焼き込む" {
+	# **launchd / systemd は対話シェルの設定を読まない。** PATH を ~/.zshrc で
+	# 足している環境では、-lc でログインシェルにしても tmux が見つからず、
+	# ccs hub up が依存不足で即死する（実測）。生成側が解決できた場所を渡す。
+	run "$CCS_BIN" hub agent --print --autostart on
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"<key>PATH</key>"* ]]
+	[[ "$output" == *"${CCS_STUB_BIN}"* ]]
+}
+
+@test "hub agent --print: PATH には最低限のシステムパスも残る" {
+	run "$CCS_BIN" hub agent --print --autostart on
+	[[ "$output" == *"/usr/bin:/bin:/usr/sbin:/sbin"* ]]
+}
+
+@test "hub agent --print: 同じディレクトリの依存を重複させない" {
+	# tmux も jq も同じスタブ置き場にいる状態を作る。
+	ccs_stub jq 'exit 0'
+	CCS_JQ_BIN="${CCS_STUB_BIN}/jq" run "$CCS_BIN" hub agent --print --autostart on
+	_path_line=$(printf '%s\n' "$output" | grep -A1 '<key>PATH</key>' | tail -1)
+	_count=$(printf '%s' "$_path_line" | awk -v d="$CCS_STUB_BIN" 'BEGIN{n=0} {n=gsub(d,d)} END{print n}')
+	[ "$_count" -eq 1 ]
+}
+
 @test "hub agent: 知らない --unit は 2" {
 	run "$CCS_BIN" hub agent --print --unit bogus
 	[ "$status" -eq 2 ]

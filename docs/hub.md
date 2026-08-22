@@ -114,6 +114,16 @@ $ ccs hub agent --print > ~/Library/LaunchAgents/local.ccs.hub.plist
 $ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.ccs.hub.plist
 ```
 
+!!! warning "生成したユニットには PATH を焼き込んである"
+    **launchd / systemd は対話シェルの設定を読まない。** `-lc` でログインシェルに
+    しても、PATH を `~/.zshrc` で足している環境（Homebrew の既定の入れ方がこれ）
+    では `tmux` も `claude` も見つからず、`ccs hub up` が依存不足で即死する。
+
+    そこで `ccs hub agent` は、**生成した時点で解決できた依存の在処**を
+    `EnvironmentVariables` / `Environment=PATH=` として書き出す。つまり
+    **ユニットは生成した環境に紐づく**ので、Homebrew の場所を変えたり
+    `claude` を入れ直したりしたら、**出し直して置き換える**こと。
+
 Linux では systemd の user unit を出す。どちらを出すかは `uname` で決める。
 **systemd は service と timer の 2 ファイルに分かれる**ので、書き出すときは
 `--unit` で片方ずつ出す（そのままリダイレクトすると 1 ファイルに混ざって壊れる）。
@@ -140,10 +150,12 @@ $ launchctl bootout gui/$(id -u)/local.ccs.hub
 $ rm ~/Library/LaunchAgents/local.ccs.hub.plist
 ```
 
-!!! warning "自動起動を入れる前に確かめること"
-    launchd / systemd から起動した `ccs` が、**手元と同じ tmux サーバに入るか**。
-    別のサーバに入ると、hub が 2 本あるように見える（`ccs ls` に出ない hub が
-    できる）。入れた直後に `ccs hub status` と `ccs ls` を両方見て確かめる。
+!!! note "入れた直後に確かめること"
+    launchd から起動した `ccs` が手元と同じ tmux サーバに入ることは
+    [実測した](hands-on.md#111-launchd-の経路実測済み)（macOS 15 / Homebrew）。ただし
+    環境に依るので、**入れた直後に `ccs hub status` と `ccs ls` を両方見る**。
+    別のサーバに入っていれば、hub が 2 本あるように見える（`ccs ls` に出ない
+    hub ができる）。立たないときは `~/.cc-hub/agent.log` に理由が出ている。
 
 ## 認証切れ
 
@@ -228,11 +240,14 @@ Remote Control を使わない・使えない環境では `CCS_REMOTE_CONTROL=of
 
 **正直に書いておく。** 次は fake claude では検証できず、本物で確かめる必要がある。
 
-1. launchd / systemd から起動した `ccs hub up` が、手元と同じ tmux サーバに入るか
-2. `--remote-control <名前>` で付けた名前が、会話が進んでも維持されるか
-3. `remoteControlAtStartup: true` を設定している環境で、`--remote-control` の
+1. `--remote-control <名前>` で付けた名前が、会話が進んでも維持されるか
+2. `remoteControlAtStartup: true` を設定している環境で、`--remote-control` の
    明示指定が二重登録にならないか
-4. `claude --resume <uuid>` で Remote Control が張り直され、アプリの一覧に戻るか
-5. 再起動を繰り返したときに、アプリ側に古い hub の `offline` エントリが積み上がらないか
+3. `claude --resume <uuid>` で Remote Control が張り直され、アプリの一覧に戻るか
+4. 再起動を繰り返したときに、アプリ側に古い hub の `offline` エントリが積み上がらないか
+
+**launchd から起動した `ccs` が手元と同じ tmux サーバに入るか**は
+[実測済み](hands-on.md#111-launchd-の経路実測済み)（2026-08-22、macOS 15 / Homebrew）。入る。
+ただし PATH を渡さないと、そこへ辿り着く前に依存不足で死ぬ。
 
 手順は [手を動かして確かめる](hands-on.md) に追記していく。

@@ -2303,6 +2303,34 @@ ccs_self_path() {
 	esac
 }
 
+# 自動起動から呼ばれたときの PATH。
+#
+# **launchd / systemd は対話シェルの設定を読まない。** `-lc` でログインシェルに
+# しても、PATH を `~/.zshrc` で足している環境（Homebrew の既定の入れ方がこれ）
+# では tmux も claude も見つからず、`ccs hub up` が依存不足で即死する。実測で
+# 踏んだ（`env -i ... zsh -lc 'command -v tmux'` が空）。
+#
+# 生成する側は、それらが見つかる環境で走っている。**そこで解決できた場所を
+# ユニットに焼き込む**ことで、起動経路に依らず同じものを掴ませる。
+hub_agent_path() {
+	_hb_dirs=''
+	for _hb_bin in "$CCS_CLAUDE_BIN" "$CCS_TMUX_BIN" "$CCS_JQ_BIN" "$CCS_GHQ_BIN" "$CCS_GIT_BIN" "$(ccs_self_path)"; do
+		[ -n "$_hb_bin" ] || continue
+		_hb_found=$(command -v "$_hb_bin" 2>/dev/null) || continue
+		# ビルトインや関数は場所を持たない。絶対パスだけを採る。
+		case $_hb_found in
+		/*) ;;
+		*) continue ;;
+		esac
+		_hb_dir=$(dirname "$_hb_found")
+		case ":${_hb_dirs}:" in
+		*":${_hb_dir}:"*) continue ;;
+		esac
+		_hb_dirs="${_hb_dirs:+${_hb_dirs}:}${_hb_dir}"
+	done
+	printf '%s' "${_hb_dirs:+${_hb_dirs}:}/usr/bin:/bin:/usr/sbin:/sbin"
+}
+
 hub_agent_unit_name() {
 	printf '%s' "$CCS_HUB_AGENT_LABEL" | sed 's/[^A-Za-z0-9_-]/-/g'
 }
@@ -2310,6 +2338,7 @@ hub_agent_unit_name() {
 hub_agent_plist() {
 	_hb_mode=$1
 	_hb_self=$(ccs_self_path)
+	_hb_path=$(hub_agent_path)
 
 	cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -2326,6 +2355,13 @@ hub_agent_plist() {
 		<string>-lc</string>
 		<string>exec ${_hb_self} hub up --quiet</string>
 	</array>
+
+	<!-- launchd は対話シェルの設定を読まない。tmux / claude の在処を焼き込む。 -->
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>${_hb_path}</string>
+	</dict>
 
 	<key>RunAtLoad</key>
 	<true/>
@@ -2352,12 +2388,15 @@ EOF
 
 hub_agent_systemd_service() {
 	_hb_self=$(ccs_self_path)
+	_hb_path=$(hub_agent_path)
 	cat <<EOF
 [Unit]
 Description=ccs hub (${CCS_HUB_SLUG})
 
 [Service]
 Type=oneshot
+# systemd も対話シェルの設定を読まない。tmux / claude の在処を焼き込む。
+Environment=PATH=${_hb_path}
 # ccs hub up は冪等。生きていれば何もせず、死んでいれば立て直す。
 ExecStart=${SHELL:-/bin/sh} -lc 'exec ${_hb_self} hub up --quiet'
 
