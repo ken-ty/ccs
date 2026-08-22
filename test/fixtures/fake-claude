@@ -247,22 +247,16 @@ cmd_interactive() {
 	}
 	[ -n "$_name" ] || _name='fake'
 
-	# **HUP を明示的に取る。** `tmux kill-session` はペインのプロセスに
-	# SIGHUP を送る。macOS の /bin/sh は bash なのでシグナル死でも EXIT trap が
-	# 走るが、**Ubuntu の /bin/sh は dash で走らない** ── 残ったレジストリを
-	# あとから `cc/<slug>:` で拾ってしまい、「手元では通るのに CI で落ちる」に
-	# なる（2026-08-23 に CI が捕まえた）。EXIT だけに頼らない。
-	trap 'cleanup' EXIT
-	trap 'cleanup; exit 129' HUP
-	trap 'cleanup; exit 143' TERM
-	trap 'cleanup; exit 130' INT
 	# **HUP を明示的に捕まえる。** tmux は kill-session / kill-pane のとき
 	# ペインのプロセスに SIGHUP を送る。EXIT の trap があれば足りると思いがちだが、
 	# **EXIT が走るかどうかはシェル実装に依る** ── macOS の /bin/sh は bash 3.2 で
 	# 走り、Linux の /bin/sh は dash で走らない。落ちなかった側ではレジストリの
 	# 残骸が消えず、次に立てたセッションと 2 件並ぶ。実際にそれで CI だけが
-	# 落ちていた（restore の 2 件）。
+	# 落ちていた（restore の 2 件、2026-08-23）。
+	trap 'cleanup' EXIT
 	trap 'cleanup; exit 129' HUP
+	trap 'cleanup; exit 143' TERM
+	trap 'cleanup; exit 130' INT
 
 	# ペインに出す文字列。認証切れの画面を作るのに使う。
 	[ -n "$FAKE_CLAUDE_ECHO" ] && printf '%s\n' "$FAKE_CLAUDE_ECHO"
