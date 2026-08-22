@@ -412,15 +412,11 @@ rm ~/.local/bin/ccs
 
 ---
 
-## 11. hub を 1 周する（**未実施**）
+## 11. hub を 1 周する（**一部実施**）
 
-!!! danger "ここだけは、まだ本物で走らせていない"
-    上の 0〜10 は実機で上から順に走らせた結果を書いているが、**この節はまだ**。
-    fake claude では確かめられない部分（Remote Control の登録、launchd から
-    見た tmux サーバ、アプリ上の名前）が含まれる。
-    走らせたら、結果でこの節を置き換える（ROADMAP の H7）。
-
-手順そのものは次のとおり。
+!!! info "launchd の経路だけ実測した（2026-08-22 / macOS 15・Homebrew）"
+    アプリ側の見え方（名前・`offline` の残り方・`--resume` での RC 張り直し）は
+    **まだ**。fake claude では確かめられないので、ここは未チェックのまま残す。
 
 ```bash
 ccs hub up            # JSON が返り、bridge が空でないこと
@@ -438,14 +434,45 @@ ccs ls                # hub が一覧に出ること
       張り直されるか
 - [ ] `remoteControlAtStartup: true` を設定している環境で、`--remote-control` の
       明示指定が二重登録にならないか
-- [ ] **launchd から起動した `ccs hub up` が、手元と同じ tmux サーバに入るか**
+- [x] **launchd から起動した `ccs hub up` が、手元と同じ tmux サーバに入るか**
+
+### 11.1 launchd の経路（実測済み）
 
 ```bash
 ccs hub agent --print > ~/Library/LaunchAgents/local.ccs.hub.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.ccs.hub.plist
-ccs hub down          # わざと止めて、5 分後に立っているか見る
-tail ~/.cc-hub/hub.log
+tmux kill-server      # tmux サーバごと落として、電源断と同じ状態を作る
 ```
+
+**結果: 入る。** `launchctl` が起動した `ccs hub up` は
+`/private/tmp/tmux-501/default` ── 手元のシェルの `tmux ls` が見るのと同じ
+ソケット ── に `cc/hub` を作り、`ccs ls` にも 1 本だけ出た。`bridge` も付いた。
+
+**ただし、素の `-lc` では PATH が足りずに死ぬ。** 最初の設置では
+`~/.cc-hub/agent.log` に依存不足だけが積まれた。
+
+```console
+$ tail ~/.cc-hub/agent.log
+ccs: 必要なコマンドが見つかりません: tmux
+```
+
+launchd が渡す PATH は `/usr/bin:/bin:/usr/sbin:/sbin` 相当で、`-lc` を付けても
+読まれるのは `/etc/zprofile`（`path_helper`）と `~/.zprofile` まで。**`~/.zshrc`
+は対話シェル専用なので読まれない。** Homebrew の既定の入れ方は
+`~/.zshrc` に `brew shellenv` を書くので、`/opt/homebrew/bin` がそこで落ちる。
+
+```console
+$ env -i HOME=$HOME PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/zsh -lc 'command -v tmux'
+（何も出ない）
+```
+
+これを受けて `ccs hub agent` は、**生成時に解決できた依存の在処を
+`EnvironmentVariables` に焼き込む**ようにした。焼き込んだあとで
+`tmux kill-server` → `launchctl bootstrap` を通したところ、上のとおり復帰した。
+
+!!! warning "ユニットは生成した環境に紐づく"
+    焼き込みなので、Homebrew の場所を変えたり `claude` を入れ直したりしたら
+    **`ccs hub agent --print` で出し直して置き換える**。
 
 !!! note "`hub down` のまま放置しない"
     `paused` がある間は自動起動も止まる。確認が終わったら `ccs hub up --force`。
