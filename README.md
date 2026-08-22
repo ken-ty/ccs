@@ -182,3 +182,7 @@ GitHub Pages へは出していない。private リポジトリ + Free プラン
 - [hub の運用](docs/hub.md) / [設定](docs/configuration.md)
 - スキル側（ハブがいつ・どう呼ぶかの判断）は `agent-skills-store` の `cross-session-hub`
 - 調査で参照した資料は [docs/references.md](docs/references.md)
+
+## ライセンス
+
+[MIT](LICENSE)。
