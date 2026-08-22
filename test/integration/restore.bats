@@ -48,9 +48,15 @@ _slot_path() {
 }
 
 # 再起動を模す。tmux セッションごと消す。
+#
+# **レジストリから消えるまで待つ。** tmux セッションが消えても、ペインの
+# プロセスが片付いてレジストリのファイルを消すまでには間がある。待たないと
+# 「残骸 + 立て直したもの」の 2 件が並んだ状態で次の検証に入り、どちらを
+# 掴むかがマシン任せになる。
 _wipe_session() {
 	ccs_tmux kill-session -t "=cc/$1"
 	ccs_wait_until 5 bash -c "! tmux -L '$CCS_TMUX_SOCKET' has-session -t '=cc/$1' 2>/dev/null"
+	ccs_wait_until 5 bash -c "! grep -lq '\"tmux\":\"cc/$1:' '$CCS_SESSIONS_DIR'/*.json 2>/dev/null"
 }
 
 # --- 何も無いとき ----------------------------------------------------------
