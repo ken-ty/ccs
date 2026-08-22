@@ -190,14 +190,43 @@ teardown() {
 	[[ "$output" == *"${CCS_BIN}"* ]]
 }
 
+# 焼き込んだ PATH を 1 行として取り出す。**plist と systemd unit で書き方が違う**
+# ので（<string>… と Environment=PATH=…）、共通して入っている最低限のシステム
+# パスを目印にする。ここを OS で分岐させると、テストが片方の OS でしか走らない。
+ccs_generated_path_line() {
+	printf '%s\n' "$1" | grep -F '/usr/bin:/bin:/usr/sbin:/sbin' | head -1
+}
+
 @test "hub agent --print: 依存の在処を PATH に焼き込む" {
 	# **launchd / systemd は対話シェルの設定を読まない。** PATH を ~/.zshrc で
 	# 足している環境では、-lc でログインシェルにしても tmux が見つからず、
 	# ccs hub up が依存不足で即死する（実測）。生成側が解決できた場所を渡す。
 	run "$CCS_BIN" hub agent --print --autostart on
 	[ "$status" -eq 0 ]
+	_line=$(ccs_generated_path_line "$output")
+	[ -n "$_line" ]
+	[[ "$_line" == *"${CCS_STUB_BIN}"* ]]
+}
+
+@test "hub agent --print: launchd には EnvironmentVariables で渡す" {
+	# **uname を差し替えて、走っている OS に依らず両方の分岐を通す。**
+	# ここを本物の uname に任せると、片方の分岐が CI でしか（あるいは
+	# 手元でしか）検証されない ── 実際に macOS で書いたテストが Linux の
+	# CI で落ちた。
+	ccs_stub uname 'echo Darwin'
+	run "$CCS_BIN" hub agent --print --autostart on
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"<key>EnvironmentVariables</key>"* ]]
 	[[ "$output" == *"<key>PATH</key>"* ]]
-	[[ "$output" == *"${CCS_STUB_BIN}"* ]]
+	[[ "$(ccs_generated_path_line "$output")" == *"${CCS_STUB_BIN}"* ]]
+}
+
+@test "hub agent --print: systemd には Environment=PATH= で渡す" {
+	ccs_stub uname 'echo Linux'
+	run "$CCS_BIN" hub agent --print --autostart on
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"Environment=PATH="* ]]
+	[[ "$(ccs_generated_path_line "$output")" == *"${CCS_STUB_BIN}"* ]]
 }
 
 @test "hub agent --print: PATH には最低限のシステムパスも残る" {
@@ -209,8 +238,8 @@ teardown() {
 	# tmux も jq も同じスタブ置き場にいる状態を作る。
 	ccs_stub jq 'exit 0'
 	CCS_JQ_BIN="${CCS_STUB_BIN}/jq" run "$CCS_BIN" hub agent --print --autostart on
-	_path_line=$(printf '%s\n' "$output" | grep -A1 '<key>PATH</key>' | tail -1)
-	_count=$(printf '%s' "$_path_line" | awk -v d="$CCS_STUB_BIN" 'BEGIN{n=0} {n=gsub(d,d)} END{print n}')
+	_line=$(ccs_generated_path_line "$output")
+	_count=$(printf '%s' "$_line" | awk -v d="$CCS_STUB_BIN" 'BEGIN{n=0} {n=gsub(d,d)} END{print n}')
 	[ "$_count" -eq 1 ]
 }
 
