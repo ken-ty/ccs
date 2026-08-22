@@ -59,7 +59,7 @@ _stub_tmux_recorder() {
 	[ "$status" -eq 0 ]
 
 	run cat "${CCS_TEST_TMP}/tmux.log"
-	[[ "$output" == *"attach-session -t cc/myrepo"* ]]
+	[[ "$output" == *"attach-session -t cc/myrepo"* ]] || return 1
 }
 
 @test "attach: tmux の中なら switch-client を呼ぶ" {
@@ -70,8 +70,8 @@ _stub_tmux_recorder() {
 	[ "$status" -eq 0 ]
 
 	run cat "${CCS_TEST_TMP}/tmux.log"
-	[[ "$output" == *"switch-client -t cc/myrepo"* ]]
-	[[ "$output" != *"attach-session"* ]]
+	[[ "$output" == *"switch-client -t cc/myrepo"* ]] || return 1
+	[[ "$output" != *"attach-session"* ]] || return 1
 }
 
 @test "attach: 無い slug なら候補を出して落ちる" {
@@ -80,15 +80,15 @@ _stub_tmux_recorder() {
 
 	run "$CCS_BIN" attach nosuch
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"ありません"* ]]
-	[[ "$output" == *"myrepo"* ]]
-	[[ "$output" == *"other"* ]]
+	[[ "$output" == *"ありません"* ]] || return 1
+	[[ "$output" == *"myrepo"* ]] || return 1
+	[[ "$output" == *"other"* ]] || return 1
 }
 
 @test "attach: 何も立っていなければ立て方を出す" {
 	run "$CCS_BIN" attach nosuch
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"ccs new"* ]]
+	[[ "$output" == *"ccs new"* ]] || return 1
 }
 
 @test "attach: slug が無ければ 2" {
@@ -116,8 +116,8 @@ _stub_tmux_recorder() {
 
 	run "$CCS_BIN" kill myrepo
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"claude --resume ${_id}"* ]]
-	[[ "$output" == *"myrepo"* ]]
+	[[ "$output" == *"claude --resume ${_id}"* ]] || return 1
+	[[ "$output" == *"myrepo"* ]] || return 1
 }
 
 @test "kill: claude が終了していても uuid を出す" {
@@ -127,7 +127,7 @@ _stub_tmux_recorder() {
 
 	run "$CCS_BIN" kill myrepo
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"claude --resume ${_id}"* ]]
+	[[ "$output" == *"claude --resume ${_id}"* ]] || return 1
 }
 
 @test "kill: 作業中なら畳まない" {
@@ -138,8 +138,8 @@ _stub_tmux_recorder() {
 
 	run "$CCS_BIN" kill myrepo
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"作業中"* ]]
-	[[ "$output" == *"--force"* ]]
+	[[ "$output" == *"作業中"* ]] || return 1
+	[[ "$output" == *"--force"* ]] || return 1
 
 	ccs_tmux has-session -t '=cc/myrepo'
 }
@@ -196,7 +196,7 @@ _stub_tmux_recorder() {
 
 	run "$CCS_BIN" kill nosuch
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"myrepo"* ]]
+	[[ "$output" == *"myrepo"* ]] || return 1
 }
 
 @test "kill: slug が無ければ 2" {

@@ -599,6 +599,20 @@ resolve_as_worktree() {
 # **既にあるものは作り直さない。** 作り直すと、そこに残っている未コミットの
 # 作業が消える。`git worktree add` は既存のディレクトリを拒むので、
 # 先に「もう worktree として登録されているか」を見る。
+# worktree の生成に失敗したときの出口。
+#
+# **git の文言をそのまま流すだけにしない。** 版や環境で変わるうえ、
+# 「で、次に何を打てばいいのか」がどの版にも書かれていない。
+worktree_add_failed() {
+	warn "ccs: worktree を作れませんでした: $2"
+	warn ''
+	printf '%s\n' "$3" >&2
+	warn ''
+	warn "  同じ名前のブランチが他の worktree で開かれているかもしれません:"
+	warn "    ${CCS_GIT_BIN} -C $(shq "$1") worktree list"
+	exit "$EX_FAIL"
+}
+
 ensure_worktree() {
 	_repo=$1
 	_branch=$2
@@ -622,24 +636,17 @@ ensure_worktree() {
 
 	# ブランチが既にあるなら開く、無ければ作る。
 	# **既存ブランチを -b で作ろうとすると落ちる**ので、先に見る。
+	#
+	# **失敗したときの案内は両方に要る。** git は 1 ブランチにつき 1 worktree しか
+	# 許さないので、「他所で開かれている」はブランチが既にあるときにこそ起きる。
+	# 以前は -b 側にしか案内が無く、その本命の経路が無言で落ちていた。
 	if "$CCS_GIT_BIN" -C "$_repo" show-ref --verify --quiet "refs/heads/${_branch}"; then
-		_out=$("$CCS_GIT_BIN" -C "$_repo" worktree add "$_path" "$_branch" 2>&1) || {
-			warn "ccs: worktree を作れませんでした: ${_path}"
-			warn ''
-			printf '%s\n' "$_out" >&2
-			exit "$EX_FAIL"
-		}
+		_out=$("$CCS_GIT_BIN" -C "$_repo" worktree add "$_path" "$_branch" 2>&1) ||
+			worktree_add_failed "$_repo" "$_path" "$_out"
 		warn "ccs: 既存のブランチ ${_branch} を ${_path} に開きました。"
 	else
-		_out=$("$CCS_GIT_BIN" -C "$_repo" worktree add -b "$_branch" "$_path" 2>&1) || {
-			warn "ccs: worktree を作れませんでした: ${_path}"
-			warn ''
-			printf '%s\n' "$_out" >&2
-			warn ''
-			warn "  同じ名前のブランチが他の worktree で開かれているかもしれません:"
-			warn "    ${CCS_GIT_BIN} -C $(shq "$_repo") worktree list"
-			exit "$EX_FAIL"
-		}
+		_out=$("$CCS_GIT_BIN" -C "$_repo" worktree add -b "$_branch" "$_path" 2>&1) ||
+			worktree_add_failed "$_repo" "$_path" "$_out"
 		warn "ccs: ブランチ ${_branch} を作って ${_path} に開きました。"
 	fi
 

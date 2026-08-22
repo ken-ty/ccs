@@ -36,8 +36,8 @@ _svg_is_valid() {
 @test "termshot: 標準入力からも読める" {
 	run bash -c "printf 'hello\n' | python3 '$CCS_TERMSHOT'"
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"<svg"* ]]
-	[[ "$output" == *"hello"* ]]
+	[[ "$output" == *"<svg"* ]] || return 1
+	[[ "$output" == *"hello"* ]] || return 1
 }
 
 @test "termshot: 中身の文字がそのまま入る" {
@@ -45,7 +45,7 @@ _svg_is_valid() {
 	printf 'SESSION ID 4aad423f-3dee-49f4-a43b-2fa7624a3487\n' >"${CCS_TEST_TMP}/in.txt"
 
 	run python3 "$CCS_TERMSHOT" "${CCS_TEST_TMP}/in.txt"
-	[[ "$output" == *"4aad423f-3dee-49f4-a43b-2fa7624a3487"* ]]
+	[[ "$output" == *"4aad423f-3dee-49f4-a43b-2fa7624a3487"* ]] || return 1
 }
 
 @test "termshot: XML の特殊文字を壊さない" {
@@ -103,7 +103,7 @@ _svg_is_valid() {
 
 	run python3 "$CCS_TERMSHOT" "${CCS_TEST_TMP}/long.txt" --cols 0
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"$(python3 -c "print('x' * 300)")"* ]]
+	[[ "$output" == *"$(python3 -c "print('x' * 300)")"* ]] || return 1
 }
 
 @test "termshot: 折り返した継続行はコマンドの色のまま" {
@@ -112,7 +112,7 @@ _svg_is_valid() {
 
 	run python3 "$CCS_TERMSHOT" "${CCS_TEST_TMP}/in.txt"
 	[ "$status" -eq 0 ]
-	[[ "$output" != *'class="out"'* ]]
+	[[ "$output" != *'class="out"'* ]] || return 1
 }
 
 @test "termshot: ANSI エスケープを落とす" {
@@ -143,23 +143,23 @@ _svg_is_valid() {
 	printf 'hello\n' >"${CCS_TEST_TMP}/in.txt"
 
 	run python3 "$CCS_TERMSHOT" "${CCS_TEST_TMP}/in.txt"
-	[[ "$output" == *"prefers-color-scheme: dark"* ]]
-	[[ "$output" == *".bg"* ]]
+	[[ "$output" == *"prefers-color-scheme: dark"* ]] || return 1
+	[[ "$output" == *".bg"* ]] || return 1
 }
 
 @test "termshot: プロンプト行を色分けする" {
 	printf '$ ccs ls\noutput line\n' >"${CCS_TEST_TMP}/in.txt"
 
 	run python3 "$CCS_TERMSHOT" "${CCS_TEST_TMP}/in.txt"
-	[[ "$output" == *'class="cmd"'* ]]
-	[[ "$output" == *'class="out"'* ]]
+	[[ "$output" == *'class="cmd"'* ]] || return 1
+	[[ "$output" == *'class="out"'* ]] || return 1
 }
 
 @test "termshot: タイトルを指定できる" {
 	printf 'hello\n' >"${CCS_TEST_TMP}/in.txt"
 
 	run python3 "$CCS_TERMSHOT" "${CCS_TEST_TMP}/in.txt" --title 'ccs new x01'
-	[[ "$output" == *"ccs new x01"* ]]
+	[[ "$output" == *"ccs new x01"* ]] || return 1
 }
 
 @test "termshot: 空の入力は 1 で落ちる" {
@@ -167,7 +167,7 @@ _svg_is_valid() {
 
 	run python3 "$CCS_TERMSHOT" "${CCS_TEST_TMP}/in.txt"
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"入力が空"* ]]
+	[[ "$output" == *"入力が空"* ]] || return 1
 }
 
 @test "termshot: 同じ入力からは同じ SVG が出る" {

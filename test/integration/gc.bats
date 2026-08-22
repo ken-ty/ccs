@@ -35,7 +35,7 @@ _new() {
 @test "gc: 何も無ければその旨を出す" {
 	run "$CCS_BIN" gc
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"ありません"* ]]
+	[[ "$output" == *"ありません"* ]] || return 1
 }
 
 @test "gc: 生きているセッションだけなら何もしない" {
@@ -56,7 +56,7 @@ _new() {
 
 	run "$CCS_BIN" gc
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"ccs gc --yes"* ]]
+	[[ "$output" == *"ccs gc --yes"* ]] || return 1
 
 	ccs_tmux has-session -t '=cc/dead'
 }
@@ -66,7 +66,7 @@ _new() {
 	ccs_kill_claude_of dead
 
 	run "$CCS_BIN" gc
-	[[ "$output" == *"dead"* ]]
+	[[ "$output" == *"dead"* ]] || return 1
 }
 
 @test "gc: 既定では空の枠も消さない" {
@@ -155,8 +155,8 @@ _new() {
 
 	run "$CCS_BIN" gc
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"中身が残っている"* ]]
-	[[ "$output" == *"消しません"* ]]
+	[[ "$output" == *"中身が残っている"* ]] || return 1
+	[[ "$output" == *"消しません"* ]] || return 1
 }
 
 @test "gc: 隠しファイルだけでも中身ありとみなす" {
@@ -176,7 +176,7 @@ _new() {
 	ccs_kill_claude_of dead
 
 	run "$CCS_BIN" gc
-	[[ "$output" == *"claude --resume ${_id}"* ]]
+	[[ "$output" == *"claude --resume ${_id}"* ]] || return 1
 }
 
 @test "gc --yes: 実行時にも uuid を見せる" {
@@ -185,7 +185,7 @@ _new() {
 	ccs_kill_claude_of dead
 
 	run "$CCS_BIN" gc --yes
-	[[ "$output" == *"${_id}"* ]]
+	[[ "$output" == *"${_id}"* ]] || return 1
 }
 
 # --- 管轄の境界 ------------------------------------------------------------

@@ -136,7 +136,7 @@ teardown() {
 
 	run --separate-stderr "$CCS_BIN" new tmp
 	[ "$status" -eq 1 ]
-	[[ "$stderr" == *"ccs gc"* ]]
+	[[ "$stderr" == *"ccs gc"* ]] || return 1
 }
 
 @test "tmp-N を名指しすれば冪等に返る" {
@@ -164,7 +164,7 @@ teardown() {
 
 	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	[ "$status" -eq 1 ]
-	[[ "$stderr" == *"claude は動いていません"* ]]
+	[[ "$stderr" == *"claude は動いていません"* ]] || return 1
 }
 
 @test "claude が終了していても、再開用の uuid を出す" {
@@ -179,9 +179,9 @@ teardown() {
 
 	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	[ "$status" -eq 1 ]
-	[[ "$stderr" == *"claude --resume ${_id}"* ]]
+	[[ "$stderr" == *"claude --resume ${_id}"* ]] || return 1
 	# 立て直す道具のほうも案内する。
-	[[ "$stderr" == *"ccs restore"* ]]
+	[[ "$stderr" == *"ccs restore"* ]] || return 1
 }
 
 # --- 出力の作法 -------------------------------------------------------------

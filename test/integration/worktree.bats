@@ -59,7 +59,7 @@ teardown() {
 @test "worktree: 元のリポジトリは worktree を認識している" {
 	run --separate-stderr "$CCS_BIN" new 'x01@topic'
 	run git -C "$CCS_TEST_REPO" worktree list
-	[[ "$output" == *"topic"* ]]
+	[[ "$output" == *"topic"* ]] || return 1
 }
 
 # --- 本命: 同じリポジトリに 2 本 ---------------------------------------------
@@ -132,14 +132,14 @@ teardown() {
 @test "worktree: 既存ブランチを開いたことを stderr で伝える" {
 	git -C "$CCS_TEST_REPO" branch already
 	run --separate-stderr "$CCS_BIN" new 'x01@already'
-	[[ "$stderr" == *"既存のブランチ"* ]]
+	[[ "$stderr" == *"既存のブランチ"* ]] || return 1
 }
 
 @test "worktree: 新しいブランチを作ったことを stderr で伝える" {
 	run --separate-stderr "$CCS_BIN" new 'x01@brandnew'
-	[[ "$stderr" == *"作って"* ]]
+	[[ "$stderr" == *"作って"* ]] || return 1
 	# 追跡されていないものが付いてこないことも言う
-	[[ "$stderr" == *"追跡されていない"* ]]
+	[[ "$stderr" == *"追跡されていない"* ]] || return 1
 }
 
 # --- trust -------------------------------------------------------------------
@@ -164,7 +164,7 @@ teardown() {
 	local _p
 	_p=$(echo "$output" | jq -r '.path')
 	# **信頼確認が出ることを先に伝えている**こと（黙って立てると 30 秒待たされる）
-	[[ "$stderr" == *"まだ信頼されていません"* ]]
+	[[ "$stderr" == *"まだ信頼されていません"* ]] || return 1
 
 	# trust ファイルは、誰も承認していなければ作られてすらいない。
 	if [ -f "$CCS_TRUST_FILE" ]; then
@@ -181,7 +181,7 @@ teardown() {
 
 	run --separate-stderr "$CCS_BIN" new 'notgit@topic'
 	[ "$status" -eq 1 ]
-	[[ "$stderr" == *"git リポジトリではありません"* ]]
+	[[ "$stderr" == *"git リポジトリではありません"* ]] || return 1
 }
 
 @test "worktree: 失敗しても stdout を汚さない" {
@@ -199,8 +199,8 @@ teardown() {
 
 	run --separate-stderr "$CCS_BIN" new 'x01@topic'
 	[ "$status" -eq 1 ]
-	[[ "$stderr" == *"worktree を作れませんでした"* ]]
+	[[ "$stderr" == *"worktree を作れませんでした"* ]] || return 1
 	# 次の手が分かること
-	[[ "$stderr" == *"worktree list"* ]]
+	[[ "$stderr" == *"worktree list"* ]] || return 1
 	[ -z "$output" ]
 }

@@ -28,7 +28,7 @@ teardown() {
 	# `tmp` は「空いている枠を取る」指示。戻す先は番号まで要る。
 	run "$CCS_BIN" restore tmp
 	[ "$status" -eq 2 ]
-	[[ "$stderr$output" == *"tmp-1"* ]]
+	[[ "$stderr$output" == *"tmp-1"* ]] || return 1
 }
 
 @test "restore: tmp-<番号> でない枠の綴りは断る" {
@@ -53,20 +53,20 @@ teardown() {
 @test "restore: 戻す先の会話が無ければ 1 で終わる" {
 	run "$CCS_BIN" restore tmp-1
 	[ "$status" -eq 1 ]
-	[[ "$stderr$output" == *"会話"* ]]
+	[[ "$stderr$output" == *"会話"* ]] || return 1
 }
 
 @test "restore: hub は予約語として断る" {
 	# 立て直しは ccs hub up / ccs hub restart --resume の担当。
 	run "$CCS_BIN" restore hub
 	[ "$status" -eq 1 ]
-	[[ "$stderr$output" == *"ccs hub"* ]]
+	[[ "$stderr$output" == *"ccs hub"* ]] || return 1
 }
 
 @test "help: restore を案内している" {
 	run "$CCS_BIN" help
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"ccs restore"* ]]
+	[[ "$output" == *"ccs restore"* ]] || return 1
 }
 
 # --- 設定 ------------------------------------------------------------------
@@ -74,8 +74,8 @@ teardown() {
 @test "config: CCS_RESTORE_MAX_AGE が一覧に出る" {
 	run "$CCS_BIN" config
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"CCS_RESTORE_MAX_AGE"* ]]
-	[[ "$output" == *"7"* ]]
+	[[ "$output" == *"CCS_RESTORE_MAX_AGE"* ]] || return 1
+	[[ "$output" == *"7"* ]] || return 1
 }
 
 @test "config: CCS_RESTORE_MAX_AGE が整数でなければ落とす" {
