@@ -71,6 +71,7 @@ CCS_SCRATCH_SLOTS
 CCS_WORKTREE_ROOT
 CCS_PROJECTS_DIR
 CCS_NEW_TIMEOUT
+CCS_RESTORE_MAX_AGE
 CCS_REMOTE_CONTROL
 CCS_HUB_SLUG
 CCS_HUB_HOME
@@ -206,6 +207,16 @@ load_config
 # ではなく確実な後片付けで担保し、セッションごとに一意なディレクトリを配る。
 : "${CCS_SCRATCH_SLOTS:=8}"
 
+# `ccs restore` が黙って拾う会話ログの古さの上限（日）。0 なら無制限。
+#
+# **「止まった」と「終わった」を分ける線。** 会話ログは消えないので、上限が
+# 無いと数か月前に使い終えた枠まで復元候補に並ぶ。再起動の直後に戻したいのは
+# さっきまで動いていたものなので、既定は短くてよい。
+#
+# 効くのは**列挙するときだけ** ── 名前で指したもの（`ccs restore tmp-3`）は
+# どれだけ古くても戻す。人が名前を打っているなら、それが意図。
+: "${CCS_RESTORE_MAX_AGE:=7}"
+
 # Remote Control（スマホ・デスクトップからセッションを触る仕組み）の扱い。
 #
 #   auto … hub だけに `--remote-control <名前>` を渡す（既定）
@@ -288,6 +299,9 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
                                           （作業中は --force が要る）
   ccs gc [--yes]                          止まったセッションと空の作業枠を掃除する
                                           （既定は見せるだけ。--yes で実行）
+  ccs restore [--yes] [<slug>...]         止まった／消えたセッションを同じ会話で
+                                          立て直す（既定は見せるだけ）
+  ccs restore <slug> --list               その場所に残っている会話を並べる
 
   ccs hub up [--force] [--quiet]          hub を立てる（生きていれば何もしない）
   ccs hub status [--json]                 hub の状態を見る（終了コードで分岐できる）
@@ -1031,10 +1045,16 @@ new_uuid() {
 # 本物は最初のやり取りが発生してから .jsonl を作る（実測）。
 # 立てた直後に読もうとすると必ず失敗するので、そのつもりで扱うこと。
 transcript_path() {
-	_path=$1
-	_uuid=$2
-	_slug=$(printf '%s' "$_path" | sed 's/[^A-Za-z0-9]/-/g')
-	printf '%s/%s/%s.jsonl\n' "$CCS_PROJECTS_DIR" "$_slug" "$_uuid"
+	printf '%s/%s.jsonl\n' "$(transcript_dir_for "$1")" "$2"
+}
+
+# その cwd の会話ログが溜まるディレクトリ。
+#
+# **規則を使うのは前向きだけ。** ディレクトリ名から元のパスは復元できない
+# （「立て直す」の節を見ること）。
+transcript_dir_for() {
+	printf '%s/%s\n' "$CCS_PROJECTS_DIR" \
+		"$(printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g')"
 }
 
 tmux_session_exists() {
@@ -1115,12 +1135,18 @@ live_session_id_for() {
 
 # claude が終了したあとの sessionId を、ペインの起動コマンドから拾う。
 #
-# **v1 に resume は無いので、これが手で復帰するための唯一の導線。**
+# **`ccs restore` の入力であり、手で復帰するときの唯一の導線でもある。**
 # ペインを `exec $SHELL` で残しているおかげで、起動コマンドの文字列も残る。
+# **`--resume` で立てたペインも読む。** `ccs restore` と `ccs hub restart
+# --resume` は `--session-id` ではなく `--resume` で立てるので、片方しか見ないと
+# 一度戻したセッションの uuid が二度目から引けない（`ccs ls` の stopped 行が
+# `-` になり、復帰の手掛かりが消える）。`\|` は BSD sed に無いので式を 2 つに分ける。
 pane_session_id_for() {
 	_session=$1
 	"$CCS_TMUX_BIN" list-panes -t "$_session" -F '#{pane_start_command}' 2>/dev/null |
-		sed -n "s/.*--session-id '\{0,1\}\([0-9a-f-]\{36\}\).*/\1/p" |
+		sed -n \
+			-e "s/.*--session-id '\{0,1\}\([0-9a-f-]\{36\}\).*/\1/p" \
+			-e "s/.*--resume '\{0,1\}\([0-9a-f-]\{36\}\).*/\1/p" |
 		head -1
 }
 
@@ -1201,9 +1227,10 @@ cmd_new() {
 		warn "ccs: ${_session} のペインは残っていますが、claude は動いていません。"
 		warn ''
 		if [ -n "$_stale" ]; then
-			warn '  乗り込んで、同じ会話を再開する:'
-			warn "    ccs attach ${_slug}"
-			warn "    claude --resume ${_stale}"
+			warn '  同じ会話で立て直す:'
+			warn "    ccs restore ${_slug} --yes"
+			warn '  中を見てから決める:'
+			warn "    ccs attach ${_slug}   # そこで claude --resume ${_stale}"
 		else
 			warn "  乗り込んで確かめる: ccs attach ${_slug}"
 		fi
@@ -1637,7 +1664,8 @@ cmd_gc() {
 			[ -n "$_s" ] || continue
 			printf '  %-20s claude --resume %s\n' "$_s" "$_u"
 		done
-		printf '\n'
+		# **畳むだけが選択肢ではない。** 同じ会話で立て直せる。
+		printf '  （畳まずに同じ会話で立て直す: ccs restore）\n\n'
 	fi
 
 	if [ -n "$_empty_slots" ]; then
@@ -1696,6 +1724,486 @@ cmd_gc() {
 }
 
 # ---------------------------------------------------------------------------
+# 立て直す
+#
+# **落ちたのはセッションであって、会話ではない。** 会話は
+# `<CCS_PROJECTS_DIR>/<エンコードした cwd>/<uuid>.jsonl` に残るので、同じ場所で
+# `claude --resume <uuid>` を立てれば同じ会話が戻る（実測。PC の再起動で消えた
+# 8 本を手で戻せたのがこの機能の出発点）。
+#
+# ccs は状態ファイルを持たず tmux から導出する（design.md §2.1）。**だから
+# 「さっきまで何が立っていたか」を誰も覚えていない。** 覚える代わりに、ccs 自身が
+# 場所を決めているところだけを舐めて、そこに会話ログがあるかを見る:
+#
+#   1. 止まったペイン   … `cc/` の tmux セッションは残っているが claude が死んでいる
+#   2. 消えた作業枠     … `CCS_SCRATCH_ROOT/<n>` に会話ログがある
+#   3. 消えた worktree  … `CCS_WORKTREE_ROOT/<repo>/<branch>` に会話ログがある
+#
+# **ghq 配下のリポジトリは列挙しない。** そこの会話ログは ccs が立てたものとは
+# 限らない（デスクトップアプリや VS Code から開いたものも同じ場所に溜まる）。
+# 一括で戻すと、ccs が管理していないセッションまで tmux に生えることになる。
+# 名前で指されたときだけ立てる（`ccs restore <repo>` / `ccs restore <repo>@<branch>`）。
+#
+# **既定は dry-run**（`ccs gc` と同じ作法）。戻した会話は、続きがあればその場で
+# 動き出す ── 確認なしで N 本が動き出す設計は割に合わない。
+# ---------------------------------------------------------------------------
+
+# `--session-id` で名指しされた会話。空なら自動で選ぶ。
+CCS_RESTORE_SESSION_ID=''
+
+# その会話ログの表示名。取れなければ 1 を返す。
+#
+# **最後に付いた名前が現在の名前。** 途中で改名すると新しい行が追記され、
+# 古い行はそのまま残る（実測。1 行目は `tmp-2` のままで、末尾に人が付けた
+# 名前が並ぶ）。全体を舐めないのは、会話ログが数 MB になるため。
+restore_title_of() {
+	_t=$(tail -c 262144 "$1" 2>/dev/null |
+		grep -a -o '"customTitle":"[^"]*"' | tail -1) || _t=''
+	if [ -z "$_t" ]; then
+		_t=$(head -c 262144 "$1" 2>/dev/null |
+			grep -a -o '"customTitle":"[^"]*"' | head -1) || _t=''
+	fi
+	[ -n "$_t" ] || return 1
+	printf '%s' "$_t" | sed -e 's/^"customTitle":"//' -e 's/"$//'
+}
+
+# その会話がどこで動いていたか。会話ログに記録された cwd を読む。
+#
+# **エンコード規則を逆算しない。** `/` も `.` も `_` も同じ `-` に潰れるので、
+# ディレクトリ名から元のパスは復元できない（`-cc-hub` が `.cc-hub` なのか
+# `cc-hub` なのかは決められない）。ccs は規則を前向きにだけ使い
+# （`transcript_dir_for`）、当たった会話ログの中の cwd で答え合わせをする。
+# **規則が変わったらここで食い違うので、黙って別の会話を戻す代わりに飛ばせる。**
+restore_cwd_of() {
+	grep -a -m1 -o '"cwd":"[^"]*"' "$1" 2>/dev/null |
+		sed -e 's/^"cwd":"//' -e 's/"$//'
+}
+
+# その置き場で最後に書かれた会話の uuid。無ければ 1 を返す。
+#
+# **どれを戻すかは「最後に触った会話」で決める。** 同じ場所で会話を何度も
+# 立てていれば候補は複数あるが、落ちる直前に動いていたのは最後の 1 つ。
+# 古いものを戻したいときは `--list` で uuid を見て `--session-id` で名指しする。
+restore_latest_in() {
+	[ -d "$1" ] || return 1
+	# shellcheck disable=SC2012  # ファイル名は <uuid>.jsonl 固定なので ls で安全
+	_f=$(ls -t "$1"/*.jsonl 2>/dev/null | head -1)
+	[ -n "$_f" ] || return 1
+	basename "$_f" .jsonl
+}
+
+# 直近 CCS_RESTORE_MAX_AGE 日に触られた会話ログか。0 なら無制限。
+#
+# **`date` で差を取らない。** mtime を epoch で読む方法は環境差が大きい
+# （BSD の `stat -f` と GNU の `stat -c`）。`find -mtime` は POSIX。
+restore_is_fresh() {
+	[ "$CCS_RESTORE_MAX_AGE" -gt 0 ] 2>/dev/null || return 0
+	_hit=$(find "$1" -mtime "-${CCS_RESTORE_MAX_AGE}" 2>/dev/null | head -1)
+	[ -n "$_hit" ]
+}
+
+# 実在しないかもしれない `<root>/<leaf>` を、実在する root を通して正規化する。
+#
+# **消えた枠のパスもエンコードの入力になる。** `/tmp` が `/private/tmp` に化ける
+# 環境では、正規化を飛ばすと会話ログの置き場所を取り違える（design.md §6 で
+# 一度踏んでいる）。
+restore_abs_under() {
+	_abs=$(abs_dir "$1" 2>/dev/null) || _abs=$1
+	printf '%s/%s' "$_abs" "$2"
+}
+
+# 立て直す候補を列挙する。<slug><TAB><path><TAB><uuid>
+#
+# **hub は入れない。** 落ちても `ccs hub up`（自動起動）が立て直す担当で、
+# 同じ会話に戻す手段も別にある（`ccs hub restart --resume`）。
+restore_candidates() {
+	# 1. ペインは残っているが claude が死んでいるもの。
+	#
+	# **ここは会話ログを探さなくてよい。** ペインの起動コマンドに uuid が
+	# 残っているので、そのペインが何の会話だったかを直接引ける。古さも見ない
+	# ── tmux セッションが在ること自体が「さっきまで居た」証拠。
+	for _slug in $(list_slugs); do
+		[ "$_slug" = "$CCS_HUB_SLUG" ] && continue
+		live_session_id_for "$_slug" >/dev/null 2>&1 && continue
+
+		_p=$(pane_or_registry_cwd "$_slug" 2>/dev/null) || _p=''
+		[ -n "$_p" ] || continue
+		_u=$(pane_session_id_for "${CCS_PREFIX}${_slug}")
+		[ -n "$_u" ] || _u=$(restore_latest_in "$(transcript_dir_for "$_p")") || _u=''
+		[ -n "$_u" ] || continue
+
+		printf '%s\t%s\t%s\n' "$_slug" "$_p" "$_u"
+	done
+
+	# 2. tmux セッションごと消えた作業枠。
+	#
+	# **ディレクトリが空でも候補にする。** 枠に何も書かない会話は珍しくない
+	# （外の道具だけを触るセッション）。空かどうかは会話が残っているかと関係が
+	# 無いので、見るのは会話ログのほう。
+	_i=1
+	while [ "$_i" -le "$CCS_SCRATCH_SLOTS" ]; do
+		_slug="tmp-${_i}"
+		if ! tmux_session_exists "${CCS_PREFIX}${_slug}"; then
+			_p=$(restore_abs_under "$CCS_SCRATCH_ROOT" "$_i")
+			if _u=$(restore_latest_in "$(transcript_dir_for "$_p")"); then
+				if restore_is_fresh "$(transcript_path "$_p" "$_u")"; then
+					printf '%s\t%s\t%s\n' "$_slug" "$_p" "$_u"
+				fi
+			fi
+		fi
+		_i=$((_i + 1))
+	done
+
+	# 3. tmux セッションごと消えた worktree セッション。
+	_wt=$(abs_dir "$CCS_WORKTREE_ROOT" 2>/dev/null) || return 0
+	for _repo_dir in "$_wt"/*; do
+		[ -d "$_repo_dir" ] || continue
+		for _br_dir in "$_repo_dir"/*; do
+			[ -d "$_br_dir" ] || continue
+			_slug="$(basename "$_repo_dir")@$(basename "$_br_dir")"
+			tmux_session_exists "${CCS_PREFIX}${_slug}" && continue
+			_u=$(restore_latest_in "$(transcript_dir_for "$_br_dir")") || continue
+			restore_is_fresh "$(transcript_path "$_br_dir" "$_u")" || continue
+			printf '%s\t%s\t%s\n' "$_slug" "$_br_dir" "$_u"
+		done
+	done
+}
+
+# 名前で指された 1 つを slug とパスに落とす。結果は CCS_RESOLVED_*。
+restore_resolve_one() {
+	case $1 in
+	tmp | --tmp)
+		die "$EX_USAGE" "restore: tmp は新しい枠を取る綴りです。戻す枠は番号まで指定してください: ccs restore tmp-1"
+		;;
+	tmp-*)
+		# **枠は `resolve_target` に通さない。** あちらは「空いている枠を取る」
+		# ので、名指しした番号とは違う枠を返す。
+		_n=${1#tmp-}
+		if ! is_uint "$_n" || [ "$_n" -lt 1 ]; then
+			die "$EX_USAGE" "restore: 作業枠は tmp-<番号> の形で指定してください: $1"
+		fi
+		CCS_RESOLVED_SLUG=$1
+		CCS_RESOLVED_PATH=$(restore_abs_under "$CCS_SCRATCH_ROOT" "$_n")
+		;;
+	*)
+		# hub の予約語もここで弾かれる（resolve_target が案内を出す）。
+		resolve_target "$1"
+		;;
+	esac
+}
+
+# その slug / パスで戻すべき uuid を決める。無ければ 1 を返す。
+#
+#   --session-id > 止まったペインが覚えている uuid > 会話ログの最新
+#
+# ペインを会話ログより優先するのは、**そのペインが何だったかを知っているのは
+# ペインだけ**だから。同じ場所で別の会話を立てていれば、最新の会話ログは
+# そのペインの会話ではない。
+restore_uuid_for() {
+	if [ -n "$CCS_RESTORE_SESSION_ID" ]; then
+		printf '%s' "$CCS_RESTORE_SESSION_ID"
+		return 0
+	fi
+
+	if tmux_session_exists "${CCS_PREFIX}${1}"; then
+		_u=$(pane_session_id_for "${CCS_PREFIX}${1}")
+		if [ -n "$_u" ]; then
+			printf '%s' "$_u"
+			return 0
+		fi
+	fi
+
+	restore_latest_in "$(transcript_dir_for "$2")"
+}
+
+# 戻せない理由。無ければ空を出す。**dry-run でも同じ判定を通す**ので、
+# ここで実体を作らない。
+restore_reject_reason() {
+	_path=$1
+	_file=$(transcript_path "$1" "$2")
+
+	if [ ! -f "$_file" ]; then
+		printf '会話ログがありません（%s）' "$(tilde_path "$_file")"
+		return 0
+	fi
+
+	# 作業ディレクトリが要る。**枠だけは作り直してよい** ── ccs が作る空の
+	# ディレクトリなので、`ccs gc` が消していても失うものが無い。
+	if [ ! -d "$_path" ]; then
+		_scratch=$(abs_dir "$CCS_SCRATCH_ROOT" 2>/dev/null) || _scratch=$CCS_SCRATCH_ROOT
+		if [ "$(dirname "$_path")" != "$_scratch" ]; then
+			printf '作業ディレクトリがありません（%s）' "$(tilde_path "$_path")"
+			return 0
+		fi
+	fi
+
+	# エンコード規則の答え合わせ（restore_cwd_of のコメント）。
+	_logged=$(restore_cwd_of "$_file")
+	if [ -n "$_logged" ] && [ "$_logged" != "$_path" ]; then
+		printf '会話ログの cwd が違います（%s）' "$(tilde_path "$_logged")"
+		return 0
+	fi
+}
+
+# 1 本ぶん立て直す。冪等性の判定と検査は呼ぶ側でやる。
+restore_launch() {
+	_slug=$1
+	_path=$2
+	_uuid=$3
+	_session="${CCS_PREFIX}${_slug}"
+
+	# **止まったペインは使い回さず、畳んでから立てる**（hub と同じ）。
+	# 前の claude の出力が残ったまま新しいものが動くと、状態が読めなくなる。
+	if tmux_session_exists "$_session"; then
+		"$CCS_TMUX_BIN" kill-session -t "$_session" 2>/dev/null || true
+	fi
+
+	if [ ! -d "$_path" ]; then
+		mkdir -p "$_path" || {
+			warn "ccs: 作業ディレクトリを作れません: ${_path}"
+			return 1
+		}
+	fi
+
+	ensure_trust "$_path" "$_slug"
+
+	# **`-n` を渡さない。** 戻す会話には既に名前が付いていて、アプリの一覧に
+	# 出ているのはその名前（実測。人が付けた名前がそのまま残る）。ここで slug を
+	# 被せると、戻した瞬間に `tmp-2` へ改名され、**探している名前のほうが消える**。
+	# 新規に立てるとき（`ccs new`）と違うのはここだけ。
+	#
+	# 末尾の `exec $SHELL` は `ccs new` と同じ理由（design.md §4.3）。
+	_cmd="$(shq "$CCS_CLAUDE_BIN") --resume $(shq "$_uuid")"
+	_cmd="${_cmd}; exec $(shq "${SHELL:-/bin/sh}")"
+
+	"$CCS_TMUX_BIN" new-session -d -s "$_session" -c "$_path" sh -c "$_cmd"
+}
+
+# `--list` の出力。その場所に残っている会話を新しい順に並べる。
+restore_list_conversations() {
+	_dir=$(transcript_dir_for "$2")
+
+	printf '%s  %s\n' "$1" "$(tilde_path "$2")"
+
+	# shellcheck disable=SC2012  # ファイル名は <uuid>.jsonl 固定なので ls で安全
+	_files=$(ls -t "$_dir"/*.jsonl 2>/dev/null) || _files=''
+	if [ -z "$_files" ]; then
+		printf '  会話ログはありません（%s）\n\n' "$(tilde_path "$_dir")"
+		return 0
+	fi
+
+	printf '%s\n' "$_files" | while IFS= read -r _f; do
+		[ -n "$_f" ] || continue
+		printf '  %-36s  %-16s  %s\n' \
+			"$(basename "$_f" .jsonl)" \
+			"$(restore_mtime_of "$_f")" \
+			"$(restore_title_of "$_f" || printf '-')"
+	done
+	printf '\n'
+}
+
+# 表示用の mtime。**`date -r <ファイル>` は BSD と GNU の両方にある**
+# （GNU では --reference）。取れない環境では表示を諦める。
+restore_mtime_of() {
+	date -r "$1" '+%Y-%m-%d %H:%M' 2>/dev/null || printf '-'
+}
+
+cmd_restore() {
+	require_deps
+
+	_apply=''
+	_all=''
+	_list=''
+	_ntargets=0
+	CCS_RESTORE_SESSION_ID=''
+
+	# **オプションと対象は混ざる**（`ccs restore tmp-1 --yes`）ので 2 周する。
+	# `$@` を崩さないのは、空白を含むパスを対象に取れるようにするため。
+	_want_sid=''
+	for _arg in "$@"; do
+		if [ -n "$_want_sid" ]; then
+			CCS_RESTORE_SESSION_ID=$_arg
+			_want_sid=''
+			continue
+		fi
+		case $_arg in
+		-y | --yes) _apply=1 ;;
+		--all) _all=1 ;;
+		--list) _list=1 ;;
+		--session-id) _want_sid=1 ;;
+		-*) die "$EX_USAGE" "restore: 知らないオプション: ${_arg}" ;;
+		*) _ntargets=$((_ntargets + 1)) ;;
+		esac
+	done
+	[ -z "$_want_sid" ] || die "$EX_USAGE" 'restore: --session-id に uuid がありません'
+
+	if [ -n "$CCS_RESTORE_SESSION_ID" ] && [ "$_ntargets" -ne 1 ]; then
+		die "$EX_USAGE" 'restore: --session-id は戻す先を 1 つ指定したときだけ使えます（例: ccs restore tmp-1 --session-id <uuid>）'
+	fi
+
+	# --- 候補を作る ---
+
+	_rows=''
+	if [ "$_ntargets" -gt 0 ]; then
+		# **名指しは古さで絞らない。** 人が名前を打っているなら、1 か月前の
+		# 会話でもそれが意図。
+		_want_sid=''
+		for _arg in "$@"; do
+			if [ -n "$_want_sid" ]; then
+				_want_sid=''
+				continue
+			fi
+			case $_arg in
+			--session-id)
+				_want_sid=1
+				continue
+				;;
+			-*) continue ;;
+			esac
+
+			restore_resolve_one "$_arg"
+			_slug=$CCS_RESOLVED_SLUG
+			_path=$CCS_RESOLVED_PATH
+			_uuid=$(restore_uuid_for "$_slug" "$_path") || _uuid=''
+			[ -n "$_uuid" ] ||
+				die "$EX_FAIL" "${_slug} に戻せる会話が見つかりません（$(tilde_path "$(transcript_dir_for "$_path")")）"
+			_rows="${_rows}${_slug}	${_path}	${_uuid}
+"
+		done
+	else
+		[ -z "$_all" ] || CCS_RESTORE_MAX_AGE=0
+		_rows=$(restore_candidates)
+	fi
+
+	if [ -z "$_rows" ]; then
+		printf '立て直せるセッションはありません。\n'
+		return 0
+	fi
+
+	# --- 会話の一覧だけ見せて終わる ---
+
+	if [ -n "$_list" ]; then
+		printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _path _uuid; do
+			[ -n "$_slug" ] || continue
+			restore_list_conversations "$_slug" "$_path"
+		done
+		printf '戻すものを選ぶ: ccs restore <slug> --session-id <uuid> --yes\n'
+		return 0
+	fi
+
+	# --- 仕分ける ---
+	#
+	# 分類はパイプの中（サブシェル）でやり、結果を文字列で受け取る。
+	# ループの中で変数を溜めるとサブシェルの外に出てこない（`ccs gc` と同じ形）。
+	_sorted=$(printf '%s\n' "$_rows" |
+		while IFS="$(printf '\t')" read -r _slug _path _uuid; do
+			[ -n "$_slug" ] || continue
+			# 生きているものは触らない（冪等性）。
+			if live_session_id_for "$_slug" >/dev/null 2>&1; then
+				printf 'alive\t%s\t%s\t%s\n' "$_slug" "$_path" "$_uuid"
+				continue
+			fi
+			_why=$(restore_reject_reason "$_path" "$_uuid")
+			if [ -n "$_why" ]; then
+				printf 'skip\t%s\t%s\n' "$_slug" "$_why"
+			else
+				printf 'ready\t%s\t%s\t%s\n' "$_slug" "$_path" "$_uuid"
+			fi
+		done)
+
+	_ready=$(printf '%s\n' "$_sorted" | sed -n 's/^ready\t//p')
+	_alive=$(printf '%s\n' "$_sorted" | sed -n 's/^alive\t//p')
+	_skipped=$(printf '%s\n' "$_sorted" | sed -n 's/^skip\t//p')
+
+	# slug の最大幅に合わせる（`ccs ls` と同じ）。
+	_w=$(printf '%s\n' "$_sorted" |
+		awk -F'\t' 'NF > 1 && length($2) > m { m = length($2) } END { print (m < 4 ? 4 : m) }')
+
+	# --- 報告 ---
+
+	if [ -n "$_ready" ]; then
+		printf '立て直せるセッション:\n'
+		printf '%s\n' "$_ready" | while IFS="$(printf '\t')" read -r _slug _path _uuid; do
+			[ -n "$_slug" ] || continue
+			_f=$(transcript_path "$_path" "$_uuid")
+			printf "  %-${_w}s  %-16s  %-36s  %s\n" \
+				"$_slug" "$(restore_mtime_of "$_f")" "$_uuid" \
+				"$(restore_title_of "$_f" || printf '-')"
+		done
+		printf '\n'
+	fi
+
+	if [ -n "$_alive" ]; then
+		printf '生きているので触りません:\n'
+		printf '%s\n' "$_alive" | while IFS="$(printf '\t')" read -r _slug _rest; do
+			[ -n "$_slug" ] || continue
+			printf '  %s\n' "$_slug"
+		done
+		printf '\n'
+	fi
+
+	if [ -n "$_skipped" ]; then
+		printf '戻せません:\n'
+		printf '%s\n' "$_skipped" | while IFS="$(printf '\t')" read -r _slug _why; do
+			[ -n "$_slug" ] || continue
+			printf "  %-${_w}s  %s\n" "$_slug" "$_why"
+		done
+		printf '\n'
+	fi
+
+	[ -n "$_ready" ] || return 0
+
+	if [ -z "$_apply" ]; then
+		printf '実行するには: ccs restore --yes\n'
+		printf '別の会話を選ぶ: ccs restore <slug> --list\n'
+		return 0
+	fi
+
+	# --- 実行 ---
+	#
+	# **全部立ててから、登録を待つ。** 1 本ずつ待つと待ち時間が本数ぶん積み
+	# 上がる（1 本あたり最大 CCS_NEW_TIMEOUT 秒）。同時に起動しておけば、
+	# 待つのはいちばん遅い 1 本ぶんで済む。
+	_launched=$(printf '%s\n' "$_ready" |
+		while IFS="$(printf '\t')" read -r _slug _path _uuid; do
+			[ -n "$_slug" ] || continue
+			if restore_launch "$_slug" "$_path" "$_uuid"; then
+				printf '%s\t%s\n' "$_slug" "$_uuid"
+			else
+				warn "ccs: 立て直せませんでした: ${CCS_PREFIX}${_slug}"
+			fi
+		done)
+
+	# 待った結果も同じ形で受け取る。**報告は stdout**（gc と同じ）だが、
+	# パイプの中で出すと捕まってしまうので、仕分けてから出す。
+	_waited=$(printf '%s\n' "$_launched" |
+		while IFS="$(printf '\t')" read -r _slug _uuid; do
+			[ -n "$_slug" ] || continue
+			if wait_for_registration "$_uuid"; then
+				printf 'ok\t%s\t%s\n' "$_slug" "$_uuid"
+			else
+				printf 'ng\t%s\n' "$_slug"
+			fi
+		done)
+
+	printf '%s\n' "$_waited" | sed -n 's/^ok\t//p' |
+		while IFS="$(printf '\t')" read -r _slug _uuid; do
+			[ -n "$_slug" ] || continue
+			printf '戻しました: %s%s（%s）\n' "$CCS_PREFIX" "$_slug" "$_uuid"
+		done
+
+	_failed=$(printf '%s\n' "$_waited" | sed -n 's/^ng\t//p')
+	[ -z "$_failed" ] || {
+		printf '%s\n' "$_failed" | while IFS= read -r _slug; do
+			[ -n "$_slug" ] || continue
+			warn "ccs: ${_slug} は ${CCS_NEW_TIMEOUT} 秒で登録されませんでした。"
+			warn "  乗り込んで確かめる: ccs attach ${_slug}"
+		done
+		exit "$EX_FAIL"
+	}
+}
+
+# ---------------------------------------------------------------------------
 # 設定の検査と表示
 # ---------------------------------------------------------------------------
 
@@ -1728,7 +2236,7 @@ validate_config() {
 	[ "$CCS_HUB_SLUG" != 'tmp' ] ||
 		die "$EX_USAGE" 'CCS_HUB_SLUG に tmp は使えません（使い捨て作業枠の予約語です）'
 
-	for _v in CCS_SCRATCH_SLOTS CCS_NEW_TIMEOUT CCS_HUB_RC_TIMEOUT CCS_HUB_BACKOFF_WINDOW CCS_HUB_BACKOFF_MAX CCS_HUB_AGENT_INTERVAL; do
+	for _v in CCS_SCRATCH_SLOTS CCS_NEW_TIMEOUT CCS_RESTORE_MAX_AGE CCS_HUB_RC_TIMEOUT CCS_HUB_BACKOFF_WINDOW CCS_HUB_BACKOFF_MAX CCS_HUB_AGENT_INTERVAL; do
 		eval "_n=\$$_v"
 		is_uint "$_n" || die "$EX_USAGE" "${_v} は 0 以上の整数です: ${_n}"
 	done
@@ -2176,6 +2684,27 @@ cmd_hub_up() {
 		die "$EX_FAIL" "hub の状態を判定できませんでした: ${_hb_state}"
 		;;
 	esac
+
+	hub_restore_hint
+}
+
+# 「他も落ちている」ことだけ伝える。**立て直しはしない。**
+#
+# hub up は launchd から 5 分おきに走る。ここで他のセッションまで戻すと、
+# 人が畳んだものが 5 分後に生き返る ── ccs は状態を持たないので、
+# 「畳んだ」と「落ちた」を durable な情報から区別できない（design.md §2.1）。
+# 区別できるのは打った本人だけなので、**復元は人が打つ `ccs restore` に残す。**
+#
+# 言うのは hub を実際に立て直したときだけ。生きているときは呼ばれる前に
+# 返っているので、ここへ来るのは落ちていたときだけ ── 再起動の直後がまさに
+# それで、そのとき他のセッションも一緒に消えている。
+hub_restore_hint() {
+	_hb_n=$(restore_candidates 2>/dev/null | grep -c . || true)
+	[ "${_hb_n:-0}" -gt 0 ] 2>/dev/null || return 0
+	warn ''
+	warn "ccs: 止まっているセッションが ${_hb_n} 本あります（hub は立て直しました）。"
+	warn '  見る:     ccs restore'
+	warn '  立て直す: ccs restore --yes'
 }
 
 cmd_hub_status() {
@@ -2588,6 +3117,7 @@ main() {
 	attach) cmd_attach "$@" ;;
 	kill) cmd_kill "$@" ;;
 	gc) cmd_gc "$@" ;;
+	restore) cmd_restore "$@" ;;
 	hub) cmd_hub "$@" ;;
 	resolve) cmd_resolve "$@" ;;
 	config) cmd_config "$@" ;;

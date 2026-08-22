@@ -34,6 +34,10 @@
 #   FAKE_CLAUDE_BRIDGE_DELAY     bridgeSessionId を書くまでの待ち秒数。既定 0
 #   FAKE_CLAUDE_ECHO             起動時にこの文字列をペインへ出す。
 #                                 認証切れの画面（/login）の再現に使う
+#   FAKE_CLAUDE_TRANSCRIPT       1 なら会話ログ（<CCS_PROJECTS_DIR>/<エンコード
+#                                 した cwd>/<uuid>.jsonl）を書く。**本物は最初の
+#                                 やり取りが起きてから書く**（実測）ので既定では
+#                                 書かない。ccs restore がこれを読む
 
 set -eu
 
@@ -50,6 +54,7 @@ FAKE_CLAUDE_VERSION='0.0.0-fake'
 : "${FAKE_CLAUDE_NO_BRIDGE:=}"
 : "${FAKE_CLAUDE_BRIDGE_DELAY:=0}"
 : "${FAKE_CLAUDE_ECHO:=}"
+: "${FAKE_CLAUDE_TRANSCRIPT:=}"
 
 # ---------------------------------------------------------------------------
 # 共通
@@ -160,6 +165,35 @@ write_registry() {
 	mv "$_tmp" "$REGISTRY_FILE"
 }
 
+# 会話ログを書く。本物と同じ置き場所・同じ命名にする
+# （`<CCS_PROJECTS_DIR>/<cwd の英数字以外を - に潰したもの>/<uuid>.jsonl`）。
+#
+# **中身は ccs が読むところだけ**を真似る: 会話の表示名（customTitle）と、
+# どこで動いていたか（cwd）。--resume で呼ばれたときは追記する ── 本物も
+# 同じファイルに書き足す（sessionId が変わらないため。実測）。
+write_transcript() {
+	_name=$1
+	_session_id=$2
+	_cwd=$3
+
+	[ -n "$FAKE_CLAUDE_TRANSCRIPT" ] || return 0
+	[ -n "${CCS_PROJECTS_DIR:-}" ] || {
+		echo 'fake-claude: FAKE_CLAUDE_TRANSCRIPT には CCS_PROJECTS_DIR が要ります' >&2
+		exit 2
+	}
+
+	_dir="${CCS_PROJECTS_DIR}/$(printf '%s' "$_cwd" | sed 's/[^A-Za-z0-9]/-/g')"
+	mkdir -p "$_dir"
+	_file="${_dir}/${_session_id}.jsonl"
+
+	if [ ! -f "$_file" ] && [ -n "$_name" ]; then
+		printf '{"type":"custom-title","customTitle":"%s","sessionId":"%s"}\n' \
+			"$(json_escape "$_name")" "$(json_escape "$_session_id")" >>"$_file"
+	fi
+	printf '{"type":"user","cwd":"%s","sessionId":"%s"}\n' \
+		"$(json_escape "$_cwd")" "$(json_escape "$_session_id")" >>"$_file"
+}
+
 cmd_interactive() {
 	_name=''
 	_session_id=''
@@ -244,6 +278,7 @@ cmd_interactive() {
 	fi
 
 	write_registry "$_name" "$_session_id" "$PWD" "$_bridge"
+	write_transcript "$_name" "$_session_id" "$PWD"
 
 	if [ -n "$FAKE_CLAUDE_EXIT_AFTER" ]; then
 		sleep "$FAKE_CLAUDE_EXIT_AFTER"

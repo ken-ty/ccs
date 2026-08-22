@@ -68,6 +68,7 @@ CCS_SCRATCH_SLOTS=4           # 使い捨て枠は 4 本で足りる
 | `CCS_SCRATCH_ROOT` | `~/.cc-scratch` | 使い捨て作業枠の置き場所 |
 | `CCS_WORKTREE_ROOT` | `~/.cc-worktrees` | `ccs new <repo>@<branch>` が切る worktree の置き場所。**ghq root の外に置くこと**（`ghq list` が worktree をリポジトリとして拾い、名前解決が誤爆する） |
 | `CCS_SCRATCH_SLOTS` | `8` | 使い捨て枠の本数。**有限であること自体が歯止め** |
+| `CCS_RESTORE_MAX_AGE` | `7` | `ccs restore` が黙って拾う会話ログの古さの上限（日）。`0` で無制限。**列挙にだけ効く**（名指しは古くても戻す） |
 
 ### `hub` という名前のリポジトリを持っている場合
 

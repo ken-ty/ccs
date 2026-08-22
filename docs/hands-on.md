@@ -245,7 +245,7 @@ x01   stopped   0ecd87dd-cdb0-4835-add0-23e4c14b9b5f  ~/ghq/github.com/ken-ty/x0
 ```
 
 見るところ: **`stopped` になっても `SESSION ID` が出ている。**
-v1 に `resume` は無いので、この UUID が同じ会話に戻る唯一の手掛かり。
+この UUID が同じ会話に戻る手掛かりで、`ccs restore` もこれを使う。
 
 この状態で `ccs new x01` を打つと、**成功扱いにせず**復帰コマンドを出す:
 
@@ -256,6 +256,51 @@ ccs: cc/x01 のペインは残っていますが、claude は動いていませ�
     ccs attach x01
     claude --resume 0ecd87dd-cdb0-4835-add0-23e4c14b9b5f
   畳んで立て直す:     ccs kill x01 && ccs new x01
+```
+
+---
+
+## 7.1 止まったセッションを戻す
+
+`ccs ls` が `stopped` と言っている状態のまま、**同じ会話で立て直す。**
+
+```bash
+ccs restore
+```
+
+**期待される出力**（既定は見せるだけ。何も起きない）:
+
+```
+立て直せるセッション:
+  x01   2026-08-22 13:45  0ecd87dd-cdb0-4835-add0-23e4c14b9b5f  <会話の名前>
+
+実行するには: ccs restore --yes
+別の会話を選ぶ: ccs restore <slug> --list
+```
+
+```bash
+ccs restore --yes
+ccs ls
+```
+
+見るところ: **`SESSION ID` が戻す前と同じで、`STATUS` が `stopped` でなくなっている。**
+ここが違っていたら、戻ったように見えて別の会話が立っている。
+
+`ccs attach x01` で乗り込むと、**前の会話がそのまま続いている**（スクロールバックに
+前のやり取りがある）。アプリの一覧では**元の名前のまま**戻る ── `restore` は
+`-n` を渡さないので、会話に付いていた名前が消えない。
+
+!!! warning "戻した会話は動き出すことがある"
+    落ちる直前に続きがあった会話は、resume した瞬間に続きを走らせる。
+    `ccs` から止める手段は無いので、1 本ずつ戻したいときは名指しする
+    （`ccs restore x01 --yes`）。詳細は [restore.md](restore.md#既定は見せるだけ)。
+
+**tmux ごと消えた場合**（再起動の再現）も同じ手順で戻る。`ccs kill x01` で畳んでから
+`ccs restore` を打つと、`x01` は候補に**出ない** ── ghq 配下のリポジトリは列挙しない
+（[理由](restore.md#何が起きているのか)）。名指しなら戻る。
+
+```bash
+ccs restore x01 --yes
 ```
 
 ---
@@ -496,6 +541,7 @@ ccs hub down && rm -rf ~/.cc-hub     # 中身を確かめてから
 - [ ] 5. `Ctrl-b d` で抜けてもセッションが生きている
 - [ ] 6. 二度立てても増えない（`created:false`、同じ `sessionId`）
 - [ ] 7. `stopped` でも `SESSION ID` が出る
+- [ ] 7.1 `ccs restore` が同じ `sessionId` で立て直し、会話の名前も変えない
 - [ ] 8. `gc` が既定では何も消さない
 - [ ] 9. 使い捨ての作業枠が、信頼確認なしで 2 本とも立った
 - [ ] 10. 元に戻せた
@@ -516,6 +562,7 @@ ccs hub down && rm -rf ~/.cc-hub     # 中身を確かめてから
 | `ccs new --tmp` が「枠が全部埋まっています」 | `ccs gc` で状況を見る。中身のある枠は `ccs` が消さないので自分で確認する |
 | `ccs new tmp` が「同名のリポジトリもあります」 | ghq に `tmp` がある。作業枠なら `--tmp`、リポジトリなら `<owner>/tmp` |
 | `ccs kill` が「作業中です」で止まる | 意図した動き。`ccs attach` で様子を見てから `--force` |
+| `ccs restore` に戻したいものが出てこない | ghq 配下のリポジトリは列挙しない（名指しで戻す）。古い会話は既定で 7 日まで（`--all`）。[理由](restore.md#何が起きているのか) |
 | `ccs hub up` が `no-rc`（10）で終わる | Remote Control が付いていない。`ccs config` で `CCS_REMOTE_CONTROL` を見る。使わない環境なら `off` |
 | `ccs hub up` が `needs-attention`（15）で止まる | 再起動を繰り返している。`ccs hub attach` と `~/.cc-hub/hub.log` を見る |
 | 終了コードの意味 | 0 成功 / 1 失敗 / 2 使い方の誤り / 4 依存が無い / 10〜15 は hub の状態（[hub](hub.md#状態)） |

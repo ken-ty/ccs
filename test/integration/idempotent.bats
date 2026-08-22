@@ -168,8 +168,8 @@ teardown() {
 }
 
 @test "claude が終了していても、再開用の uuid を出す" {
-	# **v1 に resume が無いので、これが手で復帰する唯一の導線。**
 	# ペインを exec \$SHELL で残しているおかげで起動コマンドが残る。
+	# uuid は `ccs restore` の入力であり、手で戻すときの唯一の導線でもある。
 	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
 	export FAKE_CLAUDE_EXIT_AFTER=1
 
@@ -180,6 +180,8 @@ teardown() {
 	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	[ "$status" -eq 1 ]
 	[[ "$stderr" == *"claude --resume ${_id}"* ]]
+	# 立て直す道具のほうも案内する。
+	[[ "$stderr" == *"ccs restore"* ]]
 }
 
 # --- 出力の作法 -------------------------------------------------------------
