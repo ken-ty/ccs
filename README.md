@@ -108,17 +108,30 @@ $ ccs new agent-skills
 アプリから届くのは生きているセッションだけなので、ハブが死ぬと `ccs` を叩く
 経路ごと消える。
 
+**推奨の初期設定は「ログイン時 + 5 分ごと」。** hub を使うなら、立てたその日に
+自動起動も入れる。
+
 ```console
 $ ccs hub up
 {"slug":"hub","state":"healthy","sessionId":"…","tmux":"cc/hub","bridge":"session_…","created":true}
 
 $ ccs hub agent --print > ~/Library/LaunchAgents/local.ccs.hub.plist
 $ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.ccs.hub.plist
+
+$ launchctl list | grep ccs        # 入ったか確かめる（3 つとも見る）
+$ ccs hub status                   # healthy
+$ ccs ls                           # hub が 1 本だけ
 ```
 
 `ccs hub up` は冪等（生きていれば何もしない）なので、定期実行するだけで
 死活監視になる。落ちていれば立て直し、**認証切れと再起動の暴走は自動で直さず
-人を待つ**。詳しくは [docs/hub.md](docs/hub.md)。
+人を待つ**。
+
+**5 分ごとでも負荷にならない** ── healthy なときの `ccs hub up` は claude を
+起動せず、tmux とレジストリのファイルを見るだけで終わる（実測 0.06 秒）。
+逆に「起動時 1 回だけ」にすると、クラッシュ・Remote Control の脱落・context
+溢れで日中に落ちたときが戻らない。Linux（systemd）の手順、間隔の変え方、
+外し方は [docs/hub.md](docs/hub.md#常時起動推奨の初期設定)。
 
 `ccs kill` と `ccs gc` はハブを対象にしない。ハブを畳むのは `ccs hub down`、
 作り直すのは `ccs hub restart`。
