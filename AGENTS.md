@@ -22,7 +22,7 @@
   設定で変えられるようにし、`ccs config` に出す
 - **設定ファイルを `source` しない。** 設定と実行の境界が無くなる
 
-外部のボード [ccb](https://github.com/ken-ty/ccb) がこのツールを叩く（design.md §9）。
+外部のボード ccb（**private リポジトリ**）がこのツールを叩く（design.md §9）。
 **その都合でこのリポジトリの性格を変えない**:
 
 - **`ccs` はタスクを知らない。** 紐付けは `ccs new --label` の**不透明な文字列**として
@@ -30,6 +30,23 @@
 - **ccb 無しで `ccs` が使えることを壊さない。** 追加はすべて任意のオプションで、
   終了コード・`--` の意味・既定の出力を変えない
 - **ポーリングするのは `ccb` 側。** 盤面のために `ccs` にデーモンを足さない
+
+## 公開リポジトリとしての書き方
+
+**このリポジトリは public にする（判定済み）。** 書いたものは全世界から読める前提で書く。
+
+- **新しく private リポジトリの名前・実パス・個人情報を書かない。** 例示には汎用名を使う
+  （`example/repo`、`~/ghq/github.com/<owner>/<repo>`、`/Users/you/...`）
+- **private リポジトリはリンクにしない。** 公開後は 404 になるだけなので、
+  「private リポジトリ」と明記して名前だけ出すか、参照そのものを落とす
+- **`scripts/termshot.py` で画面を撮り直すときは題材に注意する。** SVG には
+  `ccs ls` の出力がそのまま入るので、public なリポジトリか汎用名で撮る
+- 秘密（API キー、トークン、鍵）はそもそも置かない。テストの fixture も同じ
+
+**既に履歴に入っているものは遡って消さない。** 公開判定の時点で、`x01` / `catan` /
+`ccb` / `cost-management` / `agent-skills-store` / `collection_deck_ja` の名前が履歴に
+埋まっていることを確認し、**その開示は受け入れた**（名前だけで、中身も取引先も秘密も
+含まない）。履歴の書き換えはしない。**やるのは「これ以上増やさない」こと。**
 
 ## 承認レベル
 
@@ -153,7 +170,7 @@ make setup-hooks    # git config core.hooksPath hooks
 shellcheck は手元も CI も 0.11.0 で揃えてあるが、bash と coreutils の差は残る。
 **main で落ちたら revert せず fix-forward で直す。**
 
-経緯 → [ken-ty/cost-management#11](https://github.com/ken-ty/cost-management/issues/11)
+経緯は別リポジトリ（**private**）の issue にある。要点は ci.yml の冒頭コメントに写してある。
 
 ## 依存
 
