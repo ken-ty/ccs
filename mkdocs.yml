@@ -1,14 +1,19 @@
 # ccs のドキュメント。
 #
-# **GitHub Pages へは出さない。** このリポジトリは private で、Free プランでは
-# private リポジトリの Pages を publish できない。仮にできてもサイト自体は
-# 公開されてしまう。CI では Artifacts に上げる ── そうすればリポジトリの
-# アクセス権がそのままドキュメントのアクセス制御になる。
+# **GitHub Pages へ出す**（2026-08-22、リポジトリを public にしたのに合わせて）。
+# 以前は Artifacts に上げるだけだったが、あれは URL で読めない ── zip を落として
+# 展開して index.html を開くしかなく、他人に渡せるものにならなかった。
+# デプロイは .github/workflows/docs.yml。
 #
 # 手元で読むときは `make docs`（uvx 経由なので事前の pip install は要らない）。
 
 site_name: ccs
 site_description: Claude Code セッションを tmux で立てる薄いラッパー
+site_url: https://ken-ty.github.io/ccs/
+
+# ヘッダから GitHub へ飛べるようにする。public にしたので出して困らない。
+repo_url: https://github.com/ken-ty/ccs
+repo_name: ken-ty/ccs
 
 # 生成物からリポジトリの該当行へは飛ばせないので、編集リンクは出さない。
 edit_uri: ''

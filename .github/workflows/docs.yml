@@ -1,11 +1,10 @@
-# ドキュメントをビルドして Artifacts に上げる。
+# ドキュメントをビルドして GitHub Pages へ出す。
 #
-# **GitHub Pages へはデプロイしない。** このリポジトリは private で、Free プランでは
-# private リポジトリの Pages を publish できない。仮にできても Pages のサイトは
-# インターネットに公開される。Artifacts なら**リポジトリのアクセス権がそのまま
-# ドキュメントのアクセス制御になる**。
+# リポジトリを public にした（2026-08-22）ので、Artifacts に上げるだけだった
+# 前提が消えた。**Artifacts は URL で読めない** ── zip を落として展開して
+# index.html を開くしかなく、他人に渡せるものにならない。
 #
-# 公開に切り替えるなら、可視性の変更（人間の判断）と合わせてここも書き換える。
+# 公開先: https://ken-ty.github.io/ccs/
 
 name: docs
 
@@ -25,13 +24,15 @@ on:
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
 
-# Artifacts に上げるだけでどこにも publish しないので、途中で切っても
-# 中途半端に反映されることはない。cancel-in-progress: true でよい。
-# （デプロイするワークフローなら false にすること）
+# **cancel-in-progress: false。** デプロイするワークフローなので、途中で切ると
+# 公開されているサイトが中途半端な状態で止まりうる。group も ref ではなく
+# pages 固定にする ── デプロイ先が 1 つしか無いため。
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: pages
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -53,8 +54,17 @@ jobs:
         # --strict にして、リンク切れや未参照ファイルで落とす。
         run: mkdocs build --strict
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-pages-artifact@v3
         with:
-          name: ccs-docs
           path: site/
-          retention-days: 14
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

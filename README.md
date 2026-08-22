@@ -3,7 +3,7 @@
 ハブ 1 本から、tmux 上に複数の Claude Code セッションを立て・見つけ・畳むための CLI。
 
 **v1 のコマンドが揃い、常時稼働のハブ（`ccs hub`）が入った。**
-→ [チュートリアル](docs/tutorial.md) / [hub](docs/hub.md) / [設定](docs/configuration.md) / [設計調査](docs/design.md)
+→ **[ドキュメント](https://ken-ty.github.io/ccs/)** / [チュートリアル](docs/tutorial.md) / [hub](docs/hub.md) / [設定](docs/configuration.md) / [設計調査](docs/design.md)
 
 ```bash
 git clone git@github.com:ken-ty/ccs.git ~/ghq/github.com/ken-ty/ccs
@@ -196,8 +196,8 @@ make docs        # 手元で配信する（uvx 経由なので事前の pip inst
 make docs-build  # 静的ビルド
 ```
 
-GitHub Pages へは出していない。private リポジトリ + Free プランでは publish できず、
-仮にできてもサイトは公開されるため。CI では Artifacts に上げている。
+公開先は **<https://ken-ty.github.io/ccs/>**。`main` の `docs/` 以下が変わると
+[docs ワークフロー](.github/workflows/docs.yml)がビルドしてデプロイする。
 
 ## 関連
 
