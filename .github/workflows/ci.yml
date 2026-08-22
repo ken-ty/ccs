@@ -5,29 +5,30 @@
 # ここが本物を起動する作りになったら、CI は課金され、ログイン状態に依存し、
 # 実行のたびに結果が変わる ── そうなっていないことの番人がこのワークフロー。
 #
-# ## PR 側では回さない
+# ## PR 側でも回す（2026-08-23 に戻した）
 #
-# 検証は push 前に手元で終わっている前提を取る。担保は `hooks/pre-push` で、
-# `make check` を回して落ちたら push させない（`make setup-hooks` で有効になる）。
+# 一度は `pull_request` を外していた。理由は 2 つあったが、**public にした時点で
+# 両方とも消えた。**
 #
-# 以前は `pull_request` でも回していた。やめた理由は 2 つ。
+# 1. ~~**PR のチェックは「関門」ではなかった。** Free プランの private では
+#    branch protection が使えず（/branches/main/protection が 403
+#    "Upgrade to GitHub Pro or make this repository public"）、required check に
+#    できない。赤くてもマージボタンは押せた~~
+#    → **public にしたので ruleset が使えるようになり、この `check` を required に
+#      した。** いまは赤ければマージできない ── 本物の関門になった
+# 2. ~~**PR と main への push が数分差で対になっており、同じ内容を 2 回検証していた。**
+#    2026-08 の実測で、PR 側の実行だけで 29 分/月（→ ken-ty/cost-management#11）~~
+#    → **public リポジトリの標準ランナーは無料。** 分数を数える理由が無くなった
 #
-# 1. **PR のチェックは元々「関門」ではなかった。** このリポジトリは Free プランの
-#    private なので branch protection が使えず（/branches/main/protection は
-#    403 "Upgrade to GitHub Pro or make this repository public"）、required check
-#    にできない。赤くてもマージボタンは押せる状態だった
-# 2. **PR と main への push が数分差で対になっており、同じ内容を 2 回検証していた**
+# `hooks/pre-push` は残す。**手元で落とすほうが速い**ので、CI は最後の関門であって
+# 最初の関門ではない。二重になるのは承知のうえ（`make setup-hooks` で有効になる）。
 #
-# 2026-08 の実測では、PR 側の実行だけで 29 分/月を使っていた。
-# → ken-ty/cost-management#11
+# ## これで「本物の claude を起動していないことを確かめる」がマージ前に効く
 #
-# ## ただし、下の「本物の claude を起動していないことを確かめる」だけは
-# ## 手元で再現できない
-#
-# あのステップは **ランナーに claude が入っていないこと**を利用した保険で、
-# claude が入っている開発機では意味を持たない。**ここだけは main への push で
-# しか検証されない。** テストが本物を起動する作りに変わってしまった場合、
-# 気づくのはマージ後になる。それを承知でこの形にしている。
+# 下のステップは **ランナーに claude が入っていないこと**を利用した保険で、
+# claude が入っている開発機では意味を持たない。**PR で回すようにしたので、
+# テストが本物を起動する作りに変わったらマージ前に落ちる。** 以前は main への
+# push でしか検証されず、気づくのはマージ後だった。
 #
 # 手元は macOS + bash 3.2、ここは ubuntu + bash 5.x。shellcheck は手元も CI も
 # 0.11.0 で揃えてあるが、bash と coreutils の差は残る。
@@ -35,8 +36,13 @@
 
 name: ci
 
+# **`pull_request` は ruleset の required check の供給元。**
+# ここを外すと、PR は「来ないチェック」を待ち続けてマージできなくなる
+# （required にしているのは下の `check` ジョブ）。
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
   workflow_dispatch:
 
@@ -47,6 +53,8 @@ permissions:
 # 連続 push で無駄に走り続けるのを止めるためだが、効くのはむしろ事故のとき ──
 # 1 本目がハングしたまま生きていると、後続の push が 2 本目を起こして
 # **同じ穴に落ちる**。2026-08-18 の事故は実際これで被害が 2 倍になった。
+# ref ごとに分ける。PR とマージ後の push は ref が違うので、
+# **マージした瞬間に PR 側の run が main の run を巻き込むことはない。**
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

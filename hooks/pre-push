@@ -2,9 +2,12 @@
 #
 # push する前に、CI と同じ検証を手元で回す。
 #
-# **CI（.github/workflows/ci.yml / docs.yml）は main への push でしか回らない。**
-# PR 側では回らないので、壊れたものを push しないための関門はここしかない。
-# 理由は ci.yml の冒頭コメントと ken-ty/cost-management#11 を参照。
+# **ci.yml は PR でも回り、main の ruleset で required check になっている**
+# （2026-08-23 に戻した。理由は ci.yml の冒頭コメント）。**ここはその手前の関門。**
+# 手元で落とすほうが速いので二重にしてある。
+#
+# **docs.yml は main への push でしか回らない**ので、docs のビルドを守るのは
+# いまもここだけ。
 #
 # 有効化: make setup-hooks   （git config core.hooksPath hooks）
 #
@@ -54,7 +57,8 @@ pre-push: $1 が落ちました。push を中止します。
 
   直してから push し直してください。
   どうしても今 push したいなら: git push --no-verify
-  （CI は main への push でしか回りません。壊れたまま push すると main が赤くなります）
+  （ci.yml は PR でも回るので、壊れたままだとマージできません。
+   docs.yml は main への push でしか回らないので、docs は main が赤くなります）
 MSG
   exit 1
 }
