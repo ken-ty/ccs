@@ -62,7 +62,7 @@ teardown() {
 
 	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	_id=$(echo "$output" | jq -r '.sessionId')
-	[[ "$_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
+	[[ "$_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 1
 }
 
 @test "new: 呼ぶたびに違う sessionId になる" {
@@ -85,8 +85,8 @@ teardown() {
 	_id=$(echo "$output" | jq -r '.sessionId')
 
 	run cat "$FAKE_CLAUDE_LOG"
-	[[ "$output" == *"-n myrepo"* ]]
-	[[ "$output" == *"--session-id ${_id}"* ]]
+	[[ "$output" == *"-n myrepo"* ]] || return 1
+	[[ "$output" == *"--session-id ${_id}"* ]] || return 1
 }
 
 @test "new: セッションの cwd は解決したパス" {
@@ -108,7 +108,7 @@ teardown() {
 	_id=$(echo "$output" | jq -r '.sessionId')
 
 	_found=$(grep -l "\"sessionId\":\"${_id}\"" "$CCS_SESSIONS_DIR"/*.json)
-	[[ "$(jq -r '.tmux' "$_found")" == "cc/myrepo:"* ]]
+	[[ "$(jq -r '.tmux' "$_found")" == "cc/myrepo:"* ]] || return 1
 }
 
 @test "new: 空白や引用符を含むパスでも壊れない" {
@@ -132,7 +132,7 @@ teardown() {
 	[ "$status" -eq 0 ]
 
 	run cat "$FAKE_CLAUDE_LOG"
-	[[ "$output" == *"テストを走らせて"* ]]
+	[[ "$output" == *"テストを走らせて"* ]] || return 1
 }
 
 # --- transcript --------------------------------------------------------------
@@ -148,16 +148,16 @@ teardown() {
 
 	_t=$(echo "$output" | jq -r '.transcript')
 	_id=$(echo "$output" | jq -r '.sessionId')
-	[[ "$_t" == "${CCS_PROJECTS_DIR}/"* ]]
-	[[ "$_t" == *"my-repo-v2/${_id}.jsonl" ]]
+	[[ "$_t" == "${CCS_PROJECTS_DIR}/"* ]] || return 1
+	[[ "$_t" == *"my-repo-v2/${_id}.jsonl" ]] || return 1
 
 	# 検査は「パスから作った 1 段」に限る。全体を見ると
 	# CCS_PROJECTS_DIR 側の文字まで拾ってしまう（macOS の TMPDIR には
 	# 実際に _ が入る）。
 	_derived=$(basename "$(dirname "$_t")")
-	[[ "$_derived" != *"_"* ]]
-	[[ "$_derived" != *"."* ]]
-	[[ "$_derived" == *"my-repo-v2" ]]
+	[[ "$_derived" != *"_"* ]] || return 1
+	[[ "$_derived" != *"."* ]] || return 1
+	[[ "$_derived" == *"my-repo-v2" ]] || return 1
 }
 
 # --- 使い捨て枠 -------------------------------------------------------------
@@ -187,7 +187,7 @@ teardown() {
 @test "new --tmp: <target> との同時指定は 2 で落ちる" {
 	run --separate-stderr "$CCS_BIN" new --tmp x01
 	[ "$status" -eq 2 ]
-	[[ "$stderr" == *"同時に指定できません"* ]]
+	[[ "$stderr" == *"同時に指定できません"* ]] || return 1
 }
 
 # --- 失敗の経路 -------------------------------------------------------------
@@ -203,8 +203,8 @@ teardown() {
 
 	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
 	[ "$status" -eq 1 ]
-	[[ "$stderr" == *"登録されませんでした"* ]]
-	[[ "$stderr" == *"ccs attach myrepo"* ]]
+	[[ "$stderr" == *"登録されませんでした"* ]] || return 1
+	[[ "$stderr" == *"ccs attach myrepo"* ]] || return 1
 }
 
 @test "new: 登録されなくても tmux セッションは残す" {
@@ -233,7 +233,7 @@ teardown() {
 	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/nope"
 	[ "$status" -eq 1 ]
 	run ccs_tmux ls
-	[[ "$output" != *"cc/"* ]]
+	[[ "$output" != *"cc/"* ]] || return 1
 }
 
 @test "new: target が 2 つあれば 2" {

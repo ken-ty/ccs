@@ -36,8 +36,8 @@ teardown() {
 	cd "${CCS_TEST_TMP}/work"
 	run "$CCS_BIN" resolve ./myrepo
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"/work/myrepo" ]]
-	[[ "$output" != *"./"* ]]
+	[[ "$output" == *"/work/myrepo" ]] || return 1
+	[[ "$output" != *"./"* ]] || return 1
 }
 
 @test "パス: 途中の .. を畳む" {
@@ -46,13 +46,13 @@ teardown() {
 	run "$CCS_BIN" resolve ../b
 	[ "$status" -eq 0 ]
 	[ "$(echo "$output" | cut -f1)" = 'b' ]
-	[[ "$output" != *".."* ]]
+	[[ "$output" != *".."* ]] || return 1
 }
 
 @test "パス: 実在しなければ 1 で落ちる" {
 	run "$CCS_BIN" resolve "${CCS_TEST_TMP}/nope"
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"ありません"* ]]
+	[[ "$output" == *"ありません"* ]] || return 1
 }
 
 @test "パス: ファイルはディレクトリではないので落ちる" {
@@ -69,7 +69,7 @@ teardown() {
 
 	run "$CCS_BIN" resolve ken-ty/x01
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"${CCS_TEST_TMP}/here/ken-ty/x01"* ]]
+	[[ "$output" == *"${CCS_TEST_TMP}/here/ken-ty/x01"* ]] || return 1
 }
 
 # --- slug の正規化 ---------------------------------------------------------
@@ -81,9 +81,9 @@ teardown() {
 	run "$CCS_BIN" resolve "${CCS_TEST_TMP}/weird/a.b:c d"
 	[ "$status" -eq 0 ]
 	_slug=$(echo "$output" | cut -f1)
-	[[ "$_slug" != *":"* ]]
-	[[ "$_slug" != *"."* ]]
-	[[ "$_slug" != *" "* ]]
+	[[ "$_slug" != *":"* ]] || return 1
+	[[ "$_slug" != *"."* ]] || return 1
+	[[ "$_slug" != *" "* ]] || return 1
 	[ "$_slug" = 'a-b-c-d' ]
 }
 
@@ -135,14 +135,14 @@ teardown() {
 
 	run "$CCS_BIN" resolve x0
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"ありません"* ]]
+	[[ "$output" == *"ありません"* ]] || return 1
 }
 
 @test "リポジトリ名: 見つからなければ 1 で、次の手を示す" {
 	run "$CCS_BIN" resolve nosuchrepo
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"nosuchrepo"* ]]
-	[[ "$output" == *"ghq get"* ]]
+	[[ "$output" == *"nosuchrepo"* ]] || return 1
+	[[ "$output" == *"ghq get"* ]] || return 1
 }
 
 @test "リポジトリ名: 曖昧なら候補を挙げて 1 で落ちる" {
@@ -154,8 +154,8 @@ ${CCS_TEST_TMP}/ghq/github.com/bob/dup"
 
 	run "$CCS_BIN" resolve dup
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"alice/dup"* ]]
-	[[ "$output" == *"bob/dup"* ]]
+	[[ "$output" == *"alice/dup"* ]] || return 1
+	[[ "$output" == *"bob/dup"* ]] || return 1
 }
 
 @test "slug: 名前が衝突しているリポジトリは owner を足す" {
@@ -178,8 +178,8 @@ ${CCS_TEST_TMP}/ghq/github.com/bob/dup"
 	export CCS_GHQ_BIN='ccs-absent-ghq'
 	run "$CCS_BIN" resolve somerepo
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"ghq"* ]]
-	[[ "$output" == *"パス"* ]]
+	[[ "$output" == *"ghq"* ]] || return 1
+	[[ "$output" == *"パス"* ]] || return 1
 }
 
 # --- 使い捨て作業枠 --------------------------------------------------------
@@ -227,8 +227,8 @@ ${CCS_TEST_TMP}/ghq/github.com/bob/dup"
 
 	run "$CCS_BIN" resolve tmp
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"ccs gc"* ]]
-	[[ "$output" == *"CCS_SCRATCH_SLOTS"* ]]
+	[[ "$output" == *"ccs gc"* ]] || return 1
+	[[ "$output" == *"CCS_SCRATCH_SLOTS"* ]] || return 1
 }
 
 @test "--tmp: tmp と同じ枠を取る" {
@@ -242,7 +242,7 @@ ${CCS_TEST_TMP}/ghq/github.com/bob/dup"
 @test "--tmp: <target> との同時指定は 2 で落ちる" {
 	run "$CCS_BIN" resolve --tmp x01
 	[ "$status" -eq 2 ]
-	[[ "$output" == *"同時に指定できません"* ]]
+	[[ "$output" == *"同時に指定できません"* ]] || return 1
 }
 
 @test "--tmp: --json と併用できる" {
@@ -269,8 +269,8 @@ ${CCS_TEST_TMP}/ghq/github.com/bob/dup"
 
 	run "$CCS_BIN" resolve tmp
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"someone/tmp"* ]]
-	[[ "$output" == *"--tmp"* ]]
+	[[ "$output" == *"someone/tmp"* ]] || return 1
+	[[ "$output" == *"--tmp"* ]] || return 1
 	# 枠を作ってしまわない。落ちる前に副作用を残さない。
 	[ ! -d "${CCS_SCRATCH_ROOT}/1" ]
 }

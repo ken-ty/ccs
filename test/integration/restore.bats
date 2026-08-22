@@ -58,7 +58,7 @@ _wipe_session() {
 @test "restore: 戻すものが無ければその旨を出す" {
 	run "$CCS_BIN" restore
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"ありません"* ]]
+	[[ "$output" == *"ありません"* ]] || return 1
 }
 
 @test "restore: 生きているセッションは候補に出ない" {
@@ -66,7 +66,7 @@ _wipe_session() {
 
 	run "$CCS_BIN" restore
 	[ "$status" -eq 0 ]
-	[[ "$output" != *"tmp-1"* ]]
+	[[ "$output" != *"tmp-1"* ]] || return 1
 }
 
 # --- 消えた作業枠を戻す ----------------------------------------------------
@@ -78,7 +78,7 @@ _wipe_session() {
 
 	run "$CCS_BIN" restore --yes
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"戻しました"* ]]
+	[[ "$output" == *"戻しました"* ]] || return 1
 
 	ccs_tmux has-session -t '=cc/tmp-1'
 
@@ -97,8 +97,8 @@ _wipe_session() {
 
 	run "$CCS_BIN" restore
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"tmp-1"* ]]
-	[[ "$output" == *"ccs restore --yes"* ]]
+	[[ "$output" == *"tmp-1"* ]] || return 1
+	[[ "$output" == *"ccs restore --yes"* ]] || return 1
 
 	run ccs_tmux has-session -t '=cc/tmp-1'
 	[ "$status" -ne 0 ]
@@ -133,8 +133,8 @@ _wipe_session() {
 	# tmux サーバは既に起動しているので、FAKE_CLAUDE_LOG はペイン側には
 	# 届かない。ccs が組み立てたコマンド文字列を tmux から直接見る。
 	run ccs_tmux list-panes -t '=cc/tmp-1' -F '#{pane_start_command}'
-	[[ "$output" == *"--resume"* ]]
-	[[ "$output" != *" -n "* ]]
+	[[ "$output" == *"--resume"* ]] || return 1
+	[[ "$output" != *" -n "* ]] || return 1
 }
 
 # --- 止まったペイン --------------------------------------------------------
@@ -178,7 +178,7 @@ _wipe_session() {
 
 	run "$CCS_BIN" restore tmp-1 --yes
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"$id"* ]]
+	[[ "$output" == *"$id"* ]] || return 1
 }
 
 @test "restore: --list はその場所の会話を並べる" {
@@ -192,8 +192,8 @@ _wipe_session() {
 
 	run "$CCS_BIN" restore tmp-1 --list
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"$id"* ]]
-	[[ "$output" == *"00000000-0000-4000-8000-000000000000"* ]]
+	[[ "$output" == *"$id"* ]] || return 1
+	[[ "$output" == *"00000000-0000-4000-8000-000000000000"* ]] || return 1
 }
 
 @test "restore: --session-id で古い会話を選べる" {
@@ -217,7 +217,7 @@ _wipe_session() {
 
 	run "$CCS_BIN" restore tmp-1 --yes
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"生きている"* ]]
+	[[ "$output" == *"生きている"* ]] || return 1
 
 	run --separate-stderr "$CCS_BIN" ls --json
 	[ "$(printf '%s' "$output" | jq -r '.[0].sessionId')" = "$id" ]
@@ -232,7 +232,7 @@ _wipe_session() {
 
 	run "$CCS_BIN" restore
 	[ "$status" -eq 0 ]
-	[[ "$output" != *"ccs restore --yes"* ]]
+	[[ "$output" != *"ccs restore --yes"* ]] || return 1
 }
 
 @test "restore: 会話ログの cwd が食い違えば飛ばす" {
@@ -247,8 +247,8 @@ _wipe_session() {
 
 	run "$CCS_BIN" restore
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"cwd が違います"* ]]
-	[[ "$output" != *"ccs restore --yes"* ]]
+	[[ "$output" == *"cwd が違います"* ]] || return 1
+	[[ "$output" != *"ccs restore --yes"* ]] || return 1
 }
 
 # --- 古さ ------------------------------------------------------------------
@@ -260,7 +260,7 @@ _wipe_session() {
 
 	run "$CCS_BIN" restore
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"ありません"* ]]
+	[[ "$output" == *"ありません"* ]] || return 1
 }
 
 @test "restore: --all なら古い会話も拾う" {
@@ -270,7 +270,7 @@ _wipe_session() {
 
 	run "$CCS_BIN" restore --all
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"tmp-1"* ]]
+	[[ "$output" == *"tmp-1"* ]] || return 1
 }
 
 @test "restore: 名指しなら古くても戻す" {
@@ -280,7 +280,7 @@ _wipe_session() {
 
 	run "$CCS_BIN" restore tmp-1
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"tmp-1"* ]]
+	[[ "$output" == *"tmp-1"* ]] || return 1
 }
 
 # --- hub ------------------------------------------------------------------
@@ -293,7 +293,7 @@ _wipe_session() {
 
 	run "$CCS_BIN" restore
 	[ "$status" -eq 0 ]
-	[[ "$output" != *"hub"* ]]
+	[[ "$output" != *"hub"* ]] || return 1
 }
 
 # --- worktree --------------------------------------------------------------
@@ -314,7 +314,7 @@ _wipe_session() {
 
 	run "$CCS_BIN" restore --yes
 	[ "$status" -eq 0 ]
-	[[ "$output" == *'x01@topic'* ]]
+	[[ "$output" == *'x01@topic'* ]] || return 1
 
 	run --separate-stderr "$CCS_BIN" ls --json
 	[ "$(printf '%s' "$output" | jq -r '.[0].slug')" = 'x01@topic' ]
@@ -337,7 +337,7 @@ _wipe_session() {
 
 	run "$CCS_BIN" restore
 	[ "$status" -eq 0 ]
-	[[ "$output" != *"x01"* ]]
+	[[ "$output" != *"x01"* ]] || return 1
 
 	run "$CCS_BIN" restore x01 --yes
 	[ "$status" -eq 0 ]
@@ -357,10 +357,10 @@ _wipe_session() {
 
 	run "$CCS_BIN" hub up
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"ccs restore"* ]]
+	[[ "$output" == *"ccs restore"* ]] || return 1
 
 	# 2 回目は hub が健全なので何も言わない（毎回吠えない）。
 	run "$CCS_BIN" hub up
 	[ "$status" -eq 0 ]
-	[[ "$output" != *"ccs restore"* ]]
+	[[ "$output" != *"ccs restore"* ]] || return 1
 }

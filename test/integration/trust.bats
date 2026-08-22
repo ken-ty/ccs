@@ -59,7 +59,7 @@ _trusted() {
 
 	run --separate-stderr "$CCS_BIN" new "$_p"
 	[ "$status" -eq 0 ]
-	[[ "$stderr" == *"信頼済みにしました"* ]]
+	[[ "$stderr" == *"信頼済みにしました"* ]] || return 1
 	echo "$output" | jq -e . >/dev/null
 }
 
@@ -70,7 +70,7 @@ _trusted() {
 
 	run --separate-stderr "$CCS_BIN" new "$_p"
 	[ "$status" -eq 0 ]
-	[[ "$stderr" != *"信頼済みにしました"* ]]
+	[[ "$stderr" != *"信頼済みにしました"* ]] || return 1
 	# 既に true のままであること（触っていないことの確認）
 	[ "$(_trusted "$_abs")" = 'true' ]
 }
@@ -151,7 +151,7 @@ JSON
 
 	run "$CCS_BIN" new "$_p"
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"妥当な JSON ではない"* ]]
+	[[ "$output" == *"妥当な JSON ではない"* ]] || return 1
 	[ "$(cat "$CCS_TRUST_FILE")" = "$_before" ]
 }
 
@@ -175,8 +175,8 @@ JSON
 
 	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/elsewhere/proj"
 	[ "$status" -eq 0 ]
-	[[ "$stderr" == *"信頼されていません"* ]]
-	[[ "$stderr" == *"ccs attach proj"* ]]
+	[[ "$stderr" == *"信頼されていません"* ]] || return 1
+	[[ "$stderr" == *"ccs attach proj"* ]] || return 1
 }
 
 # --- 空の作業枠は自動で信頼する（#6、2026-08-18 の決定） --------------------
@@ -195,7 +195,7 @@ JSON
 @test "作業枠: 信頼済みにしたことを stderr で伝える" {
 	run --separate-stderr "$CCS_BIN" new --tmp
 	[ "$status" -eq 0 ]
-	[[ "$stderr" == *"作業枠なので信頼済みにしました"* ]]
+	[[ "$stderr" == *"作業枠なので信頼済みにしました"* ]] || return 1
 }
 
 @test "作業枠: 2 本目以降も自動で信頼する" {
@@ -223,7 +223,7 @@ JSON
 
 	_abs=$(cd "${CCS_SCRATCH_ROOT}/1" && pwd -P)
 	[ "$(_trusted "$_abs")" = 'false' ]
-	[[ "$stderr" == *"信頼されていません"* ]]
+	[[ "$stderr" == *"信頼されていません"* ]] || return 1
 }
 
 @test "ghq の外でも、伝えたうえで立てる" {

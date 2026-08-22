@@ -23,20 +23,20 @@ teardown() {
 @test "new: hub は予約語なので、リポジトリとしては開かない" {
 	run "$CCS_BIN" new hub
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"ccs hub up"* ]]
+	[[ "$output" == *"ccs hub up"* ]] || return 1
 }
 
 @test "resolve: hub も同じく止まる" {
 	run "$CCS_BIN" resolve hub
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"予約語"* ]]
+	[[ "$output" == *"予約語"* ]] || return 1
 }
 
 @test "予約語の案内には、名前を変える手段が書いてある" {
 	# **他人の環境では hub というリポジトリがありうる。** 逃げ道を必ず示す。
 	run "$CCS_BIN" new hub
-	[[ "$output" == *"CCS_HUB_SLUG"* ]]
-	[[ "$output" == *"<owner>/hub"* ]]
+	[[ "$output" == *"CCS_HUB_SLUG"* ]] || return 1
+	[[ "$output" == *"<owner>/hub"* ]] || return 1
 }
 
 @test "hub の名前を変えると、hub は普通のリポジトリ名に戻る" {
@@ -45,13 +45,13 @@ teardown() {
 
 	CCS_HUB_SLUG=orchestrator run "$CCS_BIN" resolve hub
 	[ "$status" -eq 0 ]
-	[[ "$output" == hub*"/hub" ]]
+	[[ "$output" == hub*"/hub" ]] || return 1
 }
 
 @test "hub の名前を変えると、新しい名前が予約語になる" {
 	CCS_HUB_SLUG=orchestrator run "$CCS_BIN" new orchestrator
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"ccs hub up"* ]]
+	[[ "$output" == *"ccs hub up"* ]] || return 1
 }
 
 @test "hub と同じ名前のリポジトリは <owner>-<repo> の slug になる" {
@@ -62,7 +62,7 @@ teardown() {
 
 	run "$CCS_BIN" resolve someone/hub
 	[ "$status" -eq 0 ]
-	[[ "$output" == someone-hub*"/hub" ]]
+	[[ "$output" == someone-hub*"/hub" ]] || return 1
 }
 
 # --- 保護 -----------------------------------------------------------------
@@ -70,22 +70,22 @@ teardown() {
 @test "kill: hub は畳めない" {
 	run "$CCS_BIN" kill hub
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"hub"* ]]
-	[[ "$output" == *"ccs hub restart"* ]]
-	[[ "$output" == *"ccs hub down"* ]]
+	[[ "$output" == *"hub"* ]] || return 1
+	[[ "$output" == *"ccs hub restart"* ]] || return 1
+	[[ "$output" == *"ccs hub down"* ]] || return 1
 }
 
 @test "kill: hub は --force でも畳めない" {
 	# **ここは逃げ道を用意しない。** 落とすと、スマホから操作する経路が消える。
 	run "$CCS_BIN" kill --force hub
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"ccs hub restart"* ]]
+	[[ "$output" == *"ccs hub restart"* ]] || return 1
 }
 
 @test "kill: 名前を変えた hub も守られる" {
 	CCS_HUB_SLUG=orchestrator run "$CCS_BIN" kill orchestrator
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"ccs hub restart"* ]]
+	[[ "$output" == *"ccs hub restart"* ]] || return 1
 }
 
 # --- サブコマンドの入口 ----------------------------------------------------
@@ -93,8 +93,8 @@ teardown() {
 @test "hub: サブコマンド無しは 2 で、何が打てるかを出す" {
 	run "$CCS_BIN" hub
 	[ "$status" -eq 2 ]
-	[[ "$output" == *"ccs hub up"* ]]
-	[[ "$output" == *"ccs hub status"* ]]
+	[[ "$output" == *"ccs hub up"* ]] || return 1
+	[[ "$output" == *"ccs hub status"* ]] || return 1
 }
 
 @test "hub: 知らないサブコマンドは 2" {
@@ -110,8 +110,8 @@ teardown() {
 @test "hub status: 立っていなければ absent（終了コード 12）" {
 	run "$CCS_BIN" hub status
 	[ "$status" -eq 12 ]
-	[[ "$output" == *"absent"* ]]
-	[[ "$output" == *"ccs hub up"* ]]
+	[[ "$output" == *"absent"* ]] || return 1
+	[[ "$output" == *"ccs hub up"* ]] || return 1
 }
 
 @test "hub status --json: 機械可読で、状態と設定が入る" {
@@ -128,8 +128,8 @@ teardown() {
 	: >"${CCS_HUB_HOME}/paused"
 	run "$CCS_BIN" hub status
 	[ "$status" -eq 14 ]
-	[[ "$output" == *"paused"* ]]
-	[[ "$output" == *"ccs hub up --force"* ]]
+	[[ "$output" == *"paused"* ]] || return 1
+	[[ "$output" == *"ccs hub up --force"* ]] || return 1
 }
 
 @test "hub up: 止めていれば何もせず 14" {
@@ -137,7 +137,7 @@ teardown() {
 	: >"${CCS_HUB_HOME}/paused"
 	run "$CCS_BIN" hub up
 	[ "$status" -eq 14 ]
-	[[ "$output" == *"ccs hub up --force"* ]]
+	[[ "$output" == *"ccs hub up --force"* ]] || return 1
 }
 
 @test "hub up --quiet: 止めていても黙る（自動起動が毎回吠えないため）" {
@@ -153,14 +153,14 @@ teardown() {
 @test "hub agent: off なら生成せず、直し方を出す" {
 	CCS_HUB_AUTOSTART=off run "$CCS_BIN" hub agent --print
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"CCS_HUB_AUTOSTART"* ]]
-	[[ "$output" == *"ccs hub up"* ]]
+	[[ "$output" == *"CCS_HUB_AUTOSTART"* ]] || return 1
+	[[ "$output" == *"ccs hub up"* ]] || return 1
 }
 
 @test "hub agent: --autostart で一時的に上書きできる" {
 	CCS_HUB_AUTOSTART=off run "$CCS_BIN" hub agent --print --autostart on
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"hub up --quiet"* ]]
+	[[ "$output" == *"hub up --quiet"* ]] || return 1
 }
 
 @test "hub agent: 知らない --autostart は 2" {
@@ -172,22 +172,22 @@ teardown() {
 	CCS_HUB_AGENT_LABEL=com.example.myhub CCS_HUB_AGENT_INTERVAL=120 \
 		run "$CCS_BIN" hub agent --print --autostart on
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"com.example.myhub"* ]] || [[ "$output" == *"com-example-myhub"* ]]
-	[[ "$output" == *"120"* ]]
+	[[ "$output" == *"com.example.myhub"* ]] || [[ "$output" == *"com-example-myhub"* ]] || return 1
+	[[ "$output" == *"120"* ]] || return 1
 }
 
 @test "hub agent --print: login モードでは間隔を入れない" {
 	run "$CCS_BIN" hub agent --print --autostart login
 	[ "$status" -eq 0 ]
-	[[ "$output" != *"StartInterval"* ]]
-	[[ "$output" != *"OnUnitActiveSec"* ]]
+	[[ "$output" != *"StartInterval"* ]] || return 1
+	[[ "$output" != *"OnUnitActiveSec"* ]] || return 1
 }
 
 @test "hub agent --print: 出力に ccs の絶対パスが入る" {
 	# 自動起動は PATH の通っていない環境から呼ばれることがある。
 	run "$CCS_BIN" hub agent --print --autostart on
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"${CCS_BIN}"* ]]
+	[[ "$output" == *"${CCS_BIN}"* ]] || return 1
 }
 
 # 焼き込んだ PATH を 1 行として取り出す。**plist と systemd unit で書き方が違う**
@@ -205,7 +205,7 @@ ccs_generated_path_line() {
 	[ "$status" -eq 0 ]
 	_line=$(ccs_generated_path_line "$output")
 	[ -n "$_line" ]
-	[[ "$_line" == *"${CCS_STUB_BIN}"* ]]
+	[[ "$_line" == *"${CCS_STUB_BIN}"* ]] || return 1
 }
 
 @test "hub agent --print: launchd には EnvironmentVariables で渡す" {
@@ -216,22 +216,22 @@ ccs_generated_path_line() {
 	ccs_stub uname 'echo Darwin'
 	run "$CCS_BIN" hub agent --print --autostart on
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"<key>EnvironmentVariables</key>"* ]]
-	[[ "$output" == *"<key>PATH</key>"* ]]
-	[[ "$(ccs_generated_path_line "$output")" == *"${CCS_STUB_BIN}"* ]]
+	[[ "$output" == *"<key>EnvironmentVariables</key>"* ]] || return 1
+	[[ "$output" == *"<key>PATH</key>"* ]] || return 1
+	[[ "$(ccs_generated_path_line "$output")" == *"${CCS_STUB_BIN}"* ]] || return 1
 }
 
 @test "hub agent --print: systemd には Environment=PATH= で渡す" {
 	ccs_stub uname 'echo Linux'
 	run "$CCS_BIN" hub agent --print --autostart on
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"Environment=PATH="* ]]
-	[[ "$(ccs_generated_path_line "$output")" == *"${CCS_STUB_BIN}"* ]]
+	[[ "$output" == *"Environment=PATH="* ]] || return 1
+	[[ "$(ccs_generated_path_line "$output")" == *"${CCS_STUB_BIN}"* ]] || return 1
 }
 
 @test "hub agent --print: PATH には最低限のシステムパスも残る" {
 	run "$CCS_BIN" hub agent --print --autostart on
-	[[ "$output" == *"/usr/bin:/bin:/usr/sbin:/sbin"* ]]
+	[[ "$output" == *"/usr/bin:/bin:/usr/sbin:/sbin"* ]] || return 1
 }
 
 @test "hub agent --print: 同じディレクトリの依存を重複させない" {
@@ -251,5 +251,5 @@ ccs_generated_path_line() {
 @test "hub agent: --print 無しなら入れ方の手順を出す" {
 	run "$CCS_BIN" hub agent --autostart on
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"ccs hub agent --print"* ]]
+	[[ "$output" == *"ccs hub agent --print"* ]] || return 1
 }

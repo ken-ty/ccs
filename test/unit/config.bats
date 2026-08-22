@@ -31,16 +31,16 @@ config_row() {
 @test "設定ファイルが無くても既定値で動く" {
 	run "$CCS_BIN" config
 	[ "$status" -eq 0 ]
-	[[ "$(config_row CCS_HUB_SLUG)" == *"hub"* ]]
-	[[ "$(config_row CCS_HUB_SLUG)" == *"default"* ]]
+	[[ "$(config_row CCS_HUB_SLUG)" == *"hub"* ]] || return 1
+	[[ "$(config_row CCS_HUB_SLUG)" == *"default"* ]] || return 1
 }
 
 @test "設定ファイルの値が既定値に勝つ" {
 	write_config 'CCS_HUB_SLUG=orchestrator'
 	run "$CCS_BIN" config
 	[ "$status" -eq 0 ]
-	[[ "$(config_row CCS_HUB_SLUG)" == *"orchestrator"* ]]
-	[[ "$(config_row CCS_HUB_SLUG)" == *"config"* ]]
+	[[ "$(config_row CCS_HUB_SLUG)" == *"orchestrator"* ]] || return 1
+	[[ "$(config_row CCS_HUB_SLUG)" == *"config"* ]] || return 1
 }
 
 @test "env が設定ファイルに勝つ" {
@@ -48,22 +48,22 @@ config_row() {
 	write_config 'CCS_HUB_SLUG=fromfile'
 	CCS_HUB_SLUG=fromenv run "$CCS_BIN" config
 	[ "$status" -eq 0 ]
-	[[ "$(config_row CCS_HUB_SLUG)" == *"fromenv"* ]]
-	[[ "$(config_row CCS_HUB_SLUG)" == *"env"* ]]
+	[[ "$(config_row CCS_HUB_SLUG)" == *"fromenv"* ]] || return 1
+	[[ "$(config_row CCS_HUB_SLUG)" == *"env"* ]] || return 1
 }
 
 @test "空白とコメントを無視する" {
 	write_config '# 先頭のコメント' '   ' '  CCS_HUB_SLUG = spaced   # 末尾のコメント'
 	run "$CCS_BIN" config
 	[ "$status" -eq 0 ]
-	[[ "$(config_row CCS_HUB_SLUG)" == *"spaced"* ]]
+	[[ "$(config_row CCS_HUB_SLUG)" == *"spaced"* ]] || return 1
 }
 
 @test "値のクォートを外す" {
 	write_config 'CCS_PREFIX="ccx/"'
 	run "$CCS_BIN" config
 	[ "$status" -eq 0 ]
-	[[ "$(config_row CCS_PREFIX)" == *"ccx/"* ]]
+	[[ "$(config_row CCS_PREFIX)" == *"ccx/"* ]] || return 1
 }
 
 @test "値の先頭の ~/ をホームに展開する" {
@@ -78,15 +78,15 @@ config_row() {
 	write_config 'CCS_HUB_SLUGG=typo'
 	run "$CCS_BIN" config
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"知らない設定キー"* ]]
-	[[ "$output" == *"CCS_HUB_SLUGG"* ]]
+	[[ "$output" == *"知らない設定キー"* ]] || return 1
+	[[ "$output" == *"CCS_HUB_SLUGG"* ]] || return 1
 }
 
 @test "KEY=VALUE でない行は行番号つきで警告する" {
 	write_config 'CCS_HUB_SLUG=ok' 'これは設定ではない'
 	run "$CCS_BIN" config
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"${CCS_CONFIG_FILE}:2"* ]]
+	[[ "$output" == *"${CCS_CONFIG_FILE}:2"* ]] || return 1
 }
 
 @test "設定ファイルはシェルとして実行されない" {
@@ -97,7 +97,7 @@ config_row() {
 	[ "$status" -eq 0 ]
 	[ ! -e "${CCS_TEST_TMP}/pwned" ]
 	# 値は展開されず、そのままの文字列として入る。
-	[[ "$(config_row CCS_HUB_HOME)" == *'$(touch'* ]]
+	[[ "$(config_row CCS_HUB_HOME)" == *'$(touch'* ]] || return 1
 }
 
 @test "--json は値と出どころを機械可読で出す" {
@@ -113,20 +113,20 @@ config_row() {
 @test "不正な CCS_REMOTE_CONTROL は 2 で落ちる" {
 	CCS_REMOTE_CONTROL=maybe run "$CCS_BIN" ls
 	[ "$status" -eq 2 ]
-	[[ "$output" == *"CCS_REMOTE_CONTROL"* ]]
+	[[ "$output" == *"CCS_REMOTE_CONTROL"* ]] || return 1
 }
 
 @test "不正な CCS_HUB_AUTOSTART は 2 で落ちる" {
 	CCS_HUB_AUTOSTART=sometimes run "$CCS_BIN" ls
 	[ "$status" -eq 2 ]
-	[[ "$output" == *"CCS_HUB_AUTOSTART"* ]]
+	[[ "$output" == *"CCS_HUB_AUTOSTART"* ]] || return 1
 }
 
 @test "tmux で使えない文字を含む CCS_HUB_SLUG は 2 で落ちる" {
 	# `:` は session:window の区切りなので、後から -t で狙えなくなる。
 	CCS_HUB_SLUG='my:hub' run "$CCS_BIN" ls
 	[ "$status" -eq 2 ]
-	[[ "$output" == *"CCS_HUB_SLUG"* ]]
+	[[ "$output" == *"CCS_HUB_SLUG"* ]] || return 1
 }
 
 @test "CCS_HUB_SLUG に tmp は使えない" {
@@ -137,15 +137,15 @@ config_row() {
 @test "数値の設定に数値以外を入れると 2 で落ちる" {
 	CCS_HUB_BACKOFF_MAX=いっぱい run "$CCS_BIN" ls
 	[ "$status" -eq 2 ]
-	[[ "$output" == *"CCS_HUB_BACKOFF_MAX"* ]]
+	[[ "$output" == *"CCS_HUB_BACKOFF_MAX"* ]] || return 1
 }
 
 @test "設定が不正でも config は表を出してから落ちる" {
 	# **値が不正なときこそ、その値を見たい。**
 	CCS_HUB_AUTOSTART=sometimes run "$CCS_BIN" config
 	[ "$status" -eq 2 ]
-	[[ "$output" == *"CCS_HUB_AUTOSTART"* ]]
-	[[ "$output" == *"sometimes"* ]]
+	[[ "$output" == *"CCS_HUB_AUTOSTART"* ]] || return 1
+	[[ "$output" == *"sometimes"* ]] || return 1
 }
 
 @test "設定が不正でも help と version は読める" {

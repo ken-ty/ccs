@@ -22,18 +22,18 @@ teardown() {
 @test "help: 使い方を stdout に出して 0 で終わる" {
 	run "$CCS_BIN" help
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"ccs new"* ]]
-	[[ "$output" == *"ccs ls"* ]]
+	[[ "$output" == *"ccs new"* ]] || return 1
+	[[ "$output" == *"ccs ls"* ]] || return 1
 }
 
 @test "help: --help と -h も同じ" {
 	run "$CCS_BIN" --help
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"ccs new"* ]]
+	[[ "$output" == *"ccs new"* ]] || return 1
 
 	run "$CCS_BIN" -h
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"ccs new"* ]]
+	[[ "$output" == *"ccs new"* ]] || return 1
 }
 
 @test "help: 設定の入口（ccs config）を案内している" {
@@ -41,7 +41,7 @@ teardown() {
 	# 全部並べると読めなくなったため）。ヘルプからそこへ辿れることを見る。
 	run "$CCS_BIN" help
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"ccs config"* ]]
+	[[ "$output" == *"ccs config"* ]] || return 1
 }
 
 @test "config: 差し替え点が全部一覧に載っている" {
@@ -69,7 +69,7 @@ teardown() {
 @test "version: バージョンだけを出す" {
 	run "$CCS_BIN" version
 	[ "$status" -eq 0 ]
-	[[ "$output" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+	[[ "$output" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
 }
 
 # --- 使い方の誤り ----------------------------------------------------------
@@ -84,13 +84,13 @@ teardown() {
 	run --separate-stderr "$CCS_BIN"
 	[ "$status" -eq 2 ]
 	[ -z "$output" ]
-	[[ "$stderr" == *"ccs new"* ]]
+	[[ "$stderr" == *"ccs new"* ]] || return 1
 }
 
 @test "未知のサブコマンド: 2 で終わり、何が未知だったかを言う" {
 	run "$CCS_BIN" nosuchcommand
 	[ "$status" -eq 2 ]
-	[[ "$output" == *"nosuchcommand"* ]]
+	[[ "$output" == *"nosuchcommand"* ]] || return 1
 }
 
 @test "new: target が無ければ 2" {
@@ -117,15 +117,15 @@ teardown() {
 	ccs_hide_dep tmux
 	run "$CCS_BIN" ls
 	[ "$status" -eq 4 ]
-	[[ "$output" == *"ccs-absent-tmux"* ]]
-	[[ "$output" == *"brew install"* ]]
+	[[ "$output" == *"ccs-absent-tmux"* ]] || return 1
+	[[ "$output" == *"brew install"* ]] || return 1
 }
 
 @test "依存不足: jq が無ければ 4" {
 	ccs_hide_dep jq
 	run "$CCS_BIN" ls
 	[ "$status" -eq 4 ]
-	[[ "$output" == *"ccs-absent-jq"* ]]
+	[[ "$output" == *"ccs-absent-jq"* ]] || return 1
 }
 
 @test "依存不足: 両方無ければ両方を挙げる" {
@@ -134,8 +134,8 @@ teardown() {
 	ccs_hide_dep jq
 	run "$CCS_BIN" ls
 	[ "$status" -eq 4 ]
-	[[ "$output" == *"ccs-absent-tmux"* ]]
-	[[ "$output" == *"ccs-absent-jq"* ]]
+	[[ "$output" == *"ccs-absent-tmux"* ]] || return 1
+	[[ "$output" == *"ccs-absent-jq"* ]] || return 1
 }
 
 @test "依存不足: メッセージは stderr に出る" {
@@ -143,7 +143,7 @@ teardown() {
 	run --separate-stderr "$CCS_BIN" ls
 	[ "$status" -eq 4 ]
 	[ -z "$output" ]
-	[[ "$stderr" == *"ccs-absent-tmux"* ]]
+	[[ "$stderr" == *"ccs-absent-tmux"* ]] || return 1
 }
 
 # --- サブコマンドが揃っていること ------------------------------------------

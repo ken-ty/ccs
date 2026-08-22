@@ -35,8 +35,8 @@ _new() {
 @test "ls: 何も無ければ、その旨と次の手を出す" {
 	run "$CCS_BIN" ls
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"ありません"* ]]
-	[[ "$output" == *"ccs new"* ]]
+	[[ "$output" == *"ありません"* ]] || return 1
+	[[ "$output" == *"ccs new"* ]] || return 1
 }
 
 @test "ls --json: 何も無ければ空配列" {
@@ -52,8 +52,8 @@ _new() {
 
 	run "$CCS_BIN" ls
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"myrepo"* ]]
-	[[ "$output" == *"SLUG"* ]]
+	[[ "$output" == *"myrepo"* ]] || return 1
+	[[ "$output" == *"SLUG"* ]] || return 1
 }
 
 @test "ls --json: slug / status / sessionId / path / tmux を持つ" {
@@ -75,7 +75,7 @@ _new() {
 	_id=$(echo "$_out" | jq -r '.sessionId')
 
 	run "$CCS_BIN" ls
-	[[ "$output" == *"$_id"* ]]
+	[[ "$output" == *"$_id"* ]] || return 1
 }
 
 @test "ls: 複数あれば slug 順に並ぶ" {

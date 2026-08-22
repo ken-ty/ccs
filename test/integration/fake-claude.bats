@@ -28,7 +28,7 @@ teardown() {
 	# これが無いと、うっかり本物の ~/.claude/sessions に書き込む。
 	run env -u CCS_SESSIONS_DIR "$CCS_FAKE_CLAUDE" --session-id abc
 	[ "$status" -ne 0 ]
-	[[ "$output" == *"CCS_SESSIONS_DIR"* ]]
+	[[ "$output" == *"CCS_SESSIONS_DIR"* ]] || return 1
 }
 
 @test "--session-id が無ければ 2 で落ちる" {
@@ -36,7 +36,7 @@ teardown() {
 	# 通すと、id を固定しない実装に退化しても気づけない。
 	run "$CCS_FAKE_CLAUDE" -n someslug
 	[ "$status" -eq 2 ]
-	[[ "$output" == *"--session-id"* ]]
+	[[ "$output" == *"--session-id"* ]] || return 1
 }
 
 # --- 登録 ------------------------------------------------------------------
@@ -77,7 +77,7 @@ teardown() {
 
 	_f=$(find "$CCS_SESSIONS_DIR" -name '*.json' -type f)
 	run jq -r '.cwd' "$_f"
-	[[ "$output" == *"/somewhere" ]]
+	[[ "$output" == *"/somewhere" ]] || return 1
 }
 
 @test "書かれる JSON は妥当（書きかけを読ませない）" {
@@ -144,9 +144,9 @@ teardown() {
 	"$CCS_FAKE_CLAUDE" -n myslug --session-id 99999999-9999-9999-9999-999999999999 --permission-mode plan
 
 	run cat "$FAKE_CLAUDE_LOG"
-	[[ "$output" == *"-n myslug"* ]]
-	[[ "$output" == *"--session-id 99999999-9999-9999-9999-999999999999"* ]]
-	[[ "$output" == *"--permission-mode plan"* ]]
+	[[ "$output" == *"-n myslug"* ]] || return 1
+	[[ "$output" == *"--session-id 99999999-9999-9999-9999-999999999999"* ]] || return 1
+	[[ "$output" == *"--permission-mode plan"* ]] || return 1
 }
 
 @test "知らないフラグを渡されても落ちない" {
@@ -210,7 +210,7 @@ teardown() {
 	tmux kill-session -t "$_session" 2>/dev/null || true
 
 	[ -n "$output" ]
-	[[ "$output" == "${_session}:"* ]]
+	[[ "$output" == "${_session}:"* ]] || return 1
 }
 
 @test "tmux の外で起動すると tmux フィールドは無い" {

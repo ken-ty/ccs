@@ -123,7 +123,7 @@ hub_field() {
 	export FAKE_CLAUDE_NO_BRIDGE=1
 	run "$CCS_BIN" hub up
 	[ "$status" -eq 10 ]
-	[[ "$output" == *"Remote Control"* ]]
+	[[ "$output" == *"Remote Control"* ]] || return 1
 	# **セッションは消さない。** ローカルからは使えるし、消すと調べられない。
 	ccs_tmux has-session -t '=cc/hub'
 }
@@ -133,7 +133,7 @@ hub_field() {
 	"$CCS_BIN" hub up || true
 	run "$CCS_BIN" hub status
 	[ "$status" -eq 10 ]
-	[[ "$output" == *"no-rc"* ]]
+	[[ "$output" == *"no-rc"* ]] || return 1
 }
 
 @test "CCS_REMOTE_CONTROL=off: RC を渡さず、RC 無しでも healthy" {
@@ -153,7 +153,7 @@ hub_field() {
 	ccs_kill_claude_of hub
 	run "$CCS_BIN" hub status
 	[ "$status" -eq 11 ]
-	[[ "$output" == *"stopped"* ]]
+	[[ "$output" == *"stopped"* ]] || return 1
 }
 
 @test "hub status: レジストリの残骸に騙されない" {
@@ -168,7 +168,7 @@ hub_field() {
 	[ -f "$_f" ] # 残骸が残っていることを確かめた上で
 	run "$CCS_BIN" hub status
 	[ "$status" -eq 11 ]
-	[[ "$output" == *"stopped"* ]]
+	[[ "$output" == *"stopped"* ]] || return 1
 }
 
 @test "hub up: 残骸が残っていても立て直せる" {
@@ -243,7 +243,7 @@ hub_field() {
 @test "hub restart --resume: 直前が分からなければ新しく立てる" {
 	run "$CCS_BIN" hub restart --resume
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"新しい会話"* ]]
+	[[ "$output" == *"新しい会話"* ]] || return 1
 	ccs_tmux has-session -t '=cc/hub'
 }
 
@@ -294,7 +294,7 @@ hub_field() {
 
 	run "$CCS_BIN" hub up
 	[ "$status" -eq 15 ]
-	[[ "$output" == *"--force"* ]]
+	[[ "$output" == *"--force"* ]] || return 1
 	! ccs_tmux has-session -t '=cc/hub'
 }
 
@@ -319,7 +319,7 @@ hub_field() {
 
 	run "$CCS_BIN" hub status
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"healthy"* ]]
+	[[ "$output" == *"healthy"* ]] || return 1
 }
 
 @test "hub status: 歯止めが効いていれば needs-attention（15）" {
@@ -331,7 +331,7 @@ hub_field() {
 
 	run "$CCS_BIN" hub status
 	[ "$status" -eq 15 ]
-	[[ "$output" == *"needs-attention"* ]]
+	[[ "$output" == *"needs-attention"* ]] || return 1
 }
 
 @test "古い再起動は歯止めに数えない" {
@@ -361,7 +361,7 @@ hub_field() {
 
 	run "$CCS_BIN" hub up
 	[ "$status" -eq 13 ]
-	[[ "$output" == *"/login"* ]]
+	[[ "$output" == *"/login"* ]] || return 1
 	grep -q '"event":"needs-login"' "${CCS_HUB_HOME}/hub.log"
 }
 
@@ -380,7 +380,7 @@ hub_field() {
 
 	run "$CCS_BIN" gc --yes
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"gc の対象外"* ]]
+	[[ "$output" == *"gc の対象外"* ]] || return 1
 	ccs_tmux has-session -t '=cc/hub'
 }
 

@@ -40,7 +40,7 @@ teardown() {
 	[ "$status" -eq 0 ]
 	[ "$(echo "$output" | cut -f1)" = 'x01@feat-login' ]
 	# パス側も潰れていること。潰さないと feat と feat/login が同居できない。
-	[[ "$(echo "$output" | cut -f2)" == */feat-login ]]
+	[[ "$(echo "$output" | cut -f2)" == */feat-login ]] || return 1
 }
 
 @test "worktree: 打ち方が違っても同じ slug に落ちる" {
@@ -80,7 +80,7 @@ teardown() {
 	run "$CCS_BIN" resolve --json 'x01@topic'
 	local _p
 	_p=$(echo "$output" | jq -r .path)
-	[[ "$_p" != "${CCS_TEST_TMP}/ghq/"* ]]
+	[[ "$_p" != "${CCS_TEST_TMP}/ghq/"* ]] || return 1
 }
 
 # --- 副作用が無いこと --------------------------------------------------------
@@ -110,24 +110,24 @@ teardown() {
 
 	run "$CCS_BIN" resolve 'x01@'
 	[ "$status" -eq 2 ]
-	[[ "$output" == *"ブランチがありません"* ]]
+	[[ "$output" == *"ブランチがありません"* ]] || return 1
 }
 
 @test "worktree: リポジトリ名が空なら 2" {
 	run "$CCS_BIN" resolve '@topic'
 	[ "$status" -eq 2 ]
-	[[ "$output" == *"対象がありません"* ]]
+	[[ "$output" == *"対象がありません"* ]] || return 1
 }
 
 @test "worktree: 存在しないリポジトリなら 1" {
 	run "$CCS_BIN" resolve 'nope@topic'
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"ありません"* ]]
+	[[ "$output" == *"ありません"* ]] || return 1
 }
 
 @test "worktree: worktree の worktree は拒む" {
 	mkdir -p "${CCS_WORKTREE_ROOT}/x01/topic"
 	run "$CCS_BIN" resolve "${CCS_WORKTREE_ROOT}/x01/topic@other"
 	[ "$status" -eq 1 ]
-	[[ "$output" == *"既に worktree です"* ]]
+	[[ "$output" == *"既に worktree です"* ]] || return 1
 }

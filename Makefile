@@ -35,6 +35,17 @@ lint:
 	@if [ -d hooks ]; then \
 		find hooks -type f -perm -u+x -exec $(SHELLCHECK) -s sh {} +; \
 	fi
+	@# **素の [[ ]] を禁じる。** macOS 標準の bash 3.2 では、テストの途中に
+	@# 置いた [[ ]] は失敗しても errexit で落ちない（実測: false / [ ] / 関数の
+	@# 戻り値はどれも落ちるのに、[[ ]] だけ素通りする。bash 4 で直っている）。
+	@# 放っておくと 200 件のアサーションが手元で空振りし、Linux の CI でだけ
+	@# 落ちる ── 実際にそうなっていた。`|| return 1` を付ければ両方で落ちる。
+	@if grep -rn '^[[:space:]]*\[\[ .*\]\][[:space:]]*$$' test --include='*.bats'; then \
+		echo '' >&2; \
+		echo '上の [[ ]] は macOS の bash 3.2 では失敗しても素通りします。' >&2; \
+		echo '行末に `|| return 1` を足してください。' >&2; \
+		exit 1; \
+	fi
 
 # core.hooksPath は .git/config に入る**リポジトリごとのローカル設定**で、
 # **clone には付いてこない**（.git/config は複製されない）。だから clone したら
