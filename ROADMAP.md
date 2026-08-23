@@ -16,9 +16,10 @@
 | 自作する範囲 | **4 つだけ** — 新規作成 / trust 回避 / パス解決 / 命名規約と後片付け | design.md §1 |
 | 一覧・状態 | `claude agents --json` に委譲。**自前のデーモンやポーリングを作らない** | design.md §2.1 |
 | セッション間通信 | 組み込みの `ListAgents` / `SendMessage`。**`tmux send-keys` でのプロンプト注入は採らない** | design.md §3 |
-| 命名 | tmux は `cc/<slug>`、Claude の `-n` は `<slug>`、id は `--session-id` で固定 | design.md §4.2 |
-| 冪等性 | 同一 slug の tmux セッションがあれば**新規に立てず既存を返す** | design.md §4.3 |
-| trust | 固定枠 `~/.cc-scratch/{1..8}`。自動承認は **ghq 配下**と**空の作業枠**だけ。**`send-keys` で答える案は採らない** | design.md §4.4 |
+| 命名 | tmux は `cc/<slug>`、Claude の `-n` は `<slug>`、id は `--session-id` で固定。**ただし名前は人が変える。同一性の根拠にしない**（→ 同一性の行） | design.md §4.2 |
+| 同一性 | 場所は `ccs` が発行する **`workspaceId`**（ディレクトリ名そのもの）、会話は Claude の **`sessionId`**。**tmux 名も claude の `name` も表示用のラベル**で、占有・冪等性・素性の判定に使わない。**発行したディレクトリには印（`.ccs.json`）を刻む** | [ADR-0002](docs/adr/0002-session-identity.md) |
+| 冪等性 | 同一 slug の tmux セッションがあれば**新規に立てず既存を返す**。**照合は cwd へ移す**（改名すると同じ作業ツリーに 2 本目が立つ。実装は I1） | design.md §4.3、ADR-0002 |
+| trust | ~~固定枠 `~/.cc-scratch/{1..8}`~~ → **一意なディレクトリへ**（ADR-0001）。自動承認は **ghq 配下**と**作業枠**（条件は「空」から「**ccs の印以外に何も無い**」へ。ADR-0002）。**`send-keys` で答える案は採らない**。**いまの実装は固定 8 枠のまま**（I2） | design.md §4.4、ADR-0001、ADR-0002 |
 | 使い捨て枠の指定 | 正式な綴りは **`--tmp`**。予約語 `tmp` も残すが、ghq に同名リポジトリがあれば選ばずに止まる | design.md §4.3 |
 | v1 の範囲 | `new` / `ls` / `attach` / `kill` / `gc` まで。~~**汎用の `resume` と worktree は入れない**~~ → どちらも後から入れた（worktree は C1、`restore` は R1） | design.md §6、§9.6、§10 |
 | hub | 常時 1 本。RC 名まで明示し、`bridgeSessionId` が付いて初めて「立った」。再起動は既定でまっさら | design.md §8 |
@@ -32,6 +33,9 @@
 
 | # | 内容 | サイズ | 依存 |
 | --- | --- | --- | --- |
+| I1 | **占有と冪等性を cwd で照合する**（[ADR-0002](docs/adr/0002-session-identity.md) 決定 3）。いまは「`cc/<slug>` という tmux があるか」で当てているので、**Remote Control で改名したセッションが「居ない」ことになる** ── 稼働中の枠が横取りされ、`ccs new <repo>` が同じ作業ツリーに 2 本目を立てる。レジストリの `cwd` と突き合わせる形に変える（`resolve_as_scratch` の占有判定 / `cmd_new` の冪等性 / `orphan_slots`）。比較は `abs_dir` を通す（`/tmp`→`/private/tmp` で 2 度踏んでいる） | S | — |
+| I2 | **使い捨て作業枠を一意なディレクトリにし、印を刻む**（[ADR-0001](docs/adr/0001-scratch-workspace-identity.md) 決定 1、[ADR-0002](docs/adr/0002-session-identity.md) 決定 1・2・4）。`~/.cc-scratch/<workspaceId>` を発行して `.ccs.json` を書き、trust の自動承認を「空」から「**ccs の印以外に何も無い**」へ置き換える。**既存の `{1..8}` には遡って印を打たない**（発行時刻も発行元も分からない）。移行の段取りは ADR-0002 決定 8 | M | I1 |
+| I3 | **gc と restore を印ベースにする**（[ADR-0002](docs/adr/0002-session-identity.md) 決定 7）。`ccs gc` は 4 分類（印だけ / 印+中身 / 稼働中 / 素性不明）に。`ccs restore` は `tmp-<番号>` の総当たり（`restore_candidates` の 2）と、会話ログ 1 行目の `custom-title` による ccs 由来の判定（`restore_started_by_ccs`）をやめ、印を読む。**R1 で増えた固定枠・名前への依存はここで返す** | M | I2 |
 | H7 | **本物の claude で hub を 1 周する**の残り（docs/hub.md「まだ実測できていないこと」）。**アプリ側の見え方だけが残っている** — 名前が維持されるか / `offline` が積み上がらないか / `remoteControlAtStartup` との二重登録。launchd の経路は 2026-08-22 に実測済み。**`--resume` で RC が張り直されることは R1 の検証で確認した**（レジストリ上は同じ `bridgeSessionId` が戻る。アプリ側の見え方は未確認） | S | — |
 | P1 | **アプリからペインの中身を読む手段**（`ccs peek <slug>` 等。`tmux capture-pane` をハブ経由で返す） | M | [#19](https://github.com/ken-ty/ccs/issues/19)。**先に設計を決める。`/loop` で拾わない** |
 | P2 | **アプリからペインへコマンドを送る手段** | M | P1 の後。**`tmux send-keys` によるプロンプト注入は設計方針で禁じている**（design.md §3）。シェルへ送るのと claude へ送るのを混同しないこと |
