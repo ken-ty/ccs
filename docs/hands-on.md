@@ -296,11 +296,12 @@ ccs ls
     （`ccs restore x01 --yes`）。詳細は [restore.md](restore.md#既定は見せるだけ)。
 
 **tmux ごと消えた場合**（再起動の再現）も同じ手順で戻る。`ccs kill x01` で畳んでから
-`ccs restore` を打つと、`x01` は候補に**出ない** ── ghq 配下のリポジトリは列挙しない
-（[理由](restore.md#何が起きているのか)）。名指しなら戻る。
+`ccs restore` を打つと、`x01` も候補に出る ── ghq 配下でも **`ccs` が立てた印**があれば
+拾うため（[印とは](restore.md#印とは)）。
 
 ```bash
-ccs restore x01 --yes
+ccs restore --yes         # まとめて
+ccs restore x01 --yes     # 名指し
 ```
 
 ---
@@ -562,7 +563,7 @@ ccs hub down && rm -rf ~/.cc-hub     # 中身を確かめてから
 | `ccs new --tmp` が「枠が全部埋まっています」 | `ccs gc` で状況を見る。中身のある枠は `ccs` が消さないので自分で確認する |
 | `ccs new tmp` が「同名のリポジトリもあります」 | ghq に `tmp` がある。作業枠なら `--tmp`、リポジトリなら `<owner>/tmp` |
 | `ccs kill` が「作業中です」で止まる | 意図した動き。`ccs attach` で様子を見てから `--force` |
-| `ccs restore` に戻したいものが出てこない | ghq 配下のリポジトリは列挙しない（名指しで戻す）。古い会話は既定で 7 日まで（`--all`）。[理由](restore.md#何が起きているのか) |
+| `ccs restore` に戻したいものが出てこない | ghq の外に立てたものは列挙しない（名指しで戻す）。**印の無い会話**（アプリ / VS Code から開いたもの）も出ない。古い会話は既定で 7 日まで（`--all`）。[印とは](restore.md#印とは) |
 | `ccs hub up` が `no-rc`（10）で終わる | Remote Control が付いていない。`ccs config` で `CCS_REMOTE_CONTROL` を見る。使わない環境なら `off` |
 | `ccs hub up` が `needs-attention`（15）で止まる | 再起動を繰り返している。`ccs hub attach` と `~/.cc-hub/hub.log` を見る |
 | 終了コードの意味 | 0 成功 / 1 失敗 / 2 使い方の誤り / 4 依存が無い / 10〜15 は hub の状態（[hub](hub.md#状態)） |

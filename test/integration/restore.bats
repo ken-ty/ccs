@@ -327,9 +327,9 @@ _wipe_session() {
 	[ "$(printf '%s' "$output" | jq -r '.[0].sessionId')" = "$id" ]
 }
 
-@test "restore: ghq 配下のリポジトリは列挙しない（名指しなら戻す）" {
-	# そこの会話ログは ccs が立てたものとは限らない（デスクトップアプリや
-	# VS Code から開いたものも同じ場所に溜まる）。一括で戻さない。
+@test "restore: ghq 配下でも、ccs が立てた印があれば列挙する" {
+	# 印は「会話ログの 1 行目が custom-title」。ccs new は -n <slug> を渡すので
+	# 本物はそこに名前を書く（実測）。
 	local repo="${CCS_TEST_TMP}/ghq/github.com/o/x01"
 	ccs_make_git_repo "$repo"
 	ccs_stub_ghq "$repo"
@@ -343,13 +343,38 @@ _wipe_session() {
 
 	run "$CCS_BIN" restore
 	[ "$status" -eq 0 ]
-	[[ "$output" != *"x01"* ]] || return 1
+	[[ "$output" == *"x01"* ]] || return 1
 
-	run "$CCS_BIN" restore x01 --yes
+	run "$CCS_BIN" restore --yes
 	[ "$status" -eq 0 ]
 
 	run --separate-stderr "$CCS_BIN" ls --json
 	[ "$(printf '%s' "$output" | jq -r '.[0].sessionId')" = "$id" ]
+}
+
+@test "restore: 印の無い会話ログは列挙しない（アプリから開いたもの）" {
+	# デスクトップアプリや VS Code のセッションは名前が会話の内容から自動で
+	# 決まるので、custom-title が先頭に来ない。**一括で戻すと ccs が管理して
+	# いない会話まで tmux に生える**ので、ここは拾わない。
+	local repo="${CCS_TEST_TMP}/ghq/github.com/o/x01"
+	ccs_make_git_repo "$repo"
+	ccs_stub_ghq "$repo"
+
+	local abs dir
+	abs=$(cd "$repo" && pwd -P)
+	dir="$(_transcript_dir "$abs")"
+	mkdir -p "$dir"
+	printf '{"type":"user","cwd":"%s","sessionId":"x"}\n' "$abs" \
+		>"${dir}/11111111-1111-4111-8111-111111111111.jsonl"
+
+	run "$CCS_BIN" restore
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"x01"* ]] || return 1
+
+	# **名指しなら戻す。** 人が名前を打っているなら、それが意図。
+	run "$CCS_BIN" restore x01
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"x01"* ]] || return 1
 }
 
 # --- hub up からの案内 ------------------------------------------------------
