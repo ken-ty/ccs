@@ -1750,11 +1750,13 @@ cmd_gc() {
 #   1. 止まったペイン   … `cc/` の tmux セッションは残っているが claude が死んでいる
 #   2. 消えた作業枠     … `CCS_SCRATCH_ROOT/<n>` に会話ログがある
 #   3. 消えた worktree  … `CCS_WORKTREE_ROOT/<repo>/<branch>` に会話ログがある
+#   4. 消えたリポジトリ … ghq 配下で、**ccs が立てた印のある**会話ログがある
 #
-# **ghq 配下のリポジトリは列挙しない。** そこの会話ログは ccs が立てたものとは
-# 限らない（デスクトップアプリや VS Code から開いたものも同じ場所に溜まる）。
-# 一括で戻すと、ccs が管理していないセッションまで tmux に生えることになる。
-# 名前で指されたときだけ立てる（`ccs restore <repo>` / `ccs restore <repo>@<branch>`）。
+# **4 だけ条件が 1 つ多い。** ghq 配下の会話ログは ccs が立てたものとは限らず
+# （デスクトップアプリや VS Code から開いたものも同じ場所に溜まる）、素朴に
+# 拾うと ccs が管理していない会話まで tmux に生える。印の判定は
+# `restore_started_by_ccs`。**ghq の外に立てたセッションは列挙できない**ので、
+# それは名指しで戻す（`ccs restore <path>`）。
 #
 # **既定は dry-run**（`ccs gc` と同じ作法）。戻した会話は、続きがあればその場で
 # 動き出す ── 確認なしで N 本が動き出す設計は割に合わない。
@@ -1802,6 +1804,24 @@ restore_latest_in() {
 	_f=$(ls -t "$1"/*.jsonl 2>/dev/null | head -1)
 	[ -n "$_f" ] || return 1
 	basename "$_f" .jsonl
+}
+
+# その会話を ccs が立てたか。
+#
+# **`ccs new` は `-n <slug>` を渡す**ので、本物は会話ログの **1 行目**に
+# `custom-title` を書く（実測。`{"type":"custom-title","customTitle":"<slug>",…}`）。
+# デスクトップアプリや VS Code から開いたセッションは名前が会話の内容から
+# 自動で決まるため、この行が先頭に来ない（あとから付くことはある）。
+#
+# **これが無いと ghq 配下を列挙できない。** あそこの会話ログは ccs が立てた
+# ものとは限らず、一括で戻すと ccs が管理していない会話まで tmux に生える。
+#
+# 実測（2026-08-23、会話ログ 247 本）: 立っている ccs セッション 12/12 に印が
+# あり、デスクトップから開いたセッションには無かった。**アプリ側の実装に
+# 依存した判定なので、外れたら「候補に出ない」side に倒れる** ── 黙って
+# 知らない会話を立てるのではなく、名指しを求める形で失敗する。
+restore_started_by_ccs() {
+	head -c 8192 "$1" 2>/dev/null | head -1 | grep -q 'custom-title'
 }
 
 # 直近 CCS_RESTORE_MAX_AGE 日に触られた会話ログか。0 なら無制限。
@@ -1867,17 +1887,37 @@ restore_candidates() {
 	done
 
 	# 3. tmux セッションごと消えた worktree セッション。
-	_wt=$(abs_dir "$CCS_WORKTREE_ROOT" 2>/dev/null) || return 0
-	for _repo_dir in "$_wt"/*; do
-		[ -d "$_repo_dir" ] || continue
-		for _br_dir in "$_repo_dir"/*; do
-			[ -d "$_br_dir" ] || continue
-			_slug="$(basename "$_repo_dir")@$(basename "$_br_dir")"
-			tmux_session_exists "${CCS_PREFIX}${_slug}" && continue
-			_u=$(restore_latest_in "$(transcript_dir_for "$_br_dir")") || continue
-			restore_is_fresh "$(transcript_path "$_br_dir" "$_u")" || continue
-			printf '%s\t%s\t%s\n' "$_slug" "$_br_dir" "$_u"
+	if _wt=$(abs_dir "$CCS_WORKTREE_ROOT" 2>/dev/null); then
+		for _repo_dir in "$_wt"/*; do
+			[ -d "$_repo_dir" ] || continue
+			for _br_dir in "$_repo_dir"/*; do
+				[ -d "$_br_dir" ] || continue
+				_slug="$(basename "$_repo_dir")@$(basename "$_br_dir")"
+				tmux_session_exists "${CCS_PREFIX}${_slug}" && continue
+				_u=$(restore_latest_in "$(transcript_dir_for "$_br_dir")") || continue
+				restore_is_fresh "$(transcript_path "$_br_dir" "$_u")" || continue
+				printf '%s\t%s\t%s\n' "$_slug" "$_br_dir" "$_u"
+			done
 		done
+	fi
+
+	# 4. tmux セッションごと消えたリポジトリのセッション。
+	#
+	# **印のある会話ログだけを拾う**（上のコメント）。slug の決定は
+	# `ghq list` を舐めるので安くない ── 会話ログの検査を全部通ってから呼ぶ。
+	have "$CCS_GHQ_BIN" || return 0
+	"$CCS_GHQ_BIN" list -p 2>/dev/null | while IFS= read -r _repo; do
+		[ -n "$_repo" ] || continue
+		_rp=$(abs_dir "$_repo" 2>/dev/null) || continue
+		_u=$(restore_latest_in "$(transcript_dir_for "$_rp")") || continue
+		_f=$(transcript_path "$_rp" "$_u")
+		restore_is_fresh "$_f" || continue
+		restore_started_by_ccs "$_f" || continue
+
+		_slug=$(slug_for_path "$_rp")
+		[ "$_slug" = "$CCS_HUB_SLUG" ] && continue
+		tmux_session_exists "${CCS_PREFIX}${_slug}" && continue
+		printf '%s\t%s\t%s\n' "$_slug" "$_rp" "$_u"
 	done
 }
 
