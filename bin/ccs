@@ -68,7 +68,6 @@ CCS_SESSIONS_DIR
 CCS_TRUST_FILE
 CCS_SCRATCH_ROOT
 CCS_SCRATCH_SLOTS
-CCS_WORKTREE_ROOT
 CCS_PROJECTS_DIR
 CCS_NEW_TIMEOUT
 CCS_RESTORE_MAX_AGE
@@ -174,14 +173,6 @@ load_config
 : "${CCS_TRUST_FILE:=${HOME}/.claude.json}"
 : "${CCS_SCRATCH_ROOT:=${HOME}/.cc-scratch}"
 
-# worktree の置き場所。`ccs new <repo>@<branch>` が使う。
-#
-# **ghq root の外に置く。** `ghq list` は `<repo>.worktrees/<name>` のような
-# 配置を独立したリポジトリとして列挙してしまう（実測）。ghq 配下に置くと
-# `resolve_as_repo` の末尾一致が worktree にも当たり、`ccs new <branch-slug>`
-# が worktree を掴む。**worktree はリポジトリではない**ので、名前解決の
-# 名前空間に混ぜない。
-: "${CCS_WORKTREE_ROOT:=${HOME}/.cc-worktrees}"
 : "${CCS_PROJECTS_DIR:=${HOME}/.claude/projects}"
 
 # tmux セッション名の接頭辞。手で開いた tmux セッションを巻き込まないための境界。
@@ -323,7 +314,7 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
   <repo>@<branch>
                 そのリポジトリの worktree（無ければ作る）。
                 同じリポジトリに 2 本以上のセッションを立てる唯一の手段。
-                置き場所は CCS_WORKTREE_ROOT/<repo>/<branch>
+                置き場所は <repo>/.worktrees/<branch>（リポジトリ配下）
   tmp           使い捨ての作業枠（--tmp の短い綴り。ghq に tmp という
                 リポジトリがあるときは曖昧なので受け付けない）
 
@@ -339,7 +330,6 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
     CCS_REMOTE_CONTROL Remote Control auto/on/off [既定: auto]
     CCS_PREFIX         tmux 名の接頭辞       [既定: cc/]
     CCS_SCRATCH_SLOTS  使い捨て作業枠の本数  [既定: 8]
-    CCS_WORKTREE_ROOT  worktree の置き場所   [既定: ~/.cc-worktrees]
 
   いま効いている値と出どころは `ccs config` で見られる。
   一覧と意味は docs/configuration.md、hub の運用は docs/hub.md。
@@ -574,14 +564,19 @@ resolve_as_repo() {
 # 冪等に 1 本目が返る。タスクごとにセッションを立てたいなら、作業ツリーごと
 # 分けるしかない（design.md §9.1）。
 #
-# 置き場所は `<CCS_WORKTREE_ROOT>/<repo-slug>/<branch-slug>`。
-# slug は `<repo-slug>@<branch-slug>`（design.md §4.2）。
+# 置き場所は **リポジトリ配下の `<repo>/.worktrees/<branch-slug>`**
+# （ADR-0003 決定 1）。slug は `<repo-slug>@<branch-slug>`（design.md §4.2）。
 # ---------------------------------------------------------------------------
 
 # ブランチ名を slug に落とす。`feat/foo` → `feat-foo`。
 #
-# `/` を潰すのは tmux のためではなくパスのため — 枝分かれしたディレクトリを
-# 作ると、`feat` と `feat/foo` が同時に存在できなくなる。
+# **slug とディレクトリ名を一致させ続けるため**（ADR-0003 決定 5）。
+# 掘らないのは「`feat` と `feat/foo` が同居できないから」ではない ── その 2 つは
+# **git 自身が共存を禁じる**（`refs/heads/` はファイルの階層。実測）。
+#
+# **潰したことで生まれる衝突のほうが実在する。** `feat-foo` と `feat/foo` は
+# 共存でき、どちらも同じディレクトリに落ちる。`ensure_worktree` が
+# 既存の `HEAD` を見て食い違いを落とす。
 branch_slug() {
 	sanitize_slug "$1"
 }
@@ -596,24 +591,63 @@ worktree_split_branch() {
 	printf '%s' "${1##*@}"
 }
 
-# worktree の根を実在させ、絶対パスにして返す。
+# worktree を置くディレクトリの名前。**リポジトリ直下に掘る。**
 #
-# **根だけは作る。** macOS の /tmp は /private/tmp への symlink なので、
-# 実在しないパスは正規化できず、trust に書くキーが噛み合わなくなる
-# （design.md §6 の ghq root で一度踏んだのと同じ形）。根は空ディレクトリ
-# なので作っても害が無い。
-#
-# **この根は W2 で消える**（ADR-0003 決定 6）。置き場所はリポジトリ配下になる。
-worktree_root_abs() {
-	mkdir -p "$CCS_WORKTREE_ROOT" ||
-		die "$EX_FAIL" "worktree の置き場所を作れません: ${CCS_WORKTREE_ROOT}"
-	abs_dir "$CCS_WORKTREE_ROOT" ||
-		die "$EX_FAIL" "worktree の置き場所を解決できません: ${CCS_WORKTREE_ROOT}"
-}
+# **ドット始まりは飾りではない**（ADR-0003 決定 1）。gitignore を読まない道具
+# （`go build ./...`・pytest の `norecursedirs`・各種 analyzer・`rg` の hidden
+# 既定）が軒並みドット始まりを既定で飛ばす。`.gitignore` 系の防御と独立した
+# 二重の防御になる。
+CCS_WORKTREE_DIR='.worktrees'
 
 # その worktree があるべき絶対パス。**worktree 自体は作らない。**
+#
+# `$1` は本体のリポジトリの絶対パス。ghq 配下かどうかは問わない
+# ── 判定は「git リポジトリか」だけ（ADR-0003 決定 1）。
 worktree_path_for() {
-	printf '%s/%s/%s\n' "$(worktree_root_abs)" "$1" "$(branch_slug "$2")"
+	printf '%s/%s/%s\n' "$1" "$CCS_WORKTREE_DIR" "$(branch_slug "$2")"
+}
+
+# 本体の `.git/info/exclude` に `.worktrees/` を足す。冪等。
+#
+# **`.gitignore` ではなくここに書く**（ADR-0003 決定 2）。あちらは追跡対象なので、
+# 先方のリポジトリや fork にこちらの都合で差分を作ることになる
+# （グローバル AGENTS.md「自分が所有しないコードベース」）。ここは追跡外で、
+# **`--git-common-dir` は全 worktree 共有**なので 1 回書けば入れ子も塞がる（実測）。
+#
+# これが無いと `git status` に `?? .worktrees/` が出るだけでなく、
+# **`git add -A` が nested worktree を gitlink としてコミットに載せる**（実測）。
+# エージェントが日常的に打つ形なので、事故として現実的。
+worktree_exclude_add() {
+	_ex_repo=$1
+	_ex_line="/${CCS_WORKTREE_DIR}/"
+
+	# **既に追跡されているなら、そこは利用者の場所。** 触らずに落とす。
+	if "$CCS_GIT_BIN" -C "$_ex_repo" ls-files --error-unmatch \
+		"$CCS_WORKTREE_DIR" >/dev/null 2>&1; then
+		warn "ccs: ${CCS_WORKTREE_DIR} は既にこのリポジトリで追跡されています: ${_ex_repo}"
+		warn ''
+		warn '  そこは ccs の場所ではありません。worktree を切る先がありません。'
+		exit "$EX_FAIL"
+	fi
+
+	_ex_common=$(cd "$_ex_repo" 2>/dev/null &&
+		cd "$("$CCS_GIT_BIN" rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null &&
+		pwd -P) || return 0
+	_ex_file="${_ex_common}/info/exclude"
+
+	# 既にあるなら何もしない。行の完全一致で見る。
+	if [ -f "$_ex_file" ] && grep -qxF "$_ex_line" "$_ex_file" 2>/dev/null; then
+		return 0
+	fi
+
+	mkdir -p "${_ex_common}/info" 2>/dev/null || return 0
+
+	# **末尾に改行が無いファイルを壊さない。** そのまま追記すると
+	# 最終行に連結されて、両方の行が効かなくなる。
+	if [ -s "$_ex_file" ] && [ -n "$(tail -c 1 "$_ex_file" 2>/dev/null)" ]; then
+		printf '\n' >>"$_ex_file" || return 0
+	fi
+	printf '%s\n' "$_ex_line" >>"$_ex_file" || return 0
 }
 
 # `<repo>@<branch>` を解決する。**ここでは作らない。**
@@ -648,22 +682,28 @@ resolve_as_worktree() {
 	_repo_path=$CCS_RESOLVED_PATH
 	_repo_slug=$CCS_RESOLVED_SLUG
 
-	# **worktree の worktree は作らせない。** 入れ子にすると、どのブランチの
-	# どの作業ツリーなのかが slug から辿れなくなる。
+	# **worktree を指されたら、本体に読み替える**（ADR-0003 決定 4）。
 	#
-	# **判定は git に訊く**（ADR-0003 決定 3）。`CCS_WORKTREE_ROOT` の前方一致で
-	# 当てていた頃は、**その根の外に置かれた worktree を素通しした** ── 手で
-	# 切った worktree を指されると入れ子が通る。git は置き場所に依らず答える。
+	# 拒否ではなく読み替えにするのは、**入れ子を「起こり得なくする」ため**。
+	# 拒否は人が打ち直す前提の設計で、`.worktrees/a/.worktrees/b` を作れる形は
+	# 残ったままになる。読み替えれば原理的に生まれない。
+	#
+	# slug も自動で正しくなる ── `<repo-slug>` は**本体**から決まるので、
+	# 拒否する設計だと、正しい slug を得るために呼び出し側が本体のパスを
+	# 知っていることを要求してしまう。worktree の中で走っているセッションが
+	# 兄弟タスクを立てるとき、自然な綴りは `.@bar` や `$PWD@bar` のほう。
+	#
+	# **主経路（`ghq list` 経由）はここに来ない** ── ghq は worktree を
+	# 列挙しないので、repo 部は必ず本体に解決される（ADR-0003 の実測）。
 	if path_is_linked_worktree "$_repo_path"; then
-		warn "ccs: それは既に worktree です: ${_repo_path}"
-		warn ''
-		warn "  元のリポジトリを指してください: ccs new $(basename "$CCS_WT_MAIN")@${_branch}"
-		exit "$EX_FAIL"
+		_repo_path=$CCS_WT_MAIN
+		_repo_slug=$(slug_for_path "$_repo_path")
+		warn "ccs: 本体のリポジトリに読み替えました: ${_repo_path}"
 	fi
 
 	CCS_RESOLVED_WORKTREE_REPO=$_repo_path
 	CCS_RESOLVED_WORKTREE_BRANCH=$_branch
-	CCS_RESOLVED_PATH=$(worktree_path_for "$_repo_slug" "$_branch")
+	CCS_RESOLVED_PATH=$(worktree_path_for "$_repo_path" "$_branch")
 	CCS_RESOLVED_SLUG="${_repo_slug}@$(branch_slug "$_branch")"
 }
 
@@ -701,8 +741,27 @@ ensure_worktree() {
 	if [ -d "$_path" ]; then
 		"$CCS_GIT_BIN" -C "$_path" rev-parse --git-dir >/dev/null 2>&1 ||
 			die "$EX_FAIL" "worktree のあるべき場所に、git 管理下でないものがあります: ${_path}"
+
+		# **別のブランチが座っていないか見る**（ADR-0003 決定 5）。
+		# `branch_slug` は `/` を `-` に潰すので、`feat/foo` と `feat-foo` は
+		# **共存できるのに同じディレクトリに落ちる**（git は前者どうしの
+		# `feat` と `feat/foo` は禁じるが、この 2 つは禁じない。実測）。
+		# 黙って別のブランチの作業ツリーを渡すと、そこで書いたものが
+		# 意図しない枝に乗る。
+		_have=$("$CCS_GIT_BIN" -C "$_path" rev-parse --abbrev-ref HEAD 2>/dev/null) || _have=''
+		if [ -n "$_have" ] && [ "$_have" != "$_branch" ]; then
+			warn "ccs: そこには別のブランチの worktree があります: ${_path}"
+			warn ''
+			warn "  そこにあるのは ${_have}、指定されたのは ${_branch} です。"
+			warn '  どちらかの名前を変えてください（ディレクトリ名は / を - に潰します）。'
+			exit "$EX_FAIL"
+		fi
 		return 0
 	fi
+
+	# **`.worktrees/` を git から隠すのは、実体を作る前。** 先に worktree が
+	# 生えると、その一瞬 `git status` と `git add -A` に晒される。
+	worktree_exclude_add "$_repo"
 
 	mkdir -p "$(dirname "$_path")" ||
 		die "$EX_FAIL" "worktree の置き場所を作れません: $(dirname "$_path")"
@@ -975,9 +1034,9 @@ path_is_scratch_slot() {
 # ghq と同じ理由）。これが無いと、タスクごとに worktree を切る運用で
 # **毎回 30 秒の信頼確認に固まる**。
 #
-# **素性は git から引く**（ADR-0003 決定 3）。以前は「`CCS_WORKTREE_ROOT` の
-# 配下」＋「解決のときに立てた変数」で当てていたので、**実パスで指されると
-# 判定できなかった**（ADR-0002 表 #9）── 同じディレクトリが、打ち方によって
+# **素性は git から引く**（ADR-0003 決定 3）。以前は置き場所の前方一致＋
+# 「解決のときに立てた変数」で当てていたので、**実パスで指されると判定
+# できなかった**（ADR-0002 表 #9）── 同じディレクトリが、打ち方によって
 # 信頼されたりされなかったりしていた。
 path_is_ghq_worktree() {
 	path_is_linked_worktree "$1" || return 1
@@ -1876,7 +1935,7 @@ cmd_gc() {
 #
 #   1. 止まったペイン   … `cc/` の tmux セッションは残っているが claude が死んでいる
 #   2. 消えた作業枠     … `CCS_SCRATCH_ROOT/<n>` に会話ログがある
-#   3. 消えた worktree  … `CCS_WORKTREE_ROOT/<repo>/<branch>` に会話ログがある
+#   3. 消えた worktree  … ghq 配下の `<repo>/.worktrees/<branch>` に会話ログがある
 #   4. 消えたリポジトリ … ghq 配下で、**ccs が立てた印のある**会話ログがある
 #
 # **4 だけ条件が 1 つ多い。** ghq 配下の会話ログは ccs が立てたものとは限らず
@@ -2014,22 +2073,25 @@ restore_candidates() {
 	done
 
 	# 3. tmux セッションごと消えた worktree セッション。
-	if _wt=$(abs_dir "$CCS_WORKTREE_ROOT" 2>/dev/null); then
-		for _repo_dir in "$_wt"/*; do
-			[ -d "$_repo_dir" ] || continue
-			for _br_dir in "$_repo_dir"/*; do
+	#
+	# **ディレクトリを走査しない。git に一覧を訊く**（ADR-0003 決定 1・3）。
+	# worktree はリポジトリ配下（`<repo>/.worktrees/<branch-slug>`）に散るので、
+	# 舐めるべき「根」がもう無い。ghq 配下の各リポジトリに訊いて回る。
+	#
+	# **slug はディレクトリ名から組む。** `slug_for_path` は git のブランチを
+	# 見るので、worktree の中でブランチを切り替えると tmux にある名前と
+	# 食い違い、**動いているセッションを「消えた」として候補に出す**（実測）。
+	# 占有を名前で当てていることが根本原因で、直すのは I1（照合を cwd へ。
+	# ADR-0002 決定 3）の仕事。
+	if have "$CCS_GHQ_BIN"; then
+		"$CCS_GHQ_BIN" list -p 2>/dev/null | while IFS= read -r _repo; do
+			[ -n "$_repo" ] || continue
+			_rp=$(abs_dir "$_repo" 2>/dev/null) || continue
+			[ -d "${_rp}/${CCS_WORKTREE_DIR}" ] || continue
+			_repo_slug=$(slug_for_path "$_rp")
+			for _br_dir in "${_rp}/${CCS_WORKTREE_DIR}"/*; do
 				[ -d "$_br_dir" ] || continue
-				# **ここは slug を git から引かない。**
-				# `slug_for_path` は ADR-0003 決定 3 で git のブランチを見るように
-				# なったが、ここでそれを使うと**動いているセッションを候補に出す**
-				# ── worktree の中でブランチを切り替えると、git の答え
-				# (`<repo>@<新ブランチ>`) と tmux にある名前 (`<repo>@<作った時の名>`)
-				# が食い違い、下の `tmux_session_exists` が外れる（実測）。
-				#
-				# **占有の判定を名前でやっていることが根本原因**で、ここを直すのは
-				# I1（照合を cwd へ。ADR-0002 決定 3）の仕事。それまでは、
-				# ccs が作ったときの名前＝ディレクトリ名で当てるほうが外れない。
-				_slug="$(basename "$_repo_dir")@$(basename "$_br_dir")"
+				_slug="${_repo_slug}@$(basename "$_br_dir")"
 				tmux_session_exists "${CCS_PREFIX}${_slug}" && continue
 				_u=$(restore_latest_in "$(transcript_dir_for "$_br_dir")") || continue
 				restore_is_fresh "$(transcript_path "$_br_dir" "$_u")" || continue

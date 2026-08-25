@@ -57,30 +57,35 @@ teardown() {
 
 # --- 置き場所 ----------------------------------------------------------------
 
-@test "worktree: 置き場所は CCS_WORKTREE_ROOT/<repo>/<branch>" {
-	mkdir -p "${CCS_TEST_TMP}/ghq/github.com/o/x01"
-	ccs_stub_ghq "${CCS_TEST_TMP}/ghq/github.com/o/x01"
+@test "worktree: 置き場所は <repo>/.worktrees/<branch>" {
+	local _repo="${CCS_TEST_TMP}/ghq/github.com/o/x01"
+	mkdir -p "$_repo"
+	ccs_stub_ghq "$_repo"
 
 	run "$CCS_BIN" resolve --json 'x01@topic'
 	[ "$status" -eq 0 ]
 	local _p
 	_p=$(echo "$output" | jq -r .path)
 
-	# **根は symlink を辿った形で返る。** /tmp → /private/tmp のような環境で
+	# **本体は symlink を辿った形で返る。** /tmp → /private/tmp のような環境で
 	# 生の変数と比べると外れる（実装側で一度踏んだ）。
-	local _root
-	_root=$(cd "$CCS_WORKTREE_ROOT" && pwd -P)
-	[ "$_p" = "${_root}/x01/topic" ]
+	local _abs
+	_abs=$(cd "$_repo" && pwd -P)
+	[ "$_p" = "${_abs}/.worktrees/topic" ]
 }
 
-@test "worktree: ghq root の外に置く（ghq list に混ざらないため）" {
-	mkdir -p "${CCS_TEST_TMP}/ghq/github.com/o/x01"
-	ccs_stub_ghq "${CCS_TEST_TMP}/ghq/github.com/o/x01"
+@test "worktree: ghq 配下でも ghq list には混ざらない" {
+	# ghq は `.git` を見つけた時点でそれ以上降りないので、リポジトリ配下の
+	# worktree は列挙されない（ADR-0003 の実測）。**これが方針転換の前提**
+	# なので、ここで固定する。
+	local _repo="${CCS_TEST_TMP}/ghq/github.com/o/x01"
+	ccs_make_git_repo "$_repo"
+	ccs_stub_ghq "$_repo"
+	git -C "$_repo" worktree add -q "${_repo}/.worktrees/topic" -b topic
 
-	run "$CCS_BIN" resolve --json 'x01@topic'
-	local _p
-	_p=$(echo "$output" | jq -r .path)
-	[[ "$_p" != "${CCS_TEST_TMP}/ghq/"* ]] || return 1
+	run env GHQ_ROOT="${CCS_TEST_TMP}/ghq" ghq list -p
+	[ "$status" -eq 0 ]
+	[ "$(echo "$output" | grep -c '\.worktrees')" -eq 0 ]
 }
 
 # --- 副作用が無いこと --------------------------------------------------------
@@ -91,7 +96,7 @@ teardown() {
 
 	run "$CCS_BIN" resolve 'x01@topic'
 	[ "$status" -eq 0 ]
-	[ ! -e "${CCS_WORKTREE_ROOT}/x01" ]
+	[ ! -e "${CCS_TEST_TMP}/ghq/github.com/o/x01/.worktrees" ]
 }
 
 # --- 曖昧さ ------------------------------------------------------------------
@@ -125,19 +130,21 @@ teardown() {
 	[[ "$output" == *"ありません"* ]] || return 1
 }
 
-@test "worktree: worktree の worktree は拒む" {
-	# **本物の worktree を作る。** 以前は `mkdir` した空ディレクトリで
-	# 通っていたが、それは置き場所の前方一致で当てていたから。
-	# 素性を git に訊く以上（ADR-0003 決定 3）、worktree でないものは
-	# worktree として扱わない。
+@test "worktree: worktree を指されたら本体に読み替える" {
+	# **拒否ではなく読み替え**（ADR-0003 決定 4）。入れ子を「拒む」のではなく
+	# 「起こり得なくする」。slug も本体から決まるので自動で正しくなる。
 	local _repo="${CCS_TEST_TMP}/ghq/github.com/o/x01"
 	ccs_make_git_repo "$_repo"
 	ccs_stub_ghq "$_repo"
-	git -C "$_repo" worktree add -q "${CCS_WORKTREE_ROOT}/x01/topic" -b topic
+	git -C "$_repo" worktree add -q "${_repo}/.worktrees/topic" -b topic
 
-	run "$CCS_BIN" resolve "${CCS_WORKTREE_ROOT}/x01/topic@other"
-	[ "$status" -eq 1 ]
-	[[ "$output" == *"既に worktree です"* ]] || return 1
+	run --separate-stderr "$CCS_BIN" resolve "${_repo}/.worktrees/topic@other"
+	[ "$status" -eq 0 ]
+	[ "$(echo "$output" | cut -f1)" = 'x01@other' ]
+	# **入れ子にならない。** 本体の .worktrees に落ちること。
+	[ "$(echo "$output" | cut -f2)" = "$(cd "$_repo" && pwd -P)/.worktrees/other" ]
+	# 黙って読み替えない
+	[[ "$stderr" == *"本体のリポジトリに読み替えました"* ]] || return 1
 }
 
 # --- 素性を git から引く（ADR-0003 決定 3、W1） -------------------------------
@@ -194,18 +201,19 @@ teardown() {
 	[ "$(echo "$output" | cut -f1)" = 'wt' ]
 }
 
-@test "worktree: CCS_WORKTREE_ROOT の外にある worktree も入れ子として拒む" {
+@test "worktree: 規約の外に手で切った worktree でも本体に読み替える" {
 	local _repo="${CCS_TEST_TMP}/ghq/github.com/o/x01"
 	ccs_make_git_repo "$_repo"
 	ccs_stub_ghq "$_repo"
-	# **根の外**に手で切った worktree。前方一致で当てていた頃は素通しだった。
+	# 置き場所の規約の外。前方一致で当てていた頃は素通しだった。
 	git -C "$_repo" worktree add -q "${CCS_TEST_TMP}/elsewhere/wt" -b topic
 
-	run "$CCS_BIN" resolve "${CCS_TEST_TMP}/elsewhere/wt@another"
-	[ "$status" -ne 0 ]
-	[[ "$output" == *"それは既に worktree です"* ]] || return 1
-	# 案内は本体の名前で出すこと（打ち直せる形になっていること）
-	[[ "$output" == *"ccs new x01@another"* ]] || return 1
+	# **--separate-stderr が要る。** 読み替えは stderr に 1 行出るので、
+	# 混ぜると $output の 1 行目が案内文になる。
+	run --separate-stderr "$CCS_BIN" resolve "${CCS_TEST_TMP}/elsewhere/wt@another"
+	[ "$status" -eq 0 ]
+	[ "$(echo "$output" | cut -f1)" = 'x01@another' ]
+	[ "$(echo "$output" | cut -f2)" = "$(cd "$_repo" && pwd -P)/.worktrees/another" ]
 }
 
 @test "worktree: submodule は worktree ではない" {

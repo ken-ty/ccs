@@ -256,3 +256,105 @@ teardown() {
 	run "$CCS_BIN" ls
 	[ "$(echo "$output" | grep -c 'x01@topic')" -eq 1 ]
 }
+
+# --- リポジトリ配下に置く（ADR-0003 決定 1・2・5、W2） -------------------------
+
+@test "worktree: リポジトリ配下の .worktrees/ に作る" {
+	run --separate-stderr "$CCS_BIN" new 'x01@topic'
+	[ "$status" -eq 0 ]
+	local _p
+	_p=$(echo "$output" | jq -r '.path')
+	[ "$_p" = "$(cd "$CCS_TEST_REPO" && pwd -P)/.worktrees/topic" ]
+	[ -d "$_p" ]
+}
+
+@test "worktree: 親の git status を汚さない" {
+	run --separate-stderr "$CCS_BIN" new 'x01@topic'
+	[ "$status" -eq 0 ]
+
+	# **これが方針の成否を分ける。** 塞がないと `?? .worktrees/` が出て、
+	# `git add -A` が gitlink として拾う。
+	run git -C "$CCS_TEST_REPO" status --porcelain
+	[ -z "$output" ]
+}
+
+@test "worktree: .git/info/exclude に書く（.gitignore は触らない）" {
+	run --separate-stderr "$CCS_BIN" new 'x01@topic'
+	[ "$status" -eq 0 ]
+
+	run grep -qxF '/.worktrees/' "${CCS_TEST_REPO}/.git/info/exclude"
+	[ "$status" -eq 0 ]
+	# **追跡されるファイルを増やさない**（先方のリポジトリに差分を作らない）
+	[ ! -f "${CCS_TEST_REPO}/.gitignore" ]
+}
+
+@test "worktree: exclude は 2 度書かない（冪等）" {
+	"$CCS_BIN" new 'x01@topic' >/dev/null 2>&1
+	"$CCS_BIN" kill --force 'x01@topic' >/dev/null 2>&1
+	"$CCS_BIN" new 'x01@other' >/dev/null 2>&1
+
+	run grep -cxF '/.worktrees/' "${CCS_TEST_REPO}/.git/info/exclude"
+	[ "$output" = '1' ]
+}
+
+@test "worktree: 末尾に改行の無い exclude を壊さない" {
+	# 追記が最終行に連結されると、**両方の行が効かなくなる**。
+	printf '*.log' >"${CCS_TEST_REPO}/.git/info/exclude"
+
+	run --separate-stderr "$CCS_BIN" new 'x01@topic'
+	[ "$status" -eq 0 ]
+
+	run grep -qxF '*.log' "${CCS_TEST_REPO}/.git/info/exclude"
+	[ "$status" -eq 0 ]
+	run grep -qxF '/.worktrees/' "${CCS_TEST_REPO}/.git/info/exclude"
+	[ "$status" -eq 0 ]
+}
+
+@test "worktree: worktree の中も汚れていない（exclude は共有される）" {
+	run --separate-stderr "$CCS_BIN" new 'x01@topic'
+	local _p
+	_p=$(echo "$output" | jq -r '.path')
+
+	# `--git-common-dir` は全 worktree 共有なので、1 回書けば入れ子も塞がる。
+	mkdir -p "${_p}/.worktrees/dummy"
+	run git -C "$_p" status --porcelain
+	[ -z "$output" ]
+}
+
+@test "worktree: 同じディレクトリに別のブランチが座っていれば落ちる" {
+	# `branch_slug` は / を - に潰すので、feat/foo と feat-foo は
+	# **共存できるのに同じディレクトリに落ちる**（git は禁じない）。
+	"$CCS_BIN" new 'x01@feat-foo' >/dev/null 2>&1
+	"$CCS_BIN" kill --force 'x01@feat-foo' >/dev/null 2>&1
+
+	run "$CCS_BIN" new 'x01@feat/foo'
+	[ "$status" -ne 0 ]
+	[[ "$output" == *"別のブランチの worktree があります"* ]] || return 1
+	[[ "$output" == *"feat-foo"* ]] || return 1
+}
+
+@test "worktree: .worktrees を追跡しているリポジトリでは落ちる" {
+	mkdir -p "${CCS_TEST_REPO}/.worktrees"
+	printf 'mine\n' >"${CCS_TEST_REPO}/.worktrees/KEEP"
+	git -C "$CCS_TEST_REPO" add -A
+	git -C "$CCS_TEST_REPO" commit -q -m 'user owns .worktrees'
+
+	# そこは利用者の場所。exclude で隠さず、黙って中に作らない。
+	run "$CCS_BIN" new 'x01@topic'
+	[ "$status" -ne 0 ]
+	[[ "$output" == *"既にこのリポジトリで追跡されています"* ]] || return 1
+	[ -f "${CCS_TEST_REPO}/.worktrees/KEEP" ]
+}
+
+@test "worktree: worktree の中から立てても入れ子にならない" {
+	run --separate-stderr "$CCS_BIN" new 'x01@topic'
+	local _p
+	_p=$(echo "$output" | jq -r '.path')
+
+	run --separate-stderr env -C "$_p" "$CCS_BIN" new '.@sibling'
+	[ "$status" -eq 0 ]
+	[ "$(echo "$output" | jq -r '.slug')" = 'x01@sibling' ]
+	# 本体の .worktrees に並ぶこと（worktree の中に生えないこと）
+	[ "$(echo "$output" | jq -r '.path')" = "$(cd "$CCS_TEST_REPO" && pwd -P)/.worktrees/sibling" ]
+	[ ! -d "${_p}/.worktrees/sibling" ]
+}
