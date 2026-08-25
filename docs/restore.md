@@ -34,7 +34,7 @@ hub は戻ってくるが（[hub を常時立てる](hub.md#常時起動推奨�
 | --- | --- | --- |
 | 1 | 止まったペイン | `cc/` の tmux セッションは残っているが claude が死んでいる |
 | 2 | 消えた作業枠 | `~/.cc-scratch/<n>` の会話ログ |
-| 3 | 消えた worktree | `~/.cc-worktrees/<repo>/<branch>` の会話ログ |
+| 3 | 消えた worktree | ghq 配下の `<repo>/.worktrees/<branch>` の会話ログ |
 | 4 | 消えたリポジトリのセッション | ghq 配下で、**`ccs` が立てた印のある**会話ログ |
 
 **4 だけ条件が 1 つ多い。** ghq 配下の会話ログは `ccs` が立てたものとは限らず、
@@ -71,10 +71,13 @@ $ ccs restore tmp-3            # 作業枠（番号まで要る）
 $ ccs restore /some/path       # ghq の外
 ```
 
-!!! note "`<repo>.worktrees/<name>` は独立したリポジトリとして出る"
-    `ghq list` は `<repo>.worktrees/<name>` を独立したリポジトリとして列挙する（実測）。
-    そこに `ccs` で立てたセッションがあれば、`<name>` という slug で候補に出る ──
-    立てたときと同じ slug なので、これは正しい挙動。
+!!! note "リポジトリ配下の worktree は `ghq list` に出ない"
+    `ghq` は `.git` を見つけた時点でそれ以上降りないので、`<repo>/.worktrees/<name>` は
+    独立したリポジトリとして列挙されない（実測。[ADR-0003](adr/0003-worktree-under-repo.md)）。
+    だから候補 3 は `ghq list` の各リポジトリに `.worktrees/` があるかを見て回る。
+
+    **`<repo>.worktrees/<name>`（リポジトリの*兄弟*）は出る。** 手でそこに切った
+    worktree があれば、`<name>` という slug で候補 4 に混ざる。
 
 ## 既定は見せるだけ
 

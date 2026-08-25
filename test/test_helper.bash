@@ -25,9 +25,9 @@ ccs_setup_sandbox() {
 	export CCS_TRUST_FILE="${CCS_TEST_TMP}/claude.json"
 	export CCS_SCRATCH_ROOT="${CCS_TEST_TMP}/scratch"
 	export CCS_PROJECTS_DIR="${CCS_TEST_TMP}/projects"
-	# **worktree の置き場所も必ず逃がす。** 漏れると本物の ~/.cc-worktrees に
-	# ブランチごとチェックアウトが生える。
-	export CCS_WORKTREE_ROOT="${CCS_TEST_TMP}/worktrees"
+	# **worktree の差し替え点は要らない**（ADR-0003 決定 6）。置き場所が
+	# リポジトリ配下 (`<repo>/.worktrees/`) になったので、テストが作る
+	# リポジトリはサンドボックスの中にあり、worktree もそこに落ちる。
 	mkdir -p "$CCS_SESSIONS_DIR" "$CCS_SCRATCH_ROOT" "$CCS_PROJECTS_DIR"
 
 	# スタブを置く場所。PATH の先頭に差し込む。
