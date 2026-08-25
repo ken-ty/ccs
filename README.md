@@ -49,7 +49,7 @@ ln -sf ~/ghq/github.com/ken-ty/ccs/bin/ccs ~/.local/bin/ccs
 ccs new <target> [-- <初期プロンプト>]   # target: リポジトリ名 | ghq パス
 ccs new --tmp [-- <初期プロンプト>]      # 使い捨ての作業枠（"tmp" は短い綴り）
 ccs ls [--json]                          # cc/ 接頭辞のセッションだけを整形して出す
-ccs attach <slug>                        # 人間が乗り込む
+ccs attach [<slug>]                      # 人間が乗り込む（slug を省くと番号で選ぶ）
 ccs kill <slug>                          # ペインごと畳む
 ccs gc                                   # 死んだペイン・空の一時ディレクトリを掃除
 ccs restore [--yes] [<slug>...]          # 止まった／消えたセッションを同じ会話で立て直す

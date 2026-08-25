@@ -294,7 +294,8 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
   ccs new <repo>@<branch> [-- ...]        worktree を切ってそこに立てる
   ccs new --tmp [-- <初期プロンプト>]     使い捨ての作業枠に立てる
   ccs ls [--json]                         ccs のセッションを一覧する
-  ccs attach <slug>                       セッションに乗り込む
+  ccs attach [<slug>]                     セッションに乗り込む
+                                          （slug を省くと番号で選ぶ）
   ccs kill [--force] <slug>               セッションを畳む
                                           （作業中は --force が要る）
   ccs gc [--yes]                          止まったセッションと空の作業枠を掃除する
@@ -1467,11 +1468,66 @@ die_no_such_slug() {
 	exit "$EX_FAIL"
 }
 
+# slug を省いたときに、番号で選ばせて `_slug` に入れる。
+#
+# **スマホから使うための入口。** ソフトキーボードで slug を打つのは高くつく
+# （docs/mobile-terminal.md §10.5）。`ccs ls` を見て打ち直す往復も同じ。
+#
+# **これは `ccs ls` + `ccs attach` の言い換えであって、新しい概念ではない。**
+# 出す情報は `ccs ls` と同じものを絞ったもので、決めるのは人。
+#
+# 対話が要るので、**端末が無ければ従来どおり使い方の誤りとして落とす。**
+# スクリプトやハブが引数を渡し忘れたときに、黙って入力を待って固まるより、
+# その場で 2 番で落ちるほうが原因に辿り着ける。
+attach_pick_slug() {
+	[ -t 0 ] || die "$EX_USAGE" 'attach: <slug> を指定してください'
+
+	_pick_slugs=$(list_slugs)
+	if [ -z "$_pick_slugs" ]; then
+		warn '立っているセッションはありません。'
+		warn ''
+		warn '  立てる: ccs new <target>'
+		exit "$EX_FAIL"
+	fi
+
+	_pick_rows=''
+	for _pick_one in $_pick_slugs; do
+		_pick_rows="${_pick_rows}$(collect_session_row "$_pick_one")
+"
+	done
+	_pick_rows=$(printf '%s\n' "$_pick_rows" | awk -F'\t' 'NF')
+	_pick_max=$(printf '%s\n' "$_pick_rows" | wc -l | tr -d ' ')
+
+	# slug の最大幅に合わせる（`ls_as_table` と同じ理由。固定幅だと崩れる）。
+	_pick_w=$(printf '%s\n' "$_pick_rows" |
+		awk -F'\t' 'length($1) > m { m = length($1) } END { print (m < 4 ? 4 : m) }')
+
+	# **一覧もプロンプトも stderr に出す。** 選んだあとは exec で tmux に
+	# 置き換わるので stdout は tmux のものになる。混ぜない。
+	printf '%s\n' "$_pick_rows" |
+		awk -F'\t' -v w="$_pick_w" '{ printf "%3d) %-*s  %s\n", NR, w, $1, $2 }' >&2
+
+	printf '\n番号を選ぶ（Enter で中止）: ' >&2
+	read -r _pick_n || exit "$EX_OK"
+	[ -n "$_pick_n" ] || exit "$EX_OK"
+
+	case $_pick_n in
+	*[!0-9]*) die "$EX_USAGE" "attach: 番号ではありません: ${_pick_n}" ;;
+	esac
+	[ "$_pick_n" -ge 1 ] && [ "$_pick_n" -le "$_pick_max" ] ||
+		die "$EX_USAGE" "attach: 1〜${_pick_max} の番号を選んでください: ${_pick_n}"
+
+	_slug=$(printf '%s\n' "$_pick_rows" | sed -n "${_pick_n}p" | cut -f1)
+}
+
 cmd_attach() {
 	require_deps
-	[ $# -ge 1 ] || die "$EX_USAGE" 'attach: <slug> を指定してください'
 
-	_slug=$1
+	if [ $# -ge 1 ]; then
+		_slug=$1
+	else
+		attach_pick_slug
+	fi
 	_session="${CCS_PREFIX}${_slug}"
 
 	tmux_session_exists "$_session" || die_no_such_slug "$_slug"

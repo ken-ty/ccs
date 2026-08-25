@@ -91,6 +91,64 @@ _stub_tmux_recorder() {
 	[[ "$output" == *"ccs new"* ]] || return 1
 }
 
+# --- attach（slug を省いて番号で選ぶ） --------------------------------------
+#
+# **bats はパイプ越しに走るので `[ -t 0 ]` が偽になり、対話の枝に入らない。**
+# ここだけ pty を用意して、本物の端末から選んだときの挙動を見る。
+
+_pick() {
+	run "${CCS_REPO_ROOT}/test/fixtures/pty-run" "$1" -- \
+		env -u TMUX "$CCS_BIN" attach
+}
+
+@test "attach: slug を省くと番号で選ばせ、選んだものに乗り込む" {
+	_stub_tmux_recorder 'cc/aaa' 'cc/bbb'
+
+	_pick 2
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"1) aaa"* ]] || return 1
+	[[ "$output" == *"2) bbb"* ]] || return 1
+
+	run cat "${CCS_TEST_TMP}/tmux.log"
+	[[ "$output" == *"attach-session -t cc/bbb"* ]] || return 1
+	[[ "$output" != *"attach-session -t cc/aaa"* ]] || return 1
+}
+
+@test "attach: 番号を選ばず Enter なら、何もせず 0 で終わる" {
+	# **中止は失敗ではない。** 一覧を見て気が変わっただけなので、
+	# 呼び出し側に失敗として伝えない。
+	_stub_tmux_recorder 'cc/aaa'
+
+	_pick ''
+	[ "$status" -eq 0 ]
+
+	run cat "${CCS_TEST_TMP}/tmux.log"
+	[[ "$output" != *"attach-session"* ]] || return 1
+	[[ "$output" != *"switch-client"* ]] || return 1
+}
+
+@test "attach: 番号でないものを選んだら 2" {
+	_stub_tmux_recorder 'cc/aaa'
+
+	_pick nope
+	[ "$status" -eq 2 ]
+	[[ "$output" == *"番号ではありません"* ]] || return 1
+}
+
+@test "attach: 範囲の外の番号を選んだら 2" {
+	_stub_tmux_recorder 'cc/aaa' 'cc/bbb'
+
+	_pick 9
+	[ "$status" -eq 2 ]
+	[[ "$output" == *"1〜2"* ]] || return 1
+}
+
+@test "attach: 何も立っていなければ立て方を出して 1" {
+	_pick 1
+	[ "$status" -eq 1 ]
+	[[ "$output" == *"ccs new"* ]] || return 1
+}
+
 @test "attach: slug が無ければ 2" {
 	run "$CCS_BIN" attach
 	[ "$status" -eq 2 ]
