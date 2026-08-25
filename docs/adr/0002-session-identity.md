@@ -2,7 +2,7 @@
 
 - **状態**: Accepted
 - **日付**: 2026-08-21
-- **関連**: [ADR-0001](0001-scratch-workspace-identity.md)、`docs/design.md` §2.1 / §4.2 / §4.4 / §9.3 / §9.6、
+- **関連**: [ADR-0001](0001-scratch-workspace-identity.md)、[ADR-0003](0003-worktree-under-repo.md)（決定 5 の根拠 3 を差し替え）、`docs/design.md` §2.1 / §4.2 / §4.4 / §9.3 / §9.6、
   `bin/ccs` の `resolve_as_scratch` / `dir_is_empty` / `path_is_scratch_slot` /
   `registry_file_for_slug` / `pane_session_id_for` / `orphan_slots`
 - **覆すもの**: 無し。ADR-0001 の続きで、あちらが決めた「ディレクトリの同一性とセッションの
@@ -197,9 +197,15 @@ ADR-0001 と正面から衝突する。
 - **git の作業ツリーを汚さない。** `.ccs.json` は `git status` に出て、コミットされ得て、
   clean 判定を壊す
 - **worktree は git 自身が素性を持っている。** `git rev-parse --git-common-dir` で元の
-  リポジトリが引け、`git worktree list` で一覧が引ける。パスも
-  `<CCS_WORKTREE_ROOT>/<repo-slug>/<branch-slug>` で素性を語る（design.md §9.6）
+  リポジトリが引け、`git worktree list` で一覧が引ける。~~パスも
+  `<CCS_WORKTREE_ROOT>/<repo-slug>/<branch-slug>` で素性を語る（design.md §9.6）~~
 - したがって worktree に必要なのは決定 3（cwd で照合）だけで、印は要らない
+
+> **根拠 3 を差し替えた（2026-08-26、[ADR-0003](0003-worktree-under-repo.md)）。結論は変わらない。**
+> worktree の置き場所が `<repo>/.worktrees/<branch-slug>` になり、`CCS_WORKTREE_ROOT` は
+> 消えるので、「パスが素性を語る」は成立しなくなる。代わりに素性は `git rev-parse` から
+> 直接引く（ADR-0003 決定 3）── **規約を読むのをやめて実体に訊く**ので、根拠 1 と 2 は
+> むしろ強くなる。印を置かないという結論はそのまま維持する。
 
 `path_is_ccs_worktree` は今のまま（元リポジトリが ghq 配下なら信頼）。印の有無は関係しない。
 
