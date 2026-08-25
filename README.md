@@ -190,6 +190,11 @@ CCS_REMOTE_CONTROL=off      # Remote Control を使わない
 （[docs/design.md §6](docs/design.md#6-決定事項2026-08-17) の「v1 の範囲」と
 [§10](docs/design.md#10-restore止まったセッションの立て直し2026-08-22-決定)）。
 
+## 版
+
+`0.0.x`。**破壊的変更を予告なく入れる。** タグもリリースも発行していない。
+決まったことは [ADR](docs/adr/) にある。
+
 ## ドキュメント
 
 ```bash
