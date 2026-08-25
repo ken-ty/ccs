@@ -406,6 +406,59 @@ abs_dir() {
 	(cd "$1" 2>/dev/null && pwd -P) || return 1
 }
 
+# そのパスが linked worktree なら、本体の作業ツリーとブランチを
+# CCS_WT_MAIN / CCS_WT_BRANCH に入れて 0 を返す。違えば 1。
+#
+# **git に訊く。パスの形からは判断しない**（ADR-0003 決定 3）。
+# 置き場所の前方一致で当てていた頃は、規約の外に置かれた worktree を
+# 取りこぼし、実パスで指されると素性が分からなかった（ADR-0002 表 #9）。
+# **パスもまた名前**なので、同一性の根拠にしない。
+path_is_linked_worktree() {
+	CCS_WT_MAIN=''
+	CCS_WT_BRANCH=''
+
+	# **安い門番。** linked worktree の `.git` は**ファイル**（通常の
+	# リポジトリはディレクトリ）。`ccs restore` は ghq 配下を全部舐めるので、
+	# 大多数を git を起こさずに落とせることが効く。
+	[ -f "${1}/.git" ] || return 1
+	have "$CCS_GIT_BIN" || return 1
+
+	# **linked worktree だけが、git-dir と common-dir が食い違う。**
+	# 前者は `.git/worktrees/<名前>`、後者は常に本体の `.git`。
+	#
+	# **submodule をここで落とす。** あちらも `.git` はファイルだが、
+	# 自分が本体なので両者が一致する。`git worktree list` で判定しては
+	# **いけない** ── submodule の中から呼ぶと、あれは作業ツリーではなく
+	# **git-dir**（`.git/modules/<名前>`）を先頭に並べるので、
+	# `--show-toplevel` と比べると食い違って worktree に見える（実測）。
+	#
+	# 両方 `pwd -P` を通す。片方だけ生のままだと、symlink を挟む環境
+	# （macOS の /tmp）で食い違いが出る。
+	_wt_gd=$(cd "$1" 2>/dev/null &&
+		cd "$("$CCS_GIT_BIN" rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd -P) || return 1
+	_wt_cd=$(cd "$1" 2>/dev/null &&
+		cd "$("$CCS_GIT_BIN" rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P) || return 1
+	[ "$_wt_gd" != "$_wt_cd" ] || return 1
+
+	# ここまで来たら本物の linked worktree。**一覧の先頭が本体**
+	# （git が保証している）。
+	_wt_main=$("$CCS_GIT_BIN" -C "$1" worktree list --porcelain 2>/dev/null |
+		sed -n '1s/^worktree //p')
+	[ -n "$_wt_main" ] || return 1
+
+	# bare リポジトリの worktree では、先頭は作業ツリーではなく
+	# リポジトリそのもの。素性として名乗れないので使わない。
+	[ -d "${_wt_main}/.git" ] || return 1
+
+	# 分離 HEAD は枝を名乗れない。素性が半分しか無いものを素性として扱わない。
+	_wt_br=$("$CCS_GIT_BIN" -C "$1" rev-parse --abbrev-ref HEAD 2>/dev/null) || return 1
+	[ -n "$_wt_br" ] && [ "$_wt_br" != 'HEAD' ] || return 1
+
+	CCS_WT_MAIN=$_wt_main
+	CCS_WT_BRANCH=$_wt_br
+	return 0
+}
+
 # ghq 配下で <basename> が複数あるかを見る。
 # 衝突していれば slug に owner を足す（design.md §4.2）。
 repo_basename_is_ambiguous() {
@@ -423,6 +476,21 @@ repo_basename_is_ambiguous() {
 slug_for_path() {
 	_path=$1
 	_base=$(basename "$_path")
+
+	# **linked worktree は `<repo>@<branch>` と名乗る**（ADR-0003 決定 3）。
+	#
+	# これが無いと、同じディレクトリが打ち方で 2 つの slug に割れる ──
+	# `ccs new <worktree の実パス>` は末尾要素を、`ccs new <repo>@<branch>` は
+	# `<repo>@<branch>` を返し、**1 つの作業ツリーに 2 本の claude が立つ**。
+	# 冪等性 (S5、design.md §4.3) の穴。
+	#
+	# 本体の slug を出す再帰はコマンド置換（＝サブシェル）なので、
+	# CCS_WT_* を踏まない。本体は linked ではないので 1 段で止まる。
+	if path_is_linked_worktree "$_path"; then
+		_wt_repo_slug=$(slug_for_path "$CCS_WT_MAIN")
+		printf '%s@%s\n' "$_wt_repo_slug" "$(branch_slug "$CCS_WT_BRANCH")"
+		return 0
+	fi
 
 	# 作業枠を実パスで指されたとき。末尾要素は `1` なので、そのままだと
 	# `cc/1` という無意味なセッションが立ち、`ccs new tmp` で立てたものと
@@ -531,9 +599,11 @@ worktree_split_branch() {
 # worktree の根を実在させ、絶対パスにして返す。
 #
 # **根だけは作る。** macOS の /tmp は /private/tmp への symlink なので、
-# 実在しないパスは正規化できず、前方一致（`path_is_ccs_worktree`）と
-# trust に書くキーが噛み合わなくなる（design.md §6 の ghq root で
-# 一度踏んだのと同じ形）。根は空ディレクトリなので作っても害が無い。
+# 実在しないパスは正規化できず、trust に書くキーが噛み合わなくなる
+# （design.md §6 の ghq root で一度踏んだのと同じ形）。根は空ディレクトリ
+# なので作っても害が無い。
+#
+# **この根は W2 で消える**（ADR-0003 決定 6）。置き場所はリポジトリ配下になる。
 worktree_root_abs() {
 	mkdir -p "$CCS_WORKTREE_ROOT" ||
 		die "$EX_FAIL" "worktree の置き場所を作れません: ${CCS_WORKTREE_ROOT}"
@@ -580,14 +650,16 @@ resolve_as_worktree() {
 
 	# **worktree の worktree は作らせない。** 入れ子にすると、どのブランチの
 	# どの作業ツリーなのかが slug から辿れなくなる。
-	case $_repo_path in
-	"$(worktree_root_abs)"/*)
+	#
+	# **判定は git に訊く**（ADR-0003 決定 3）。`CCS_WORKTREE_ROOT` の前方一致で
+	# 当てていた頃は、**その根の外に置かれた worktree を素通しした** ── 手で
+	# 切った worktree を指されると入れ子が通る。git は置き場所に依らず答える。
+	if path_is_linked_worktree "$_repo_path"; then
 		warn "ccs: それは既に worktree です: ${_repo_path}"
 		warn ''
-		warn "  元のリポジトリを指してください: ccs new <repo>@${_branch}"
+		warn "  元のリポジトリを指してください: ccs new $(basename "$CCS_WT_MAIN")@${_branch}"
 		exit "$EX_FAIL"
-		;;
-	esac
+	fi
 
 	CCS_RESOLVED_WORKTREE_REPO=$_repo_path
 	CCS_RESOLVED_WORKTREE_BRANCH=$_branch
@@ -895,22 +967,21 @@ path_is_scratch_slot() {
 	dir_is_empty "$1"
 }
 
-# ccs が作った worktree か。
+# ghq 配下のリポジトリの worktree か。
 #
 # **元のリポジトリが ghq 配下なら、その worktree も信頼してよい。**
 # そこにあるのは人が意図して clone したリポジトリの中身そのもので、
 # 信頼確認が守ろうとしている「知らないコード」ではない（design.md §4.4 の
 # ghq と同じ理由）。これが無いと、タスクごとに worktree を切る運用で
 # **毎回 30 秒の信頼確認に固まる**。
-path_is_ccs_worktree() {
-	_wt_root=$(abs_dir "$CCS_WORKTREE_ROOT" 2>/dev/null) || return 1
-	case $1 in
-	"${_wt_root}"/*) ;;
-	*) return 1 ;;
-	esac
-	# 元のリポジトリが分からないときは自動承認しない。
-	[ -n "$CCS_RESOLVED_WORKTREE_REPO" ] || return 1
-	path_is_under_ghq "$CCS_RESOLVED_WORKTREE_REPO"
+#
+# **素性は git から引く**（ADR-0003 決定 3）。以前は「`CCS_WORKTREE_ROOT` の
+# 配下」＋「解決のときに立てた変数」で当てていたので、**実パスで指されると
+# 判定できなかった**（ADR-0002 表 #9）── 同じディレクトリが、打ち方によって
+# 信頼されたりされなかったりしていた。
+path_is_ghq_worktree() {
+	path_is_linked_worktree "$1" || return 1
+	path_is_under_ghq "$CCS_WT_MAIN"
 }
 
 # hasTrustDialogAccepted を立てる。
@@ -973,7 +1044,7 @@ ensure_trust() {
 		return 0
 	fi
 
-	if path_is_ccs_worktree "$_p"; then
+	if path_is_ghq_worktree "$_p"; then
 		trust_accept "$_p"
 		warn "ccs: ghq 配下のリポジトリの worktree なので信頼済みにしました: ${_p}"
 		return 0
@@ -1948,6 +2019,16 @@ restore_candidates() {
 			[ -d "$_repo_dir" ] || continue
 			for _br_dir in "$_repo_dir"/*; do
 				[ -d "$_br_dir" ] || continue
+				# **ここは slug を git から引かない。**
+				# `slug_for_path` は ADR-0003 決定 3 で git のブランチを見るように
+				# なったが、ここでそれを使うと**動いているセッションを候補に出す**
+				# ── worktree の中でブランチを切り替えると、git の答え
+				# (`<repo>@<新ブランチ>`) と tmux にある名前 (`<repo>@<作った時の名>`)
+				# が食い違い、下の `tmux_session_exists` が外れる（実測）。
+				#
+				# **占有の判定を名前でやっていることが根本原因**で、ここを直すのは
+				# I1（照合を cwd へ。ADR-0002 決定 3）の仕事。それまでは、
+				# ccs が作ったときの名前＝ディレクトリ名で当てるほうが外れない。
 				_slug="$(basename "$_repo_dir")@$(basename "$_br_dir")"
 				tmux_session_exists "${CCS_PREFIX}${_slug}" && continue
 				_u=$(restore_latest_in "$(transcript_dir_for "$_br_dir")") || continue

@@ -204,3 +204,55 @@ teardown() {
 	[[ "$stderr" == *"worktree list"* ]] || return 1
 	[ -z "$output" ]
 }
+
+# --- 素性を git から引く（ADR-0003 決定 3、W1） -------------------------------
+
+@test "worktree: 実パスで指した worktree も自動で信頼する" {
+	# **以前はここが割れていた。** 信頼の判定が「解決のときに立てた変数」に
+	# 依存していたので、`<repo>@<branch>` と綴ったときだけ効き、同じ
+	# ディレクトリを実パスで指すと 30 秒の信頼確認に落ちていた
+	# （ADR-0002 表 #9）。
+	run --separate-stderr "$CCS_BIN" new 'x01@topic'
+	[ "$status" -eq 0 ]
+	local _p
+	_p=$(echo "$output" | jq -r '.path')
+	"$CCS_BIN" kill --force 'x01@topic'
+	# trust を消して、実パス経由でもう一度立てる
+	jq 'del(.projects)' "$CCS_TRUST_FILE" >"${CCS_TRUST_FILE}.new"
+	mv "${CCS_TRUST_FILE}.new" "$CCS_TRUST_FILE"
+
+	run --separate-stderr "$CCS_BIN" new "$_p"
+	[ "$status" -eq 0 ]
+	[[ "$stderr" != *"まだ信頼されていません"* ]] || return 1
+	run jq -r --arg p "$_p" '.projects[$p].hasTrustDialogAccepted' "$CCS_TRUST_FILE"
+	[ "$output" = 'true' ]
+}
+
+@test "worktree: ghq の外のリポジトリの worktree は実パスでも信頼しない" {
+	local _outside="${CCS_TEST_TMP}/outside/y02"
+	ccs_make_git_repo "$_outside"
+	local _wt="${CCS_TEST_TMP}/outside-wt"
+	git -C "$_outside" worktree add -q "$_wt" -b topic
+
+	run --separate-stderr "$CCS_BIN" new "$_wt"
+	[ "$status" -eq 0 ]
+	[[ "$stderr" == *"まだ信頼されていません"* ]] || return 1
+}
+
+@test "worktree: 実パスで立てても <repo>@<branch> のセッションになる" {
+	# 打ち方が違っても同じ slug に落ちること ＝ 2 本目が立たないこと。
+	run --separate-stderr "$CCS_BIN" new 'x01@topic'
+	[ "$status" -eq 0 ]
+	local _p
+	_p=$(echo "$output" | jq -r '.path')
+
+	# 同じ作業ツリーを実パスで頼む → 既存を返す（新規に立てない）
+	run --separate-stderr "$CCS_BIN" new "$_p"
+	[ "$status" -eq 0 ]
+	[ "$(echo "$output" | jq -r '.slug')" = 'x01@topic' ]
+	[ "$(echo "$output" | jq -r '.created')" = 'false' ]
+
+	# tmux に 1 本しか立っていないこと
+	run "$CCS_BIN" ls
+	[ "$(echo "$output" | grep -c 'x01@topic')" -eq 1 ]
+}
