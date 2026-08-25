@@ -26,8 +26,11 @@ lint:
 	$(SHELLCHECK) -s sh bin/ccs
 	@# テストとフィクスチャも検査する。スタブが壊れると、テストは
 	@# 「落ちる」のではなく「間違ったものを検証する」ので気づきにくい。
+	@# **`.py` は除く。** ここは「実行可能なフィクスチャ＝シェル」という前提で
+	@# 書かれていたが、pty を作るフィクスチャだけは sh では書けない
+	@# （scripts/termshot.py と同じ扱いにする）。
 	@if [ -d test/fixtures ]; then \
-		find test/fixtures -type f -perm -u+x -exec $(SHELLCHECK) -s sh {} +; \
+		find test/fixtures -type f -perm -u+x ! -name '*.py' -exec $(SHELLCHECK) -s sh {} +; \
 	fi
 	@# フックも検査する。**CI は main でしか回らない**ので、hooks/pre-push が
 	@# 唯一の関門になった。壊れたフックは「落ちない」＝素通しになるため、

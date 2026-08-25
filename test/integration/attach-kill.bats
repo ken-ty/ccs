@@ -97,7 +97,7 @@ _stub_tmux_recorder() {
 # ここだけ pty を用意して、本物の端末から選んだときの挙動を見る。
 
 _pick() {
-	run "${CCS_REPO_ROOT}/test/fixtures/pty-run" "$1" -- \
+	run "${CCS_REPO_ROOT}/test/fixtures/pty-run.py" "$1" -- \
 		env -u TMUX "$CCS_BIN" attach
 }
 
