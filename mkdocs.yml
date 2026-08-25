@@ -74,6 +74,7 @@ nav:
       - 設定: configuration.md
   - 設計:
       - 設計調査: design.md
+      - スマホから端末を触る: mobile-terminal.md
       - 参照資料: references.md
   - 決定記録 (ADR):
       - ADR とは: adr/README.md
