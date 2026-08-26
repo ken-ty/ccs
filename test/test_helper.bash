@@ -130,17 +130,31 @@ ccs_hide_dep() {
 #
 # **既定のソケットを使わない。** teardown の `kill-server` が、利用者が実際に
 # 開いている tmux セッションを巻き添えにする。テストがユーザーの作業を消すのは
-# 論外なので、テストごとに専用ソケット（`tmux -L <名前>`）を立てる。
+# 論外なので、テストごとに専用のサーバを立てる。
+#
+# **置き場所を tmux に決めさせない（`-L` ではなく `-S`）。** `-L <名前>` は
+# 共有の `/tmp/tmux-<uid>/` にソケットを作る ── **テストが作るもののうち、
+# ここだけがサンドボックスの外に出る**。しかも `kill-server` はソケット
+# ファイルを消さない（tmux 3.7b で実測）ので、1 テスト 1 個で積み上がる。
+# 実際に 3,950 個溜まっていた（2026-08-27 実測）。
+#
+# `-S <パス>` にしてサンドボックスの中に置けば、`ccs_teardown_sandbox` の
+# `rm -rf` が既に消してくれる。**後始末に特別扱いが要らなくなる**のが要点で、
+# ついでに共有ディレクトリを一切汚さなくなる ── 利用者の tmux とも、同時に
+# 走っている他セッションのテストとも干渉しない。
 
 ccs_use_own_tmux_server() {
-	CCS_TMUX_SOCKET="ccs-test-${BASHPID:-$$}-${RANDOM}"
+	# **サンドボックスの直下に置く。** Unix ドメインソケットのパスには
+	# 104 バイト程度の上限があり、macOS の $TMPDIR (/var/folders/…/T) は
+	# それだけで 48 バイト使う。深く掘ると足が出る（実測 75 バイト）。
+	CCS_TMUX_SOCKET="${CCS_TEST_TMP}/tmux.sock"
 	export CCS_TMUX_SOCKET
 
-	# ccs から見える tmux を「-L 付きの本物」に差し替える。
+	# ccs から見える tmux を「-S 付きの本物」に差し替える。
 	# 名前を tmux にしないのは、この中から本物の tmux を引くため。
 	{
 		echo '#!/bin/sh'
-		echo "exec tmux -L '${CCS_TMUX_SOCKET}' \"\$@\""
+		echo "exec tmux -S '${CCS_TMUX_SOCKET}' \"\$@\""
 	} >"${CCS_STUB_BIN}/tmux-own"
 	chmod +x "${CCS_STUB_BIN}/tmux-own"
 
@@ -149,12 +163,15 @@ ccs_use_own_tmux_server() {
 
 # テストから同じサーバを覗く。
 ccs_tmux() {
-	tmux -L "$CCS_TMUX_SOCKET" "$@"
+	tmux -S "$CCS_TMUX_SOCKET" "$@"
 }
 
+# **ソケットファイルは消さない。** サンドボックスの中にあるので
+# `ccs_teardown_sandbox` の `rm -rf` が持っていく。ここで消すのは
+# 「サーバというプロセス」だけ。
 ccs_kill_own_tmux_server() {
 	[ -n "${CCS_TMUX_SOCKET:-}" ] || return 0
-	tmux -L "$CCS_TMUX_SOCKET" kill-server 2>/dev/null || true
+	tmux -S "$CCS_TMUX_SOCKET" kill-server 2>/dev/null || true
 	return 0
 }
 
