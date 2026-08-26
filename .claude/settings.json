@@ -1,4 +1,5 @@
 {
+  "$comment": "承認レベル: steward — 判定の根拠と例外は AGENTS.md の「承認レベル」節が正本。ここはその機械可読な写し。public なので force push と履歴の書き換えは deny のまま。",
   "permissions": {
     "allow": [
       "Bash(git add:*)",
