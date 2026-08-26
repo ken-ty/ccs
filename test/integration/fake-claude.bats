@@ -14,11 +14,16 @@ load '../test_helper'
 
 setup() {
 	ccs_setup_sandbox
+	# **素の tmux を使わない。** 既定のソケットは利用者が実際に開いている
+	# サーバなので、テストが中断されるとそこにセッションが残る ── しかも
+	# `cc/` 接頭辞が無いので `ccs ls` にも出ず、誰も気づけない。
+	ccs_use_own_tmux_server
 	export CCS_FAKE_PID=''
 }
 
 teardown() {
 	ccs_stop_fake_claude
+	ccs_kill_own_tmux_server
 	ccs_teardown_sandbox
 }
 
@@ -212,15 +217,19 @@ teardown() {
 	# 本物がこれを書くので、ccs は自前でペインとの対応づけを持たなくてよい
 	# （design.md §2.1）。スタブがこれを再現しないと、S4 以降で
 	# 「本物なら埋まるのに、テストでは検証できない」ことになる。
-	_session="ccs-test-$$"
-	tmux new-session -d -s "$_session" -c "$CCS_TEST_TMP" \
+	# 名前を散らす必要は無い。専用サーバなので、同時に走っている
+	# 他セッションのテストとは衝突しようがない。
+	_session=fakeclaude
+	ccs_tmux new-session -d -s "$_session" -c "$CCS_TEST_TMP" \
 		"env CCS_SESSIONS_DIR='$CCS_SESSIONS_DIR' '$CCS_FAKE_CLAUDE' -n tmuxslug --session-id cccccccc-cccc-cccc-cccc-cccccccccccc"
 
 	ccs_wait_registry_count 1 10
 	_f=$(find "$CCS_SESSIONS_DIR" -name '*.json' -type f)
 
 	run jq -r '.tmux // ""' "$_f"
-	tmux kill-session -t "$_session" 2>/dev/null || true
+	# **畳み損ねても残らない。** teardown の ccs_kill_own_tmux_server が
+	# サーバごと落とすので、ここで落ちても後始末は付いてくる。
+	ccs_tmux kill-session -t "$_session" 2>/dev/null || true
 
 	[ -n "$output" ]
 	[[ "$output" == "${_session}:"* ]] || return 1
