@@ -55,7 +55,7 @@ _slot_path() {
 # 掴むかがマシン任せになる。
 _wipe_session() {
 	ccs_tmux kill-session -t "=cc/$1"
-	ccs_wait_until 5 bash -c "! tmux -L '$CCS_TMUX_SOCKET' has-session -t '=cc/$1' 2>/dev/null"
+	ccs_wait_until 5 bash -c "! tmux -S '$CCS_TMUX_SOCKET' has-session -t '=cc/$1' 2>/dev/null"
 	ccs_wait_until 5 bash -c "! grep -lq '\"tmux\":\"cc/$1:' '$CCS_SESSIONS_DIR'/*.json 2>/dev/null"
 }
 
