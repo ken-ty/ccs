@@ -8,7 +8,7 @@
 
 set -eu
 
-CCS_VERSION='0.0.1'
+CCS_VERSION='0.0.3'
 
 # ---------------------------------------------------------------------------
 # 出力
@@ -289,7 +289,7 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
                                           （slug を省くと番号で選ぶ）
   ccs kill [--force] <slug>               セッションを畳む
                                           （作業中は --force が要る）
-  ccs gc [--yes]                          止まったセッションと空の作業枠を掃除する
+  ccs gc [--yes]                          止まったセッション・空の作業枠・不要な worktree を掃除する
                                           （既定は見せるだけ。--yes で実行）
   ccs restore [--yes] [<slug>...]         止まった／消えたセッションを同じ会話で
                                           立て直す（既定は見せるだけ）
@@ -1753,6 +1753,15 @@ cmd_kill() {
 		printf '\n同じ会話に戻るには:\n  cd %s && claude --resume %s\n' \
 			"$(tilde_path "$_cwd")" "$_id"
 	fi
+
+	# **kill は worktree を消さない**（ADR-0003 決定 7、design.md §9.6）。
+	# そこに未コミットの作業が残っていることがあり、消す判断は人がする。
+	# 片付け先だけ 1 行案内する ── 畳んだ時点でこのパスを引ける最後の機会で、
+	# あとから探すには git の一覧を舐めることになる。
+	if [ -n "$_cwd" ] && path_is_linked_worktree "$_cwd"; then
+		printf '\nworktree は残しています: %s\n  片付ける: ccs gc\n' \
+			"$(tilde_path "$_cwd")"
+	fi
 }
 
 # status を引く。取れなければ空。
@@ -1778,7 +1787,9 @@ pane_or_registry_cwd() {
 # （`ghq rm --dry-run` と同じ作法）。ハブのエージェントが打つことを
 # 想定すると、確認なしで消える設計は割に合わない。
 #
-# 扱うのは 3 種類:
+# 扱うのは 2 系統:
+#
+# **作業枠（`~/.cc-scratch/<n>`）**
 #
 #   1. claude が終了した cc/ セッション  … 畳む（uuid を控えてから）
 #   2. 空のまま残った作業枠のディレクトリ … 消す（次に使うとき作り直される）
@@ -1786,6 +1797,27 @@ pane_or_registry_cwd() {
 #
 # 3 を消さないのは、そこにあるのが利用者のファイルだから。枠を塞いでいるのは
 # 事実だが、それは人が見て判断すること。
+#
+# **worktree（`<repo>/.worktrees/<branch-slug>`）**（W3、ADR-0003 決定 7）
+#
+#   A 消す候補         … clean + merge 済み + push 済み
+#   B 未 merge / 未 push … **報告だけ**
+#   C dirty            … **報告だけ**（追跡外ファイルを含む）
+#   D prunable         … ディレクトリだけ消えている。`git worktree prune`
+#
+# **`git worktree remove` と `git branch -d` を素で使うことが安全性の本体。**
+# 実測（2026-08-26）:
+#
+#   - `worktree remove` は追跡外ファイルだけでも拒む
+#   - clean なら未 merge のコミットがあっても消す。**ただしブランチ ref は
+#     残るのでコミットは失われない**
+#   - `branch -d` は未 merge を拒む。**コミットを守るのはこの層**
+#   - ブランチが worktree で開かれている間は `branch -d` が拒む。だから
+#     `remove` → `branch -d` の順序は必然
+#
+# この 2 つを force 無しで直列に通す限り、「未 push かつ未マージ」は自動では
+# 消えない。**`--force` / `-D` に切り替えるところが人に聞く境界になる**
+# （グローバル AGENTS.md）。ccs はその境界を越えない。
 # ---------------------------------------------------------------------------
 
 # tmux セッションが立っていない作業枠を、空かどうかで分けて出す。
@@ -1804,6 +1836,176 @@ orphan_slots() {
 			fi
 		fi
 		_i=$((_i + 1))
+	done
+}
+
+# 生きている claude の cwd を 1 行 1 つ出す。
+#
+# **レジストリを直接舐める。slug を経由しない**（ADR-0002 決定 1・3）。
+# `live_cwd_for <slug>` は `"tmux":"cc/<slug>:"` で引き当てる形なので、
+# **Remote Control で改名されたセッションが「居ない」ことになる**
+# （バックログ I1 の穴。実測でこの経路を踏んだ）。作業枠なら次に使うとき
+# 作り直されるだけだが、**worktree は人のブランチごと消えかねない**ので、
+# ここだけは先に名前への依存を切る。
+#
+# **ccs 以外の claude も数える。** レジストリにはデスクトップアプリや
+# VS Code のセッションも並ぶ。誰が立てたものであれ、そこで生きているなら
+# その作業ツリーは掃除の対象ではない。
+gc_live_cwds() {
+	for _f in "$CCS_SESSIONS_DIR"/*.json; do
+		[ -e "$_f" ] || continue
+		registry_is_live "$_f" || continue
+		_c=$(registry_field "$_f" cwd) || _c=''
+		[ -n "$_c" ] || continue
+		abs_dir "$_c" 2>/dev/null || printf '%s\n' "$_c"
+	done
+}
+
+# そのパス（かその下）に、生きているセッションが居るか。
+#
+# 前方一致で見る。ペインの cwd は worktree の中のサブディレクトリに
+# 降りていることがある。
+gc_path_in_use() {
+	printf '%s\n' "$2" | (
+		while IFS= read -r _u; do
+			[ -n "$_u" ] || continue
+			case $_u in
+			"$1" | "$1"/*) exit 0 ;;
+			esac
+		done
+		exit 1
+	)
+}
+
+# そのブランチが本体の HEAD に merge 済みか。
+#
+# **`git branch -d` と同じ物差しで測る。** あちらは「HEAD に merge 済みか」で
+# 判断するので、予測に別の基準を使うと、消す候補に出したものが実行時に拒まれる。
+gc_branch_is_merged() {
+	_m=$("$CCS_GIT_BIN" -C "$1" branch --merged HEAD --list "$2" \
+		--format='%(refname:short)' 2>/dev/null) || return 1
+	[ -n "$_m" ]
+}
+
+# ccs が作った worktree を列挙して分類する。
+#   <kind><TAB><repo><TAB><path><TAB><branch><TAB><note>
+#
+# kind は removable / keep / dirty / prunable。稼働中のものは出さない
+# （既存の gc が「生きているセッションだけなら何もしない」のと同じ扱い）。
+#
+# **ディレクトリを走査しない。git に一覧を訊く**（ADR-0003 決定 3）。
+# `prunable` はディレクトリごと消えている状態なので、glob では原理的に
+# 拾えない ── `git worktree list --porcelain` だけが知っている。
+#
+# **`<repo>/.worktrees/` 配下だけを対象にする。** 人が手で切った worktree は
+# ccs の場所ではない。
+#
+# **安い門番として `.git/worktrees` の有無を先に見る。** これは git 自身の
+# 台帳で、登録が 1 件も無ければ存在しない。`ghq list` は数百件になりうるので、
+# 大多数を git を起こさずに落とせることが効く。
+gc_worktrees() {
+	have "$CCS_GIT_BIN" || return 0
+	have "$CCS_GHQ_BIN" || return 0
+
+	_live=$1
+
+	"$CCS_GHQ_BIN" list -p 2>/dev/null | while IFS= read -r _repo; do
+		[ -n "$_repo" ] || continue
+		_rp=$(abs_dir "$_repo" 2>/dev/null) || continue
+		[ -d "${_rp}/.git/worktrees" ] || continue
+		_wt_dir="${_rp}/${CCS_WORKTREE_DIR}"
+
+		"$CCS_GIT_BIN" -C "$_rp" worktree list --porcelain 2>/dev/null | awk '
+			function flush() {
+				if (p != "") printf "%s\t%s\t%s\t%s\n", p, b, pr, lk
+				p = ""; b = ""; pr = 0; lk = 0
+			}
+			/^worktree /  { flush(); p = substr($0, 10); next }
+			/^branch /    { b = substr($0, 8); sub(/^refs\/heads\//, "", b); next }
+			/^prunable/   { pr = 1; next }
+			/^locked/     { lk = 1; next }
+			END { flush() }
+		' | while IFS="$(printf '\t')" read -r _p _br _prunable _locked; do
+			[ -n "$_p" ] || continue
+			# 本体と、ccs の場所の外にあるものを落とす。
+			case $_p in
+			"$_wt_dir"/*) ;;
+			*) continue ;;
+			esac
+
+			# D. ディレクトリだけ消えている。ほかは測りようが無いので先に見る。
+			if [ "$_prunable" = 1 ]; then
+				printf 'prunable\t%s\t%s\t%s\t%s\n' \
+					"$_rp" "$_p" "${_br:--}" 'ディレクトリが無い'
+				continue
+			fi
+
+			[ -d "$_p" ] || continue
+
+			# 稼働中は掃除の対象ではない。**報告もしない。**
+			if gc_path_in_use "$_p" "$_live"; then
+				continue
+			fi
+
+			# 分離 HEAD は枝を名乗れないので、素性として扱わない
+			# （`path_is_linked_worktree` と同じ判断）。消さずに報告する。
+			if [ -z "$_br" ]; then
+				printf 'keep\t%s\t%s\t%s\t%s\n' "$_rp" "$_p" '-' '分離 HEAD'
+				continue
+			fi
+
+			# lock されているものは `worktree remove` が拒む。
+			if [ "$_locked" = 1 ]; then
+				printf 'keep\t%s\t%s\t%s\t%s\n' "$_rp" "$_p" "$_br" 'locked'
+				continue
+			fi
+
+			# C. dirty。**merge 判定より先に見る** ── そもそも
+			# `worktree remove` が拒むので、merge 済みかどうかは関係が無い。
+			# 追跡外ファイルも dirty に数える（`status --porcelain` の既定）。
+			_st=$("$CCS_GIT_BIN" -C "$_p" status --porcelain 2>/dev/null) || _st=''
+			if [ -n "$_st" ]; then
+				_n=$(printf '%s\n' "$_st" | grep -c '^' | tr -d ' ')
+				printf 'dirty\t%s\t%s\t%s\t%s\n' \
+					"$_rp" "$_p" "$_br" "変更 ${_n}"
+				continue
+			fi
+
+			# push 済みか。**上流が無ければ「未 push」に倒す**
+			# （ADR-0003 決定 7）。git は上流が無いと fatal で落ちるので、
+			# 空文字と 0 を区別する必要がある。
+			_ahead=''
+			if _out=$("$CCS_GIT_BIN" -C "$_p" rev-list --count '@{u}..HEAD' 2>/dev/null); then
+				_ahead=$_out
+			fi
+
+			_merged=''
+			gc_branch_is_merged "$_rp" "$_br" && _merged=1
+
+			# A. clean + merge 済み + push 済み。
+			if [ -n "$_merged" ] && [ "$_ahead" = 0 ]; then
+				printf 'removable\t%s\t%s\t%s\t%s\n' \
+					"$_rp" "$_p" "$_br" 'merge 済み・push 済み'
+				continue
+			fi
+
+			# B. それ以外は報告だけ。
+			if [ -z "$_ahead" ]; then
+				_note='上流なし'
+			elif [ "$_ahead" != 0 ]; then
+				_note="未 push ${_ahead}"
+			else
+				_note=''
+			fi
+			if [ -z "$_merged" ]; then
+				if [ -n "$_note" ]; then
+					_note="未 merge・${_note}"
+				else
+					_note='未 merge'
+				fi
+			fi
+			printf 'keep\t%s\t%s\t%s\t%s\n' "$_rp" "$_p" "$_br" "$_note"
+		done
 	done
 }
 
@@ -1845,9 +2047,26 @@ cmd_gc() {
 	_empty_slots=$(printf '%s\n' "$_slots" | sed -n 's/^empty\t//p')
 	_used_slots=$(printf '%s\n' "$_slots" | sed -n 's/^used\t//p')
 
+	# A〜D. worktree
+	#
+	# **ループの中で変数を溜めるとサブシェルの外に出てこない**ので、
+	# 一覧をまとめて受け取ってから分ける（`restore` と同じ形）。
+	_wts=$(gc_worktrees "$(gc_live_cwds)")
+	_wt_removable=$(printf '%s\n' "$_wts" | sed -n 's/^removable\t//p')
+	_wt_keep=$(printf '%s\n' "$_wts" | sed -n 's/^keep\t//p')
+	_wt_dirty=$(printf '%s\n' "$_wts" | sed -n 's/^dirty\t//p')
+	_wt_prunable=$(printf '%s\n' "$_wts" | sed -n 's/^prunable\t//p')
+
 	_found=''
 	[ -n "$_stopped" ] && _found=1
 	[ -n "$_empty_slots" ] && _found=1
+	[ -n "$_wt_removable" ] && _found=1
+	[ -n "$_wt_prunable" ] && _found=1
+
+	_reported=''
+	[ -n "$_used_slots" ] && _reported=1
+	[ -n "$_wt_keep" ] && _reported=1
+	[ -n "$_wt_dirty" ] && _reported=1
 
 	# --- 報告 ---
 
@@ -1875,6 +2094,18 @@ cmd_gc() {
 		printf '\n'
 	fi
 
+	if [ -n "$_wt_removable" ]; then
+		printf '不要になった worktree（消す対象）:\n'
+		gc_print_worktrees "$_wt_removable"
+		printf '\n'
+	fi
+
+	if [ -n "$_wt_prunable" ]; then
+		printf 'ディレクトリだけ消えた worktree（登録を整理する対象）:\n'
+		gc_print_worktrees "$_wt_prunable"
+		printf '\n'
+	fi
+
 	# **中身のある枠は消さない。** 枠を塞いでいるのは事実だが、
 	# そこにあるのは利用者のファイル。見て判断するのは人。
 	if [ -n "$_used_slots" ]; then
@@ -1886,8 +2117,22 @@ cmd_gc() {
 		printf '\n'
 	fi
 
+	# **未 merge / 未 push と dirty は報告だけ。** ここを消すには
+	# `--force` / `-D` が要り、そこが人に聞く境界（ADR-0003 決定 7）。
+	if [ -n "$_wt_keep" ]; then
+		printf '未 merge / 未 push の worktree（ccs は消しません）:\n'
+		gc_print_worktrees "$_wt_keep"
+		printf '\n'
+	fi
+
+	if [ -n "$_wt_dirty" ]; then
+		printf '変更が残っている worktree（ccs は消しません。中を見て判断してください）:\n'
+		gc_print_worktrees "$_wt_dirty"
+		printf '\n'
+	fi
+
 	if [ -z "$_found" ]; then
-		if [ -z "$_used_slots" ]; then
+		if [ -z "$_reported" ]; then
 			printf '掃除するものはありません。\n'
 		fi
 		return 0
@@ -1899,6 +2144,9 @@ cmd_gc() {
 	fi
 
 	# --- 実行 ---
+	#
+	# **順序に意味がある。** 止まったセッションを先に畳むので、その
+	# ペインが worktree に居たまま worktree を消すことにならない。
 
 	printf '%s' "$_stopped" | while IFS="$(printf '\t')" read -r _s _u; do
 		[ -n "$_s" ] || continue
@@ -1917,6 +2165,61 @@ cmd_gc() {
 			printf '消しました: %s\n' "$(tilde_path "$_p")"
 		else
 			warn "ccs: 消せませんでした（空ではない可能性）: ${_p}"
+		fi
+	done
+
+	# **`remove` → `branch -d` を素で直列に通す。** force に切り替えない。
+	# どちらかが拒んだら、それは消してはいけないということ。
+	printf '%s\n' "$_wt_removable" | while IFS="$(printf '\t')" read -r _rp _p _br _note; do
+		[ -n "$_p" ] || continue
+		if "$CCS_GIT_BIN" -C "$_rp" worktree remove "$_p" >/dev/null 2>&1; then
+			printf '消しました: %s\n' "$(tilde_path "$_p")"
+		else
+			warn "ccs: worktree を消せませんでした: $(tilde_path "$_p")"
+			warn "  ${CCS_GIT_BIN} -C $(shq "$_rp") worktree remove $(shq "$_p")"
+			continue
+		fi
+		if "$CCS_GIT_BIN" -C "$_rp" branch -d "$_br" >/dev/null 2>&1; then
+			printf '消しました: ブランチ %s\n' "$_br"
+		else
+			# **ここで -D に切り替えない。** git が拒んだということは
+			# 消してはいけない理由があるということ。理由を断定せず、
+			# 人が自分で見られる形にして渡す。
+			warn "ccs: ブランチは残しました: ${_br}"
+			warn "  理由を見る: ${CCS_GIT_BIN} -C $(shq "$_rp") branch -d $(shq "$_br")"
+			warn "  中身を見る: ${CCS_GIT_BIN} -C $(shq "$_rp") log --oneline HEAD..$(shq "$_br")"
+		fi
+		# 空になったら `.worktrees/` 自体も畳む。rmdir なので、
+		# ほかの worktree が残っていれば失敗して何もしない。
+		rmdir "${_rp}/${CCS_WORKTREE_DIR}" 2>/dev/null || true
+	done
+
+	# **prune はリポジトリ単位。** `git worktree prune` に範囲を絞る手段は
+	# 無いので、報告は `.worktrees/` 配下だけでも、実行はそのリポジトリの
+	# 登録すべてに及ぶ。**それでも安全なのは、prune が落とすのが
+	# 「ディレクトリが既に消えている登録」だけ**だから ── 生きている
+	# worktree にもコミットにも触らない（git 自身の gc も同じことをする）。
+	# 同じリポジトリで 2 度打たない。
+	printf '%s\n' "$_wt_prunable" | awk -F'\t' 'NF > 1 && !seen[$1]++ { print $1 }' |
+		while IFS= read -r _rp; do
+			[ -n "$_rp" ] || continue
+			if "$CCS_GIT_BIN" -C "$_rp" worktree prune >/dev/null 2>&1; then
+				printf '登録を整理しました: %s\n' "$(tilde_path "$_rp")"
+			else
+				warn "ccs: 登録を整理できませんでした: $(tilde_path "$_rp")"
+			fi
+			rmdir "${_rp}/${CCS_WORKTREE_DIR}" 2>/dev/null || true
+		done
+}
+
+# worktree の一覧を人が読む形で出す。入力は kind を落とした行。
+gc_print_worktrees() {
+	printf '%s\n' "$1" | while IFS="$(printf '\t')" read -r _rp _p _br _note; do
+		[ -n "$_p" ] || continue
+		if [ -n "$_note" ]; then
+			printf '  %-24s %s（%s）\n' "$_br" "$(tilde_path "$_p")" "$_note"
+		else
+			printf '  %-24s %s\n' "$_br" "$(tilde_path "$_p")"
 		fi
 	done
 }

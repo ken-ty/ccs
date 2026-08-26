@@ -51,7 +51,7 @@ ccs new --tmp [-- <初期プロンプト>]      # 使い捨ての作業枠（"tm
 ccs ls [--json]                          # cc/ 接頭辞のセッションだけを整形して出す
 ccs attach [<slug>]                      # 人間が乗り込む（slug を省くと番号で選ぶ）
 ccs kill <slug>                          # ペインごと畳む
-ccs gc                                   # 死んだペイン・空の一時ディレクトリを掃除
+ccs gc                                   # 死んだペイン・空の一時ディレクトリ・不要な worktree を掃除
 ccs restore [--yes] [<slug>...]          # 止まった／消えたセッションを同じ会話で立て直す
 
 ccs hub up                               # ハブを立てる（生きていれば何もしない）

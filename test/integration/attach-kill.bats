@@ -309,3 +309,45 @@ _pick() {
 	[ "$status" -eq 0 ]
 	[ "$(echo "$output" | jq -r '.slug')" = 'tmp-1' ]
 }
+
+# --- kill は worktree を消さない（W3、ADR-0003 決定 7）----------------------
+
+@test "kill: worktree のセッションは片付け先を案内する" {
+	# **畳んだ時点がこのパスを引ける最後の機会。** あとから探すには
+	# git の一覧を舐めることになるので、その場で 1 行出す。
+	local _repo="${CCS_TEST_TMP}/ghq/github.com/o/x01"
+	ccs_make_git_repo "$_repo"
+	ccs_stub_ghq "$_repo"
+
+	run --separate-stderr "$CCS_BIN" new 'x01@topic'
+	[ "$status" -eq 0 ]
+
+	run "$CCS_BIN" kill 'x01@topic'
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"worktree は残しています"* ]] || return 1
+	[[ "$output" == *"ccs gc"* ]] || return 1
+}
+
+@test "kill: worktree は実際に残る" {
+	local _repo="${CCS_TEST_TMP}/ghq/github.com/o/x01"
+	ccs_make_git_repo "$_repo"
+	ccs_stub_ghq "$_repo"
+
+	run --separate-stderr "$CCS_BIN" new 'x01@topic'
+	local _p
+	_p=$(echo "$output" | jq -r '.path')
+
+	run "$CCS_BIN" kill 'x01@topic'
+	[ "$status" -eq 0 ]
+	[ -d "$_p" ]
+	run git -C "$_repo" branch --list topic
+	[[ "$output" == *"topic"* ]] || return 1
+}
+
+@test "kill: worktree でないセッションには案内を出さない" {
+	_new plain >/dev/null
+
+	run "$CCS_BIN" kill plain
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"worktree は残しています"* ]] || return 1
+}
