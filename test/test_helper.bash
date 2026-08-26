@@ -30,10 +30,66 @@ ccs_setup_sandbox() {
 	# リポジトリはサンドボックスの中にあり、worktree もそこに落ちる。
 	mkdir -p "$CCS_SESSIONS_DIR" "$CCS_SCRATCH_ROOT" "$CCS_PROJECTS_DIR"
 
+	# **本物の tmux の場所を、PATH を汚す前に控える。**
+	# この下で PATH の先頭にスタブを差し込むので、あとから `tmux` を引くと
+	# テストが置いたスタブに当たりうる。後始末（`kill-server`）がスタブに
+	# 当たると「畳んだつもりで畳めていない」になり、サーバが残る。
+	CCS_REAL_TMUX="$(command -v tmux 2>/dev/null || echo tmux)"
+	export CCS_REAL_TMUX
+
 	# スタブを置く場所。PATH の先頭に差し込む。
 	export CCS_STUB_BIN="${CCS_TEST_TMP}/stub-bin"
 	mkdir -p "$CCS_STUB_BIN"
 	export PATH="${CCS_STUB_BIN}:${PATH}"
+
+	ccs_watch_sandbox
+}
+
+# --- 見張り ----------------------------------------------------------------
+#
+# **bats の teardown は、呼ばれないことがある。** 実測（bats 1.14.0 / macOS）:
+#
+#   | 止め方 | teardown | tmux サーバ |
+#   | --- | --- | --- |
+#   | 正常終了 | 走る | 畳まれる |
+#   | SIGTERM / SIGHUP | 走る | 畳まれる |
+#   | **SIGINT（Ctrl-C）** | **走らない** | **残る** |
+#   | **SIGKILL** | 走れない | **残る** |
+#
+# tmux サーバは端末から切り離された常駐プロセスなので、bats を殺しても、端末を
+# 閉じても死なない。しかも別ソケットなので `ccs ls` にも `ccs gc` にも出てこない
+# ── 誰も気づけない。2026-08-26 に、丸 1 日生き残った `cc/hub` 入りのサーバが
+# 実際に見つかった（`make check` は 6 分かかるので、Ctrl-C の機会は十分ある）。
+#
+# **teardown に頼らない後始末を、外のプロセスに持たせる。** 見張りは
+# プロセスの生死しか見ないので、teardown が呼ばれようが呼ばれまいが同じように効く。
+#
+# ccs_watch_sandbox [持ち主の pid] [サンドボックス]
+#   既定はこのテスト自身と `$CCS_TEST_TMP`。引数を取るのはテストのため
+#   （自分自身は殺せないので、見張りの動作を確かめられない）。
+ccs_watch_sandbox() {
+	local _owner=${1:-${BASHPID:-$$}}
+	local _dir=${2:-$CCS_TEST_TMP}
+	local _tmux=${CCS_REAL_TMUX:-tmux}
+
+	[ -n "$_dir" ] || return 0
+
+	# - `trap '' INT HUP TERM` … Ctrl-C は**プロセスグループ全体**に届く。
+	#   見張り自身が巻き添えで死んだら意味が無い。
+	# - `</dev/null >/dev/null 2>&1 3>&-` … **bats は fd 3 で結果を集める**。
+	#   バックグラウンドのプロセスが握ったままだと、bats が終われずに固まる。
+	# - **サーバを先に畳む。** ディレクトリを消してもプロセスは死なない
+	#   （それがまさに 1 日生き残った理由）。
+	(
+		trap '' INT HUP TERM
+		while kill -0 "$_owner" 2>/dev/null; do sleep 1; done
+		if [ -S "${_dir}/tmux.sock" ]; then
+			"$_tmux" -S "${_dir}/tmux.sock" kill-server 2>/dev/null || true
+		fi
+		rm -rf "$_dir"
+	) </dev/null >/dev/null 2>&1 3>&- &
+
+	disown 2>/dev/null || true
 }
 
 ccs_teardown_sandbox() {
@@ -163,7 +219,7 @@ ccs_use_own_tmux_server() {
 
 # テストから同じサーバを覗く。
 ccs_tmux() {
-	tmux -S "$CCS_TMUX_SOCKET" "$@"
+	"${CCS_REAL_TMUX:-tmux}" -S "$CCS_TMUX_SOCKET" "$@"
 }
 
 # **ソケットファイルは消さない。** サンドボックスの中にあるので
@@ -171,7 +227,10 @@ ccs_tmux() {
 # 「サーバというプロセス」だけ。
 ccs_kill_own_tmux_server() {
 	[ -n "${CCS_TMUX_SOCKET:-}" ] || return 0
-	tmux -S "$CCS_TMUX_SOCKET" kill-server 2>/dev/null || true
+	# **本物の tmux を名指しで呼ぶ。** PATH の先頭はスタブ置き場なので、
+	# `tmux` という名前のスタブ（`ccs_stub_deps` が置く）があると、
+	# 畳んだつもりで畳めていない。
+	"${CCS_REAL_TMUX:-tmux}" -S "$CCS_TMUX_SOCKET" kill-server 2>/dev/null || true
 	return 0
 }
 
