@@ -1,0 +1,109 @@
+#!/usr/bin/env sh
+#
+# 前回の実行が取り残したテストのサンドボックスを回収する。
+#
+# ## なぜ要るか
+#
+# 統合テストはテストごとに専用の tmux サーバを立て、サンドボックスの中に
+# ソケットを置く（`test/test_helper.bash`）。後始末は 2 段で守られている:
+#
+#   1. `teardown` の `ccs_kill_own_tmux_server` + `ccs_teardown_sandbox`
+#   2. 見張り（`ccs_watch_sandbox`）── teardown が呼ばれない中断でも効く
+#
+# **プロセスグループごと SIGKILL されると、2 も一緒に死ぬ。** そこだけは
+# 塞げないので、「次に走らせたときに前回の取り残しを拾う」を最後の網にする。
+#
+# 拾い損ねると、tmux サーバは端末から切り離された常駐プロセスなので**永久に
+# 残る**。専用ソケットなので `ccs ls` にも `ccs gc` にも出てこない ── 誰も
+# 気づけない。2026-08-26 に丸 1 日生き残った実例がある。
+#
+# ## 何を消して、何を消さないか
+#
+#   | tmux サーバ | 持ち主 | どうするか                                |
+#   | ----------- | ------ | ----------------------------------------- |
+#   | 居る        | 居る   | **触らない** ── いま走っているテストのもの |
+#   | 居る        | 居ない | 畳んでサンドボックスごと消す              |
+#   | 居ない      | 居ない | サンドボックスだけ消す                    |
+#
+# 持ち主はサンドボックスの `owner.pid`。**同じマシンで複数のセッションが同時に
+# テストを回すのは日常**（グローバル AGENTS.md）なので、1 行目を踏むと他人の
+# テストを壊す。そこだけは絶対に間違えないようにしてある。
+#
+# pid は使い回されるので「死んでいるのに生きて見える」ことはあるが、その場合は
+# 見送られて次回に回るだけ。**逆（生きているのに死んで見える）は起きない**ので、
+# 他人のテストを巻き込む方向には倒れない。
+#
+# ## bats-run-* は拾わない
+#
+# bats 自身が `$BATS_TMPDIR` に作るもので、**持ち主を判別する手掛かりが無い。**
+# 同時に走っている実行のものを消すと、そちらが壊れる。中身は数 KB で、
+# macOS は `$TMPDIR` を数日で自動的に掃除するため、放置しても増え続けない
+# ── **プロセスが残る tmux サーバとは性質が違う**。
+#
+# 使い方:
+#   test/reap-tmux            片付けた結果を出す
+#   test/reap-tmux --quiet    何か片付けたときだけ出す（setup_suite から呼ぶ用）
+set -eu
+
+quiet=''
+case "${1:-}" in
+--quiet) quiet=1 ;;
+'') ;;
+*)
+	echo "usage: $0 [--quiet]" >&2
+	exit 2
+	;;
+esac
+
+dir="${BATS_TMPDIR:-${TMPDIR:-/tmp}}"
+[ -d "$dir" ] || exit 0
+
+killed=0
+removed=0
+skipped=0
+
+for sandbox in "$dir"/ccs-test.*; do
+	[ -d "$sandbox" ] || continue
+
+	owner=''
+	if [ -f "${sandbox}/owner.pid" ]; then
+		owner=$(cat "${sandbox}/owner.pid" 2>/dev/null || true)
+		case $owner in
+		'' | *[!0-9]*) owner='' ;;
+		esac
+	fi
+
+	if [ -n "$owner" ]; then
+		if kill -0 "$owner" 2>/dev/null; then
+			skipped=$((skipped + 1))
+			continue
+		fi
+	else
+		# **素性が分からないものは、十分に古いときだけ触る。** `owner.pid` を
+		# 書く前に見に来た（数マイクロ秒の隙）か、この仕組みより前に作られた
+		# 残骸か、判別できない。前者を消すと走っているテストを壊すので、
+		# どんなテストより長い 60 分を待つ。
+		if [ -z "$(find "$sandbox" -maxdepth 0 -mmin +60 2>/dev/null)" ]; then
+			skipped=$((skipped + 1))
+			continue
+		fi
+	fi
+
+	# **サーバを先に畳む。** ディレクトリを消してもプロセスは死なない
+	# ── それがまさに 1 日生き残った理由。
+	if [ -S "${sandbox}/tmux.sock" ] && command -v tmux >/dev/null 2>&1; then
+		if tmux -S "${sandbox}/tmux.sock" kill-server 2>/dev/null; then
+			killed=$((killed + 1))
+		fi
+	fi
+
+	rm -rf "$sandbox"
+	removed=$((removed + 1))
+done
+
+if [ -n "$quiet" ] && [ "$killed" = 0 ] && [ "$removed" = 0 ]; then
+	exit 0
+fi
+
+printf 'reap-tmux: 畳んだサーバ %s / 消したサンドボックス %s / 走行中で見送り %s\n' \
+	"$killed" "$removed" "$skipped"

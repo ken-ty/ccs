@@ -17,6 +17,7 @@ help:
 	@echo 'make unit   unit テストだけ走らせる（外部プロセスを起動しない）'
 	@echo 'make test   全テスト（unit + integration）'
 	@echo 'make check  lint + test'
+	@echo 'make reap   前回の実行が取り残したテストのサンドボックスを回収する'
 	@echo 'make docs   ドキュメントをローカルで配信する'
 	@echo
 	@echo 'make setup-hooks  git のフックを張る（clone したら 1 度。worktree では不要）'
@@ -38,6 +39,9 @@ lint:
 	@if [ -d hooks ]; then \
 		find hooks -type f -perm -u+x -exec $(SHELLCHECK) -s sh {} +; \
 	fi
+	@# テストの後片付けも検査する。**壊れても誰も気づかない**種類のもの
+	@# （黙って何も片付けなくなるだけ）なので、静的に見る。
+	$(SHELLCHECK) -s sh test/reap-tmux
 	@# **素の [[ ]] を禁じる。** macOS 標準の bash 3.2 では、テストの途中に
 	@# 置いた [[ ]] は失敗しても errexit で落ちない（実測: false / [ ] / 関数の
 	@# 戻り値はどれも落ちるのに、[[ ]] だけ素通りする。bash 4 で直っている）。
@@ -86,6 +90,16 @@ integration:
 
 .PHONY: test
 test: unit integration
+
+# 前回の実行が取り残したテストのサンドボックスを回収する。
+#
+# **プロセスグループごと殺してテストを止めたら、これを打つ。** そこまでいくと
+# 見張り（test_helper.bash の ccs_watch_sandbox）も一緒に死ぬので、tmux サーバが
+# そのまま残る ── 端末を閉じても死なない。`make integration` の頭でも自動で
+# 走るが、次に走らせるまで残るのは気持ちが悪い。
+.PHONY: reap
+reap:
+	test/reap-tmux
 
 .PHONY: check
 check: lint test

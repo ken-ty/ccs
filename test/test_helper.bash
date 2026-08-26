@@ -18,6 +18,12 @@ ccs_setup_sandbox() {
 	CCS_TEST_TMP="$(mktemp -d "${BATS_TMPDIR:-/tmp}/ccs-test.XXXXXX")"
 	export CCS_TEST_TMP
 
+	# **素性を書き置く。** 見張り（下）ごと SIGKILL されると、サンドボックスも
+	# tmux サーバも残る。次に走らせたときに `test/reap-tmux` がこれを読んで
+	# 「持ち主はもう居ない ＝ 取り残し」と判定する。**生きているテストのものに
+	# 触らない**ための唯一の手掛かりなので、真っ先に書く。
+	printf '%s\n' "${BASHPID:-$$}" >"${CCS_TEST_TMP}/owner.pid"
+
 	export HOME="${CCS_TEST_TMP}/home"
 	mkdir -p "$HOME"
 
