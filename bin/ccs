@@ -64,6 +64,7 @@ CCS_TMUX_BIN
 CCS_GHQ_BIN
 CCS_GIT_BIN
 CCS_JQ_BIN
+CCS_PS_BIN
 CCS_SESSIONS_DIR
 CCS_TRUST_FILE
 CCS_SCRATCH_ROOT
@@ -169,6 +170,7 @@ load_config
 : "${CCS_GHQ_BIN:=ghq}"
 : "${CCS_GIT_BIN:=git}"
 : "${CCS_JQ_BIN:=jq}"
+: "${CCS_PS_BIN:=ps}"
 : "${CCS_SESSIONS_DIR:=${HOME}/.claude/sessions}"
 : "${CCS_TRUST_FILE:=${HOME}/.claude.json}"
 : "${CCS_SCRATCH_ROOT:=${HOME}/.cc-scratch}"
@@ -285,6 +287,7 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
   ccs new <repo>@<branch> [-- ...]        worktree を切ってそこに立てる
   ccs new --tmp [-- <初期プロンプト>]     使い捨ての作業枠に立てる
   ccs ls [--json]                         ccs のセッションを一覧する
+  ccs ls -l [--json]                      盤面（直近の依頼 / RSS / 最終更新）も出す
   ccs attach [<slug>]                     セッションに乗り込む
                                           （slug を省くと番号で選ぶ）
   ccs kill [--force] <slug>               セッションを畳む
@@ -1441,6 +1444,12 @@ registry_field() {
 	sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p" "$1"
 }
 
+# レジストリの数値フィールド（`"pid":14060` のように引用符が付かない値）。
+# `registry_field` は文字列専用なので pid は引けない。
+registry_num_field() {
+	sed -n "s/.*\"$2\":\([0-9][0-9]*\).*/\1/p" "$1"
+}
+
 # 表示用にホーム配下を ~ に畳む。
 tilde_path() {
 	case $1 in
@@ -1474,6 +1483,7 @@ collect_session_row() {
 		_status=$(registry_field "$_file" status)
 		[ -n "$_status" ] || _status='running'
 		_path=$(registry_field "$_file" cwd)
+		_pid=$(registry_num_field "$_file" pid)
 	else
 		# claude は動いていない。**ここで uuid を落とすと復帰路が消える** ──
 		# v1 に resume が無いので、手で `claude --resume` するしかない。
@@ -1481,17 +1491,23 @@ collect_session_row() {
 		_id=$(pane_session_id_for "$_session")
 		[ -n "$_id" ] || _id='-'
 		_path=$("$CCS_TMUX_BIN" list-panes -t "$_session" -F '#{pane_current_path}' 2>/dev/null | head -1)
+		# claude が動いていないので pid は無い。`_id` / `_path` と同じく
+		# `-` を置く ── **タブ区切りの行に空の欄を作らない**ため。IFS に
+		# タブを入れて `read` すると、連続したタブは 1 つの区切りとして
+		# 潰れる（POSIX: タブは IFS の空白文字）ので、空欄を運ぶと
+		# 後ろの列が 1 つずつ手前にずれる。
+		_pid='-'
 	fi
 
 	[ -n "$_path" ] || _path='-'
-	printf '%s\t%s\t%s\t%s\n' "$_slug" "$_status" "$_id" "$_path"
+	printf '%s\t%s\t%s\t%s\t%s\n' "$_slug" "$_status" "$_id" "$_path" "$_pid"
 }
 
 ls_as_json() {
 	_rows=$1
 	printf '['
 	_first=1
-	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path; do
+	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid; do
 		[ -n "$_slug" ] || continue
 		[ "$_first" = 1 ] || printf ','
 		_first=0
@@ -1511,10 +1527,314 @@ ls_as_table() {
 		awk -F'\t' 'NF && length($1) > m { m = length($1) } END { print (m < 4 ? 4 : m) }')
 
 	printf "%-${_w}s  %-8s  %-36s  %s\n" 'SLUG' 'STATUS' 'SESSION ID' 'PATH'
-	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path; do
+	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid; do
 		[ -n "$_slug" ] || continue
 		printf "%-${_w}s  %-8s  %-36s  %s\n" \
 			"$_slug" "$_status" "$_id" "$(tilde_path "$_path")"
+	done
+}
+
+# ---------------------------------------------------------------------------
+# 盤面（`ccs ls -l`）
+#
+# ハブが「いまどのセッションが何をしているか」を 1 コマンドで取り直すための
+# 列。**既定の `ccs ls` には足さない** ── 会話ログを舐める分だけ確実に遅く
+# なり、「立っているものを知りたいだけ」の用途に払わせる理由が無い。
+#
+# 足すのは 3 つだけ:
+#   直近の依頼 — 会話ログの最後の user メッセージ（ツール結果と定型文は除く）
+#   RSS        — その claude プロセスの実メモリ（畳むかどうかの判断材料）
+#   最終更新   — 会話ログの mtime からの経過
+#
+# **ここは 4 責務の外に出ない。** 出すのは ccs が既に知っている場所
+# （`transcript_path`）とレジストリの `pid` から読めるものだけで、会話の
+# 中身を解釈しない（`ccs` はタスクを知らない ── AGENTS.md）。
+# ---------------------------------------------------------------------------
+
+# 「人が打った依頼」だけに当たる形。
+#
+# 実測（会話ログ 40 本 / `"type":"user"` の行 291 本）: user 行は 3 通りしか無い。
+#   {"role":"user","content":"…"}                                人が打った依頼
+#   {"role":"user","content":[{"type":"text",…}]}                人が打った依頼（添付つき等）
+#   {"role":"user","content":[{"tool_use_id"…  /  [{"type":"tool_result"…  ツール結果
+# 前 2 つだけを引けば、ツール結果は 1 件も混ざらない（実測で 0 件）。
+#
+# **`grep -F` を 2 パターン並べるより、ERE 1 本のほうが速い。** 実測
+# （macOS 15 / BSD grep / 50MB の会話ログ）: `-F` × 2 で 0.58 秒、ERE 1 本で
+# 0.30 秒。`-F` に複数パターンを渡すと BSD grep は照合器を切り替えるが、
+# ERE ならこのパターンは先頭が固定文字列なので、そこで弾ける。
+#
+# `[{]` と `[[]` を使うのは、`\{` の扱いが BRE/ERE と実装で揺れるため。
+# 括弧式に入れれば、どちらでもただの文字になる。
+CCS_LS_USER_RE='"message":[{]"role":"user","content":("|[[][{]"type":"text")'
+
+# 直近の依頼の表示幅。**文字数ではなく桁数**（全角は 2 桁として数える）。
+# 文字数で切ると、日本語の依頼が横 140 桁になって 1 画面に収まらない。
+CCS_LS_REQUEST_WIDTH=70
+
+# 末尾から何本の候補まで遡って定型文を読み飛ばすか。
+CCS_LS_REQUEST_CANDIDATES=12
+
+# 候補の行から「人が打った依頼」を 1 行取り出す jq。
+#
+# **定型文を落とす。** 暫定のハブ用スクリプトでは
+# `[Request interrupted by user]` やスラッシュコマンドの展開
+# （`<command-name>…`）、スキルの注入（`Base directory for this skill:`）が
+# そのまま「直近の依頼」として出ていた。人が何を頼んだかを知るための列なので、
+# 人が打っていないものは候補から外す。
+#
+# **先に `.[:400]` で切る。** 依頼そのものが数十 KB あることは珍しくなく、
+# その全長に `gsub` と `explode` を掛けると **1 本あたり 0.2 秒**かかる
+# （実測。15 本で 3 秒 ── 低コストという要件がそこで壊れる）。表示に使うのは
+# 70 桁ぶんなので、正規化も幅の計算も先頭だけを見れば足りる。
+#
+# **`-R` で読む。** 走っているセッションの会話ログは追記の途中でありうる。
+# 生の JSON として食わせると、最終行が半端なときに jq がそこで落ちて
+# **その行より前も出せなくなる**。行単位で読んで `fromjson?` で落とせば、
+# 半端な行だけが黙って消える。
+#
+# shellcheck disable=SC2016  # $w / $s は jq の変数
+CCS_LS_REQUEST_JQ='
+def wide:
+  . >= 4352 and (
+       . <= 4447
+    or (. >= 11904 and . <= 42191)
+    or (. >= 44032 and . <= 55203)
+    or (. >= 63744 and . <= 64255)
+    or (. >= 65072 and . <= 65135)
+    or (. >= 65281 and . <= 65376)
+    or (. >= 65504 and . <= 65510));
+def clip($w):
+  . as $s
+  | [foreach (explode | map(if wide then 2 else 1 end))[] as $x (0; . + $x)] as $acc
+  | if ($acc | length) == 0 or $acc[-1] <= $w then $s
+    else ([range(0; $acc | length) | select($acc[.] <= $w - 1)] | length) as $i
+      | $s[:$i] + "…"
+    end;
+[ inputs
+| fromjson? // empty
+| (if (.message.content | type) == "string" then .message.content
+   else [.message.content[]? | select(.type == "text") | .text] | join(" ")
+   end)
+| select(type == "string")
+| .[:400]
+| gsub("\\s+"; " ")
+| sub("^ "; "")
+| sub(" $"; "")
+| select(length > 0)
+| select(startswith("<") | not)
+| select(startswith("[Request interrupted") | not)
+| select(startswith("[Image:") | not)
+| select(startswith("Caveat:") | not)
+| select(startswith("Base directory for this skill:") | not)
+| select(startswith("This session is being continued") | not)
+| select(startswith("Continue from where you left off") | not)
+| select(startswith("Please continue") | not)
+| clip($w)
+] | last // empty
+'
+
+# 末尾から読み進める幅（バイト）。ここで当たらなければ全部読む。
+#
+# 実測（2026-08-27、立っていた 15 本）: 末尾から「最後の依頼」までの距離は
+# 9 本が 100KB 以内、最大でも 1.6MB だった。**256KB → 4MB の 2 段**で
+# 全部に届く。
+CCS_LS_REQUEST_CHUNKS='262144 4194304'
+
+# 標準入力（会話ログ、またはその末尾）から依頼を 1 行取り出す。
+last_request_from_stream() {
+	LC_ALL=C grep -aE "$CCS_LS_USER_RE" 2>/dev/null |
+		tail -n "$CCS_LS_REQUEST_CANDIDATES" |
+		"$CCS_JQ_BIN" -Rrn --argjson w "$CCS_LS_REQUEST_WIDTH" \
+			"$CCS_LS_REQUEST_JQ" 2>/dev/null
+}
+
+# その会話ログで最後に人が頼んだこと。無ければ何も出さない。
+#
+# **末尾から広げていく。** 会話ログは 50MB を超えることがあり、全部を
+# grep に通すと 1 本で 0.6 秒かかる（実測、下記）。かといって末尾だけを
+# 決め打ちで読むと届かない ── 暫定のハブ用スクリプトは末尾 300KB 固定で、
+# 13 本中 4 本が空欄になっていた。**当たるまで広げ、最後は全部読む**なら、
+# 速い側を取りながら空欄も出ない。
+#
+# 実測（macOS 15 / BSD grep / 50MB の会話ログ / ページキャッシュ温）:
+#
+#   tail -c 256K | grep -E   0.01 秒
+#   tail -c 4M   | grep -E   0.12 秒
+#   grep -E（50MB 全体）      0.30 秒
+#
+# **`grep` の速さを測るときは、対話シェルの別名に注意すること。** ここは
+# 一度取り違えた ── 手元の zsh では `grep` が ugrep に化けていて、同じ
+# 50MB が 0.019 秒で終わる。`ccs` が起動するのは `/usr/bin/grep` なので、
+# その数字で設計すると 30 倍外す。
+#
+# **チャンクの先頭は行の途中から始まる。** 半端な行はパターンに当たっても
+# JSON として読めないので `fromjson?` が黙って落とす（`CCS_LS_REQUEST_JQ`）。
+# 切れ目がちょうど最後の依頼の行を割ったときだけ 1 つ前の依頼が出るが、
+# 2KB の行が 256KB の切れ目に当たる確率なので、そのために 1 段増やさない。
+last_request_of() {
+	_lr_file=$1
+	[ -f "$_lr_file" ] || return 0
+
+	_lr_size=$(wc -c <"$_lr_file" 2>/dev/null | tr -d ' ') || _lr_size=''
+	[ -n "$_lr_size" ] || return 0
+
+	for _lr_chunk in $CCS_LS_REQUEST_CHUNKS; do
+		# チャンクがファイルより大きければ、末尾を読むことは全部読むことと
+		# 同じ。**同じ範囲を 2 度読まない**ので、ここで打ち切って下へ落とす。
+		[ "$_lr_chunk" -lt "$_lr_size" ] || break
+
+		_lr_hit=$(tail -c "$_lr_chunk" "$_lr_file" 2>/dev/null | last_request_from_stream)
+		if [ -n "$_lr_hit" ]; then
+			printf '%s\n' "$_lr_hit"
+			return 0
+		fi
+	done
+
+	last_request_from_stream <"$_lr_file"
+}
+
+# そのファイルの mtime（epoch 秒）。取れなければ何も出さない。
+#
+# **`stat` を使わない。** BSD の `-f %m` と GNU の `-c %Y` で綴りが違う。
+# `date -r <ファイル>` は両方にある（`restore_mtime_of` と同じ理由）。
+mtime_epoch_of() {
+	[ -f "$1" ] || return 0
+	date -r "$1" '+%s' 2>/dev/null || return 0
+}
+
+# 「いま」の epoch 秒。**1 回の `ccs ls -l` で 1 度だけ取る** ── 行ごとに
+# `date` を起こすと、それだけで無視できない（15 本で 15 プロセス）。
+CCS_LS_NOW=''
+
+# epoch 秒 → 経過時間の短い表記（`3m` / `2h` / `5d`）。
+ls_age_text() {
+	[ -n "$1" ] && [ "$1" != '-' ] || return 0
+	[ -n "$CCS_LS_NOW" ] || CCS_LS_NOW=$(date '+%s')
+	_ag_d=$((CCS_LS_NOW - $1))
+	[ "$_ag_d" -ge 0 ] || _ag_d=0
+	if [ "$_ag_d" -lt 3600 ]; then
+		printf '%dm' "$((_ag_d / 60))"
+	elif [ "$_ag_d" -lt 86400 ]; then
+		printf '%dh' "$((_ag_d / 3600))"
+	else
+		printf '%dd' "$((_ag_d / 86400))"
+	fi
+}
+
+# pid → RSS(KB) の対応表を **1 回の ps** で作る。
+#
+# セッションごとに `ps` を起こさない。13 本で 13 回のプロセス起動は、
+# この列の存在理由（低コスト）をそのまま削る。
+#
+# 形は `|<pid>:<kb>|<pid>:<kb>|…` の 1 行。**引くのにプロセスを使わない**
+# ようにするため（シェルの変数展開だけで取り出せる）。
+ls_rss_table() {
+	[ -n "$1" ] || return 0
+	"$CCS_PS_BIN" -o pid=,rss= -p "$1" 2>/dev/null |
+		awk 'NF >= 2 { printf "|%s:%s", $1, $2 } END { print "|" }'
+}
+
+# 対応表から <pid> の RSS を MB で引く。無ければ何も出さない。
+ls_rss_of() {
+	[ -n "$2" ] && [ "$2" != '-' ] || return 0
+	case $1 in
+	*"|${2}:"*) ;;
+	*) return 0 ;;
+	esac
+	_rs=${1#*"|${2}:"}
+	_rs=${_rs%%|*}
+	[ -n "$_rs" ] || return 0
+	printf '%d' "$(((_rs + 512) / 1024))"
+}
+
+# `collect_session_row` の行に盤面の列を足す。
+#   slug<TAB>status<TAB>sessionId<TAB>path<TAB>pid<TAB>rssMb<TAB>mtime<TAB>request
+ls_board_rows() {
+	_brows=$1
+
+	_bpids=$(printf '%s\n' "$_brows" |
+		awk -F'\t' 'NF && $5 != "" && $5 != "-" { printf "%s%s", (n++ ? "," : ""), $5 }')
+	_brss=$(ls_rss_table "$_bpids")
+
+	# 会話ログの場所は cwd と sessionId から決まる（`transcript_path` と同じ
+	# 規則）。**行ごとに `sed` を起こさない** ── あれは 1 行あたり 3 プロセス
+	# になるので、15 本で 45 プロセスを払うことになる。ここは awk 1 回で足りる。
+	#
+	# **まだ 1 度もやり取りしていないセッションでは会話ログが無い**ので、
+	# 読めないことを異常にしない（`transcript_path` の但し書きと同じ）。
+	printf '%s\n' "$_brows" |
+		awk -F'\t' -v dir="$CCS_PROJECTS_DIR" 'NF {
+			enc = $4
+			gsub(/[^A-Za-z0-9]/, "-", enc)
+			printf "%s\t%s/%s/%s.jsonl\n", $0, dir, enc, $3
+		}' |
+		while IFS="$(printf '\t')" read -r _slug _status _id _path _pid _bfile; do
+			[ -n "$_slug" ] || continue
+			# **無い値は `-` で運ぶ**（空欄にしない。`collect_session_row` の
+			# `_pid` と同じ理由 ── 空のタブ区切りの欄は read で潰れる）。
+			_brss_mb=$(ls_rss_of "$_brss" "$_pid")
+			_bmt=$(mtime_epoch_of "$_bfile")
+			_breq=$(last_request_of "$_bfile")
+			printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+				"$_slug" "$_status" "$_id" "$_path" "$_pid" \
+				"${_brss_mb:--}" "${_bmt:--}" "$_breq"
+		done
+}
+
+# 数値か、無ければ（空か `-`）null。
+json_num() {
+	if [ -n "$1" ] && [ "$1" != '-' ]; then
+		printf '%s' "$1"
+	else
+		printf 'null'
+	fi
+}
+
+# 盤面の JSON。**既定の `--json` のキーはそのまま残して足すだけ** ──
+# 既に読んでいる側を壊さない。
+ls_as_json_long() {
+	_rows=$1
+	printf '['
+	_first=1
+	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid _rss _mt _req; do
+		[ -n "$_slug" ] || continue
+		[ "$_first" = 1 ] || printf ','
+		_first=0
+		printf '{"slug":%s,"status":%s,"sessionId":%s,"path":%s,"tmux":%s,"pid":%s,"rssMb":%s,"updatedAt":%s,"age":%s,"request":%s}' \
+			"$(json_str "$_slug")" "$(json_str "$_status")" \
+			"$(json_str "$_id")" "$(json_str "$_path")" \
+			"$(json_str "${CCS_PREFIX}${_slug}")" \
+			"$(json_num "$_pid")" "$(json_num "$_rss")" \
+			"$(json_num "$_mt")" "$(json_str "$(ls_age_text "$_mt")")" \
+			"$(json_str "$_req")"
+	done
+	printf ']\n'
+}
+
+# 盤面の表。
+#
+# **SESSION ID と PATH は落とす。** 13 本を 1 画面に収めるのが目的なので、
+# 36 桁の uuid と長いパスを並べると依頼が折り返して読めなくなる。
+# uuid が要るときは既定の `ccs ls`、機械で読むなら `ccs ls -l --json`。
+ls_as_table_long() {
+	_rows=$1
+
+	_w=$(printf '%s\n' "$_rows" |
+		awk -F'\t' 'NF && length($1) > m { m = length($1) } END { print (m < 4 ? 4 : m) }')
+
+	printf "%-${_w}s  %-8s  %6s  %5s  %s\n" 'SLUG' 'STATUS' 'RSS' 'AGE' 'REQUEST'
+	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid _rss _mt _req; do
+		[ -n "$_slug" ] || continue
+		if [ -n "$_rss" ] && [ "$_rss" != '-' ]; then
+			_rss="${_rss}M"
+		else
+			_rss='-'
+		fi
+		_age=$(ls_age_text "$_mt")
+		[ -n "$_age" ] || _age='-'
+		printf "%-${_w}s  %-8s  %6s  %5s  %s\n" \
+			"$_slug" "$_status" "$_rss" "$_age" "$_req"
 	done
 }
 
@@ -1522,9 +1842,11 @@ cmd_ls() {
 	require_deps
 
 	_json=''
+	_long=''
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--json) _json=1 ;;
+		-l | --long) _long=1 ;;
 		*) die "$EX_USAGE" "ls: 知らないオプション: $1" ;;
 		esac
 		shift
@@ -1548,7 +1870,14 @@ cmd_ls() {
 "
 	done
 
-	if [ -n "$_json" ]; then
+	if [ -n "$_long" ]; then
+		_rows=$(ls_board_rows "$_rows")
+		if [ -n "$_json" ]; then
+			ls_as_json_long "$_rows"
+		else
+			ls_as_table_long "$_rows"
+		fi
+	elif [ -n "$_json" ]; then
 		ls_as_json "$_rows"
 	else
 		ls_as_table "$_rows"
