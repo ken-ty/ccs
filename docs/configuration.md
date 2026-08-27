@@ -116,6 +116,7 @@ plist / timer に焼き込むので、設定ファイルや env を変えただ�
 | `CCS_GHQ_BIN` | `ghq` |
 | `CCS_GIT_BIN` | `git` |
 | `CCS_JQ_BIN` | `jq` |
+| `CCS_PS_BIN` | `ps` |
 | `CCS_SESSIONS_DIR` | `~/.claude/sessions` |
 | `CCS_TRUST_FILE` | `~/.claude.json` |
 | `CCS_PROJECTS_DIR` | `~/.claude/projects` |
