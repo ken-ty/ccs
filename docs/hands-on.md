@@ -395,6 +395,103 @@ ccs ls
 
 ---
 
+## 9.1 セッションが自分で終わる（`ccs kill --self`）
+
+**アプリでアーカイブしても tmux のセッションは残る。** アーカイブは会話一覧の操作で、
+CLI のプロセスは生き続ける ── `ccs ls` の `idle` は誤読ではなく事実。実測
+（2026-08-28、動いている 16 本）でレジストリのキーを全部並べても、`archived` に
+当たるものは無かった。
+
+| 見たもの | 値 |
+| --- | --- |
+| レジストリのキー | `bridgeSessionId` `cwd` `entrypoint` `kind` `messagingSocketPath` `name` `nameSince` `nameSource` `peerFeatures` `peerProtocol` `pid` `pidDomain` `procStart` `sessionId` `startedAt` `status` `statusUpdatedAt` `tmux` `updatedAt` `version` `waitingFor` |
+| `status` の値 | `idle` 8 / `waiting` 6 / `busy` 1 / `null` 1 |
+
+だから**終わる意思のあるセッションが、自分で終わる**。
+
+```bash
+ccs kill --self          # そのセッションの中から打つ
+```
+
+`<slug>` は打たない ── 自分がどれかは `$TMUX` と `$TMUX_PANE` から決まる。
+
+### 何が残るかを実測する（**本物の `claude` が要る**）
+
+**この節だけは fake claude では答えにならない。** スタブは自前で SIGHUP を
+trap しているので、**本物が SIGHUP でどう片付けるか**は本物でしか見えない。
+
+まず 1 本立てて、何ができるかを控える。
+
+```bash
+ls ~/.claude/sessions/ | sort > /tmp/before-sessions.txt
+ls /tmp/cc-socks/      | sort > /tmp/before-socks.txt
+
+ccs new <target>
+
+ls ~/.claude/sessions/ | sort > /tmp/after-sessions.txt
+comm -13 /tmp/before-sessions.txt /tmp/after-sessions.txt
+```
+
+**実測（2026-08-28）**: 1 セッションにつき **3 つ**できる。
+
+```
+83350.cf793dc3815f1d2132ff7bf2789f0013dbc1bfd4e4dc720823fe378a773fbefc.key
+83350.json
+83350.sock
+```
+
+つまり `~/.claude/sessions/<pid>.json`、`~/.claude/sessions/<pid>.<hash>.key`、
+`/tmp/cc-socks/<pid>.sock`。**どれも `ccs` は作っていない** ── claude 自身のもの。
+
+畳んで、消えることを確かめる。
+
+```bash
+ccs kill <slug>
+ls ~/.claude/sessions/ | grep '^83350' ; ls /tmp/cc-socks/ | grep '^83350'
+```
+
+**実測**: `tmux kill-session` の SIGHUP で **3 つとも消えた**。ただし**即座ではない**。
+
+| いつ | プロセス | `<pid>.sock` | `<pid>.json` / `.key` |
+| --- | --- | --- | --- |
+| `kill-session` の直後 | まだ生きている | **消えている** | **残っている** |
+| 数秒後 | 消えた | 消えた | 消えた |
+
+**claude が終了しながら片付けるので、`ccs` が消して回る必要は無い。** 逆に、
+`ccs` が先回りして消すと、まだ生きているプロセスの足元を抜くことになる。
+
+### 自分で終わるところまで通す
+
+`--self` は「中から打つ」ので、外から `ccs kill` を撃つのとは別物。1 本立てて、
+そのセッション自身に打たせる。
+
+```bash
+ccs new <target> -- "次のコマンドを 1 回だけ実行してください: ccs kill --self"
+```
+
+**実測（2026-08-28、本物の `claude` で 1 本）**: セッションは自分を畳み、
+`~/.claude/sessions` は 34 → 36 → **34**、`/tmp/cc-socks` は 17 → 18 → **17** と
+元に戻った。tmux セッションも残っていない。
+
+!!! note "報告は読めない"
+    `ccs kill --self` は畳む前に「同じ会話に戻るには…」を出すが、**打った本人は
+    それを読めない。** ペインごと消えるので、出力を受け取るはずのプロセスも
+    一緒に死ぬ（実測: 会話ログの末尾はツールの結果が書かれないまま終わっていた）。
+
+    読めるのは**断られたとき**だけ ── そのときセッションは生きている。
+    戻り方が要るときは [`ccs restore`](restore.md) を使う。
+
+### 断られる経路
+
+| 相手 | どうなるか |
+| --- | --- |
+| hub | **拒否**（`--force` でも）。落とすとスマホから叩く経路が消える |
+| 未コミットの変更がある作業ツリー | 拒否。`ccs kill --self --force` が要る |
+| 作業中 | **止めない。** この `ccs` を動かしているのが自分なので、自分の status は必ず作業中になる |
+| git の管理下でないところ（使い捨ての作業枠など） | 未コミットの門は掛からない |
+
+worktree は**消さない**（`ccs kill` と同じ方針）。片付けは `ccs gc` の担当。
+
 ## 10. 元に戻す
 
 ```bash
@@ -545,6 +642,7 @@ ccs hub down && rm -rf ~/.cc-hub     # 中身を確かめてから
 - [ ] 7.1 `ccs restore` が同じ `sessionId` で立て直し、会話の名前も変えない
 - [ ] 8. `gc` が既定では何も消さない
 - [ ] 9. 使い捨ての作業枠が、信頼確認なしで 2 本とも立った
+- [ ] 9.1 `ccs kill --self` で自分を畳め、`~/.claude/sessions` と `/tmp/cc-socks` が元の件数に戻った
 - [ ] 10. 元に戻せた
 - [ ] 11. hub（**未実施**。fake claude では確かめられない部分）
 
@@ -563,6 +661,8 @@ ccs hub down && rm -rf ~/.cc-hub     # 中身を確かめてから
 | `ccs new --tmp` が「枠が全部埋まっています」 | `ccs gc` で状況を見る。中身のある枠は `ccs` が消さないので自分で確認する |
 | `ccs new tmp` が「同名のリポジトリもあります」 | ghq に `tmp` がある。作業枠なら `--tmp`、リポジトリなら `<owner>/tmp` |
 | `ccs kill` が「作業中です」で止まる | 意図した動き。`ccs attach` で様子を見てから `--force` |
+| アプリでアーカイブしたのに `ccs ls` に残っている | **誤読ではない。** アーカイブは会話一覧の操作で、CLI のプロセスは生きている。そのセッションに `ccs kill --self` を打たせる（[9.1](#91-セッションが自分で終わるccs-kill---self)） |
+| `ccs kill --self` が「未コミットの変更があります」で止まる | 意図した動き。`git status --short` を見てから `--force` |
 | `ccs restore` に戻したいものが出てこない | ghq の外に立てたものは列挙しない（名指しで戻す）。**印の無い会話**（アプリ / VS Code から開いたもの）も出ない。古い会話は既定で 7 日まで（`--all`）。[印とは](restore.md#印とは) |
 | `ccs hub up` が `no-rc`（10）で終わる | Remote Control が付いていない。`ccs config` で `CCS_REMOTE_CONTROL` を見る。使わない環境なら `off` |
 | `ccs hub up` が `needs-attention`（15）で止まる | 再起動を繰り返している。`ccs hub attach` と `~/.cc-hub/hub.log` を見る |

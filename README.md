@@ -52,6 +52,7 @@ ccs ls [--json]                          # cc/ 接頭辞のセッションだけ
 ccs ls -l [--json]                       # 盤面（直近の依頼 / RSS / 最終更新）も出す
 ccs attach [<slug>]                      # 人間が乗り込む（slug を省くと番号で選ぶ）
 ccs kill <slug>                          # ペインごと畳む
+ccs kill --self                          # そのセッション自身を畳む（中から打つ）
 ccs gc                                   # 死んだペイン・空の一時ディレクトリ・不要な worktree を掃除
 ccs restore [--yes] [<slug>...]          # 止まった／消えたセッションを同じ会話で立て直す
 ccs restore --last [--yes]               # 前回の停止まで生きていた組だけを戻す

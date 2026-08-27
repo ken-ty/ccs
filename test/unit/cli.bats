@@ -109,6 +109,32 @@ teardown() {
 	ccs_stub_deps
 	run "$CCS_BIN" kill
 	[ "$status" -eq 2 ]
+	# **自分を畳む道があることを、断るときに言う。** ここで詰まる人は
+	# 「slug が分からない」ことが多い。
+	[[ "$stderr$output" == *"--self"* ]] || return 1
+}
+
+@test "kill --self: ccs のセッションの外では 2" {
+	# 中から呼んだのかどうかは $TMUX とソケットの一致で決める。素の
+	# シェルから打っても、畳む相手が決まらない。
+	ccs_stub_deps
+	run "$CCS_BIN" kill --self
+	[ "$status" -eq 2 ]
+	[[ "$stderr$output" == *"--self"* ]] || return 1
+}
+
+@test "kill --self: slug と併記できない" {
+	# **自分だと思って他人を畳む余地を残さない。** それが --self の理由。
+	ccs_stub_deps
+	run "$CCS_BIN" kill --self myrepo
+	[ "$status" -eq 2 ]
+}
+
+@test "help: kill --self を案内している" {
+	ccs_stub_deps
+	run "$CCS_BIN" help
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"ccs kill --self"* ]] || return 1
 }
 
 # --- 依存チェック ----------------------------------------------------------

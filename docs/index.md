@@ -43,6 +43,7 @@ tmux・CLI を選んだ理由。
 | [`ccs ls -l [--json]`](board.md) | 盤面 ── 直近の依頼 / RSS / 最終更新も出す |
 | `ccs attach [<slug>]` | 乗り込む（slug を省くと番号で選ぶ） |
 | `ccs kill [--force] <slug>` | 畳む |
+| `ccs kill --self [--force]` | そのセッション自身を畳む（アプリのアーカイブでは残るため） |
 | `ccs gc [--yes]` | 止まったセッション・空の作業枠・不要になった worktree を掃除する |
 | [`ccs restore [--yes]`](restore.md) | 止まった／消えたセッションを同じ会話で立て直す |
 | `ccs resolve <target> [--json]` | 立てる前に、どこに解決されるかを見る |

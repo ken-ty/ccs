@@ -317,6 +317,8 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
                                           （slug を省くと番号で選ぶ）
   ccs kill [--force] <slug>               セッションを畳む
                                           （作業中は --force が要る）
+  ccs kill --self [--force]               いま自分が動いているセッションを畳む
+                                          （未コミットがあれば --force が要る）
   ccs gc [--yes]                          止まったセッション・空の作業枠・不要な worktree を掃除する
                                           （既定は見せるだけ。--yes で実行）
   ccs restore [--yes] [<slug>...]         止まった／消えたセッションを同じ会話で
@@ -2028,14 +2030,90 @@ cmd_attach() {
 	fi
 }
 
+# ---------------------------------------------------------------------------
+# 自分で終わる（`ccs kill --self`）
+#
+# **アプリでアーカイブしても tmux のセッションは残る。** アーカイブは会話一覧の
+# 操作で、CLI のプロセスは生き続ける（実測 2026-08-28: 動いている 16 本の
+# レジストリに `archived` に当たるキーは無く、`status` は idle / waiting / busy /
+# null の 4 値だけ）。**`ccs` が idle を誤読しているのではなく、本当に生きている。**
+#
+# 検知する側から直そうとすると、`ccs` が claude の内部状態を推測することになり、
+# 「一覧と状態は claude に委譲する」（design.md §2.1）を裏返してしまう。だから
+# **終わる意思のあるセッションが、自分で終わる口**を用意する。
+#
+# 順序がこのコマンドの本体:
+#
+#   1. 集める（uuid / cwd）
+#   2. 断る（hub / 未コミット）
+#   3. 報告を出し切る
+#   4. **最後の 1 手として `tmux kill-session`**
+#
+# **「殺してから片付ける」を作らない。** 自分を畳むとペインごと消えるので、
+# `kill-session` より後ろに書いたものは動かない ── 書いた先を読む相手も居ない。
+# 4 を `exec` にしてあるのは、**後ろに何かを足せなくするため**。
+#
+# 後始末そのものは claude がやる。実測（2026-08-28、本物の claude で 1 本）:
+# 立てると `~/.claude/sessions/<pid>.json` と `<pid>.<hash>.key`、
+# `/tmp/cc-socks/<pid>.sock` の 3 つができ、`tmux kill-session` の SIGHUP で
+# **3 つとも消えた**（sock が先、json と key は数秒遅れ ── claude が終了しながら
+# 片付けるので即座ではない）。`ccs` が消して回る必要は無い。
+
+# いま自分が動いている ccs セッションの slug。ccs のセッションでなければ 1。
+kill_self_slug() {
+	_s=$(current_tmux_session)
+	[ -n "$_s" ] || return 1
+	case $_s in
+	"${CCS_PREFIX}"*) ;;
+	*) return 1 ;;
+	esac
+	printf '%s' "${_s#"$CCS_PREFIX"}"
+}
+
+# その作業ディレクトリに未コミットの変更があるか。
+#
+# **`ccs kill` はファイルを消さない**ので、これは「失われる」ことへの門ではない。
+# **自分で終わると言っているセッションが、途中の作業を抱えていないか**を見る門で、
+# 終わるつもりの無いものが終わろうとしているなら、そこで止まったほうがいい。
+# 追跡していないファイルも数える ── 新しく書いたものがいちばん見落としやすい。
+path_has_uncommitted() {
+	[ -d "${1:-}" ] || return 1
+	have "$CCS_GIT_BIN" || return 1
+	"$CCS_GIT_BIN" -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+	[ -n "$("$CCS_GIT_BIN" -C "$1" status --porcelain 2>/dev/null)" ]
+}
+
+# 畳んだあとの案内。**畳む前に集めた値だけで書く。**
+kill_report() {
+	printf '%s を畳みました。\n' "$1"
+
+	# **uuid を必ず添える。** v1 に resume が無いので、あとで同じ会話に
+	# 戻りたくなったときの手掛かりはこれしかない。
+	if [ -n "$2" ]; then
+		printf '\n同じ会話に戻るには:\n  cd %s && claude --resume %s\n' \
+			"$(tilde_path "$3")" "$2"
+	fi
+
+	# **kill は worktree を消さない**（ADR-0003 決定 7、design.md §9.6）。
+	# そこに未コミットの作業が残っていることがあり、消す判断は人がする。
+	# 片付け先だけ 1 行案内する ── 畳んだ時点でこのパスを引ける最後の機会で、
+	# あとから探すには git の一覧を舐めることになる。
+	if [ -n "$3" ] && path_is_linked_worktree "$3"; then
+		printf '\nworktree は残しています: %s\n  片付ける: ccs gc\n' \
+			"$(tilde_path "$3")"
+	fi
+}
+
 cmd_kill() {
 	require_deps
 
 	_force=''
+	_self=''
 	_slug=''
 	while [ $# -gt 0 ]; do
 		case $1 in
 		-f | --force) _force=1 ;;
+		--self) _self=1 ;;
 		-*) die "$EX_USAGE" "kill: 知らないオプション: $1" ;;
 		*)
 			[ -z "$_slug" ] || die "$EX_USAGE" "kill: <slug> は 1 つだけです: ${_slug} と $1"
@@ -2045,7 +2123,15 @@ cmd_kill() {
 		shift
 	done
 
-	[ -n "$_slug" ] || die "$EX_USAGE" 'kill: <slug> を指定してください'
+	if [ -n "$_self" ]; then
+		# **自分を指すのに名前を打たせない。** それが --self の理由で、
+		# slug と併記できると「自分だと思って他人を畳む」余地が残る。
+		[ -z "$_slug" ] || die "$EX_USAGE" "kill: --self に <slug> は付けられません: ${_slug}"
+		_slug=$(kill_self_slug) ||
+			die "$EX_USAGE" 'kill: --self は ccs が立てたセッションの中でだけ使えます'
+	fi
+
+	[ -n "$_slug" ] || die "$EX_USAGE" 'kill: <slug> を指定してください（自分を畳むなら ccs kill --self）'
 
 	_session="${CCS_PREFIX}${_slug}"
 
@@ -2065,7 +2151,7 @@ cmd_kill() {
 	# **いま自分が動いているセッションは、うっかりでは畳ませない。**
 	# ハブのエージェントが自分自身を指したとき、会話ごと消えて
 	# 「なぜ落ちたか」を聞く相手もいなくなる。
-	if [ -z "$_force" ] && [ "$_session" = "$(current_tmux_session)" ]; then
+	if [ -z "$_self" ] && [ -z "$_force" ] && [ "$_session" = "$(current_tmux_session)" ]; then
 		warn "ccs: ${_slug} は、いまあなた自身が動いているセッションです。"
 		warn ''
 		warn '  それでも畳む: ccs kill --force '"${_slug}"
@@ -2084,7 +2170,9 @@ cmd_kill() {
 	# 走っている作業を巻き込むのは取り返しがつきにくい。会話自体は
 	# transcript に残るので --resume で戻せるが、走っていたコマンドの
 	# 途中経過は戻らない。
-	if [ -z "$_force" ]; then
+	# **--self には掛けない。** この ccs を動かしているのが自分自身なので、
+	# 自分の status は必ず作業中になる ── 掛けると --self は常に断られる。
+	if [ -z "$_force" ] && [ -z "$_self" ]; then
 		# `|| true` が要る。set -e の下では `var=$(失敗する関数)` で
 		# その場で終了する。claude が既に終了しているとレジストリに
 		# 項目が無く、status を引けないのが正常な経路。
@@ -2098,26 +2186,30 @@ cmd_kill() {
 		fi
 	fi
 
+	# **代わりに --self には別の門を置く。** 終わると言っている本人に
+	# 「本当に終わったのか」を訊けるのは、作業ツリーの状態だけ。
+	if [ -n "$_self" ] && [ -z "$_force" ] && path_has_uncommitted "$_cwd"; then
+		warn "ccs: ${_slug} には未コミットの変更があります。畳みませんでした。"
+		warn ''
+		warn "  見る:         git -C $(tilde_path "$_cwd") status --short"
+		warn '  それでも畳む: ccs kill --self --force'
+		exit "$EX_FAIL"
+	fi
+
+	# **--self は報告を先に出し切ってから畳む。** 畳んだあとに置いた処理は
+	# 動かない（ペインごと消える）ので、順序がそのまま仕様になる。
+	if [ -n "$_self" ]; then
+		kill_report "$_session" "$_id" "$_cwd"
+		# **最後の 1 手。`exec` で置き換えて、後ろに何も書けなくする。**
+		# 終了コードは誰も読まない ── この tmux 自身が、畳んだ結果の
+		# SIGHUP で死ぬ。
+		exec "$CCS_TMUX_BIN" kill-session -t "$_session"
+	fi
+
 	"$CCS_TMUX_BIN" kill-session -t "$_session" ||
 		die "$EX_FAIL" "畳めませんでした: ${_session}"
 
-	printf '%s を畳みました。\n' "$_session"
-
-	# **uuid を必ず添える。** v1 に resume が無いので、あとで同じ会話に
-	# 戻りたくなったときの手掛かりはこれしかない。
-	if [ -n "$_id" ]; then
-		printf '\n同じ会話に戻るには:\n  cd %s && claude --resume %s\n' \
-			"$(tilde_path "$_cwd")" "$_id"
-	fi
-
-	# **kill は worktree を消さない**（ADR-0003 決定 7、design.md §9.6）。
-	# そこに未コミットの作業が残っていることがあり、消す判断は人がする。
-	# 片付け先だけ 1 行案内する ── 畳んだ時点でこのパスを引ける最後の機会で、
-	# あとから探すには git の一覧を舐めることになる。
-	if [ -n "$_cwd" ] && path_is_linked_worktree "$_cwd"; then
-		printf '\nworktree は残しています: %s\n  片付ける: ccs gc\n' \
-			"$(tilde_path "$_cwd")"
-	fi
+	kill_report "$_session" "$_id" "$_cwd"
 }
 
 # status を引く。取れなければ空。

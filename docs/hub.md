@@ -351,6 +351,7 @@ $ tail -3 ~/.cc-hub/hub.log
 | `ccs kill <hub>` | **拒否**（`--force` でも）。`ccs hub restart` / `ccs hub down` を案内する |
 | `ccs gc` | hub は対象外。止まっていても畳まない（自動起動が戻すため） |
 | `ccs kill <自分自身>` | `--force` が要る。ハブのエージェントが自分を指した事故を防ぐ |
+| `ccs kill --self` | **自分で終わる口。** `--force` は要らない（自分を指すのが目的なので事故ではない）。hub には効かず、未コミットがあれば断る |
 | hub 自身の `ccs kill` / `ccs gc` | `~/.cc-hub/.claude/settings.json` で確認つきにしてある |
 | hub 自身の `ccs hub down` | 同ファイルで禁止（自分を止められると、誰も起こせない） |
 
