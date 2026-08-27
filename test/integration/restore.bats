@@ -389,9 +389,209 @@ _wipe_session() {
 	run "$CCS_BIN" hub up
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"ccs restore"* ]] || return 1
+	# **--last を先に案内する。** ここへ来るのは再起動の直後で、候補には
+	# 「一緒に落ちた組」と「それ以前からの残骸」が混ざる。hub が slug を
+	# 目視で選ばずに済む導線がここに無いと、結局手打ちに戻る。
+	[[ "$output" == *"ccs restore --last --yes"* ]] || return 1
 
 	# 2 回目は hub が健全なので何も言わない（毎回吠えない）。
 	run "$CCS_BIN" hub up
 	[ "$status" -eq 0 ]
 	[[ "$output" != *"ccs restore"* ]] || return 1
+}
+
+# --- 前回の停止まで生きていた組だけを戻す（--last / --since） --------------
+#
+# **会話ログの mtime は「最後に活動した時刻」ではなく「最後に生きていた時刻」。**
+# OS のシャットダウンは生きている claude に SIGTERM を送り、claude はそこで
+# 会話ログを書き切る（実測 2026-08-27。bin/ccs の `restore_epoch_of` の上の
+# コメント）。だから **手で畳んだセッションだけが塊から外れる。**
+#
+# ここで見るのは切り出しだけなので、mtime は touch で作る ── 実際に
+# シャットダウンを起こすテストは書けない。
+
+# epoch を `touch -t` の綴りに直す。
+#
+# **`date -r` の意味が BSD と GNU で違う**（BSD は秒、GNU はファイル）ので、
+# 当たったほうを使う。GNU では `date -r <数字>` がファイルとして stat に
+# 失敗するので、素直に落ちて次へ回る。
+_stamp() {
+	date -r "$1" '+%Y%m%d%H%M.%S' 2>/dev/null || date -d "@$1" '+%Y%m%d%H%M.%S'
+}
+
+# 作業枠の会話ログの mtime を epoch で作る。
+_touch_slot() {
+	touch -t "$(_stamp "$2")" "$(_transcript_dir "$(_slot_path "$1")")"/*.jsonl
+}
+
+# 枠を n 本立てて、全部 tmux ごと消す（＝再起動を模す）。
+_wipe_slots() {
+	local i
+	for ((i = 1; i <= $1; i++)); do
+		_new_tmp >/dev/null
+	done
+	for ((i = 1; i <= $1; i++)); do
+		_wipe_session "tmp-${i}"
+	done
+}
+
+@test "restore --last: 一緒に落ちた組だけを拾い、その前に畳んだものは拾わない" {
+	_wipe_slots 3
+
+	local stop=$(($(date +%s) - 3600))
+	# **停止は一瞬ではない。** シャットダウンは順に SIGTERM を送るので、
+	# 一緒に落ちた組でも数十秒ばらける（実測で 13 本 45 秒）。
+	_touch_slot 1 "$stop"
+	_touch_slot 2 "$((stop - 20))"
+	# 1 時間前に手で畳んだ 1 本。書き込みはそこで止まっている。
+	_touch_slot 3 "$((stop - 3600))"
+
+	export CCS_RESTORE_BOOT_EPOCH=$((stop + 60))
+
+	run "$CCS_BIN" restore --last
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"tmp-1"* ]] || return 1
+	[[ "$output" == *"tmp-2"* ]] || return 1
+	[[ "$output" != *"tmp-3"* ]] || return 1
+
+	# 素の restore は 3 本とも出す（絞っているのは --last だけ）。
+	run "$CCS_BIN" restore
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"tmp-3"* ]] || return 1
+}
+
+@test "restore --last: 起動より後に書かれたものは「前回」ではない" {
+	# 一度戻したあとに死んだセッションを、前回の組に混ぜない。
+	_wipe_slots 2
+
+	local stop=$(($(date +%s) - 3600))
+	_touch_slot 1 "$stop"
+	export CCS_RESTORE_BOOT_EPOCH=$((stop + 60))
+	# 起動より後（＝今回の分）。
+	_touch_slot 2 "$((stop + 600))"
+
+	run "$CCS_BIN" restore --last
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"tmp-1"* ]] || return 1
+	[[ "$output" != *"tmp-2"* ]] || return 1
+}
+
+@test "restore --last: 塊が無ければその旨を出す" {
+	_wipe_slots 1
+
+	local stop=$(($(date +%s) - 3600))
+	# 候補が全部「起動より後」なら、前回の組は 1 本も無い。
+	_touch_slot 1 "$stop"
+	export CCS_RESTORE_BOOT_EPOCH=$((stop - 60))
+
+	run "$CCS_BIN" restore --last
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"ありません"* ]] || return 1
+}
+
+@test "restore --last: 窓の幅は CCS_RESTORE_LAST_WINDOW で変えられる" {
+	_wipe_slots 2
+
+	local stop=$(($(date +%s) - 3600))
+	_touch_slot 1 "$stop"
+	_touch_slot 2 "$((stop - 600))" # 10 分前
+	export CCS_RESTORE_BOOT_EPOCH=$((stop + 60))
+
+	# 既定は 5 分なので届かない。
+	run "$CCS_BIN" restore --last
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"tmp-2"* ]] || return 1
+
+	CCS_RESTORE_LAST_WINDOW=1200 run "$CCS_BIN" restore --last
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"tmp-2"* ]] || return 1
+}
+
+@test "restore --last: 7 日の線を越えていても拾う" {
+	# **マシンが長く落ちていたら、戻したい組ごと古さの線に落ちる。**
+	# 絞るのは窓のほうなので、--last は列挙の線を外す。
+	_wipe_slots 1
+
+	local stop=$(($(date +%s) - 30 * 86400))
+	_touch_slot 1 "$stop"
+	export CCS_RESTORE_BOOT_EPOCH=$((stop + 60))
+
+	run "$CCS_BIN" restore
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"tmp-1"* ]] || return 1
+
+	run "$CCS_BIN" restore --last
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"tmp-1"* ]] || return 1
+}
+
+@test "restore --last --yes: 組だけを立て直す" {
+	_wipe_slots 2
+
+	local stop=$(($(date +%s) - 3600))
+	_touch_slot 1 "$stop"
+	_touch_slot 2 "$((stop - 3600))"
+	export CCS_RESTORE_BOOT_EPOCH=$((stop + 60))
+
+	run "$CCS_BIN" restore --last --yes
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"戻しました"* ]] || return 1
+
+	ccs_tmux has-session -t '=cc/tmp-1'
+	run ccs_tmux has-session -t '=cc/tmp-2'
+	[ "$status" -ne 0 ]
+}
+
+@test "restore --last: 既定は dry-run で、繰り返せる形の案内を出す" {
+	# **ここで `ccs restore --yes` と案内してはいけない。** 絞ったつもりの
+	# 人が残骸まで立ち上げることになる。
+	_wipe_slots 2
+
+	local stop=$(($(date +%s) - 3600))
+	_touch_slot 1 "$stop"
+	_touch_slot 2 "$((stop - 3600))"
+	export CCS_RESTORE_BOOT_EPOCH=$((stop + 60))
+
+	run "$CCS_BIN" restore --last
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"ccs restore --last --yes"* ]] || return 1
+
+	run ccs_tmux has-session -t '=cc/tmp-1'
+	[ "$status" -ne 0 ]
+}
+
+@test "restore --since: 指定した期間だけ遡る" {
+	# 一斉書き込みが起きない止まり方（電源断）だと --last の塊ができない。
+	# そのときに人が幅を打てる口。
+	_wipe_slots 3
+
+	local now
+	now=$(date +%s)
+	_touch_slot 1 "$((now - 3600))"      # 1 時間前
+	_touch_slot 2 "$((now - 3 * 3600))"  # 3 時間前
+	_touch_slot 3 "$((now - 30 * 3600))" # 30 時間前
+
+	run "$CCS_BIN" restore --since 2h
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"tmp-1"* ]] || return 1
+	[[ "$output" != *"tmp-2"* ]] || return 1
+
+	run "$CCS_BIN" restore --since 6h
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"tmp-2"* ]] || return 1
+	[[ "$output" != *"tmp-3"* ]] || return 1
+	[[ "$output" == *"ccs restore --since 6h --yes"* ]] || return 1
+}
+
+@test "restore --last: 起動時刻は設定なしでも OS から取れる" {
+	# **ここだけは本物の OS を見る。** macOS の `kern.boottime` と Linux の
+	# `/proc/stat` は綴りが違うので、片方しか通らないと「CI では緑なのに
+	# 手元で候補が全滅する」が起きる（実測で一度踏んだ ── `.*sec` が貪欲に
+	# `usec` へ当たり、起動時刻の代わりにマイクロ秒が返っていた）。
+	unset CCS_RESTORE_BOOT_EPOCH
+	_wipe_slots 1
+
+	run "$CCS_BIN" restore --last
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"起動時刻が取れない"* ]] || return 1
 }

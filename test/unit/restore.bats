@@ -83,3 +83,69 @@ teardown() {
 	CCS_RESTORE_MAX_AGE=しばらく run "$CCS_BIN" restore
 	[ "$status" -eq 2 ]
 }
+
+# --- --last / --since の受け付け方 -----------------------------------------
+#
+# **どちらも「候補を絞る」指定。** 何を戻すかを決めるのは候補の列挙のほうで、
+# ここが受け付けるのは絞り方だけ。切り出しそのものは
+# test/integration/restore.bats。
+
+@test "restore: --last と slug の名指しは一緒に使えない" {
+	# 名指しは「これを戻す」という答えそのもので、絞り込みが要らない。
+	run "$CCS_BIN" restore --last tmp-1
+	[ "$status" -eq 2 ]
+	[[ "$stderr$output" == *"--last"* ]] || return 1
+}
+
+@test "restore: --since と slug の名指しは一緒に使えない" {
+	run "$CCS_BIN" restore --since 6h tmp-1
+	[ "$status" -eq 2 ]
+}
+
+@test "restore: --last と --since は一緒に使えない" {
+	# 基準が起動時刻なのか現在時刻なのかが決まらない。
+	run "$CCS_BIN" restore --last --since 6h
+	[ "$status" -eq 2 ]
+}
+
+@test "restore: --since に値が無ければ断る" {
+	run "$CCS_BIN" restore --since
+	[ "$status" -eq 2 ]
+}
+
+@test "restore: --since の綴りは <数><s|m|h|d>" {
+	# **綴りを間違えたまま素通りさせない。** 黙って全部を候補にすると、
+	# 絞ったつもりの人が残骸まで立ち上げることになる。
+	local bad
+	for bad in 6x abc '' 0h -1h 6hh h; do
+		run "$CCS_BIN" restore --since "$bad"
+		[ "$status" -eq 2 ] || return 1
+	done
+
+	local good
+	for good in 30s 45m 6h 2d; do
+		run "$CCS_BIN" restore --since "$good"
+		[ "$status" -eq 0 ] || return 1
+	done
+}
+
+@test "config: CCS_RESTORE_LAST_WINDOW が一覧に出る" {
+	run "$CCS_BIN" config
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"CCS_RESTORE_LAST_WINDOW"* ]] || return 1
+	[[ "$output" == *"300"* ]] || return 1
+}
+
+@test "config: CCS_RESTORE_LAST_WINDOW が整数でなければ落とす" {
+	CCS_RESTORE_LAST_WINDOW=しばらく run "$CCS_BIN" restore
+	[ "$status" -eq 2 ]
+}
+
+@test "config: CCS_RESTORE_BOOT_EPOCH は空でよいが、整数でなければ落とす" {
+	# 既定は空（OS に訊く）。**空を許すぶん、綴り間違いは自分で見る。**
+	CCS_RESTORE_BOOT_EPOCH= run "$CCS_BIN" restore
+	[ "$status" -eq 0 ]
+
+	CCS_RESTORE_BOOT_EPOCH=きのう run "$CCS_BIN" restore
+	[ "$status" -eq 2 ]
+}

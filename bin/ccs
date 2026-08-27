@@ -72,6 +72,8 @@ CCS_SCRATCH_SLOTS
 CCS_PROJECTS_DIR
 CCS_NEW_TIMEOUT
 CCS_RESTORE_MAX_AGE
+CCS_RESTORE_LAST_WINDOW
+CCS_RESTORE_BOOT_EPOCH
 CCS_REMOTE_CONTROL
 CCS_HUB_SLUG
 CCS_HUB_HOME
@@ -210,6 +212,29 @@ load_config
 # どれだけ古くても戻す。人が名前を打っているなら、それが意図。
 : "${CCS_RESTORE_MAX_AGE:=7}"
 
+# `ccs restore --last` が「同じ塊」とみなす幅（秒）。
+#
+# **停止は一瞬ではない。** OS のシャットダウンは生きている claude に順に
+# SIGTERM を送るので、会話ログの最終更新は数十秒ばらける（実測: 2026-08-27 の
+# 再起動で 20:50:08 〜 20:50:53、13 本で 45 秒）。塊の先頭から遡るこの幅が、
+# 「一緒に落ちた」と「その前に畳んだ」を分ける線になる。
+#
+# **広げると手で畳んだものを巻き込み、狭めると取りこぼす。** 既定の 5 分は
+# 実測の 45 秒に対して十分な余裕がありつつ、直前に畳んだセッションは
+# 拾わない幅として置いてある。
+: "${CCS_RESTORE_LAST_WINDOW:=300}"
+
+# 起動時刻（epoch 秒）。空なら OS に訊く（`kern.boottime` / `/proc/stat`）。
+#
+# **`ccs restore --last` の基準点。** 起動より後に書かれた会話ログは「前回
+# 生きていたもの」ではないので、上限として使う。時刻の塊を自前で切るだけだと
+# 閾値の根拠が無いが、起動時刻は OS が持っている外の事実なので基準にできる。
+#
+# 明示できるようにしてあるのは 2 つの理由から ── 起動時刻を読めない環境
+# （どちらの経路も無い OS、コンテナ）で使えるようにするためと、**テストが
+# 再起動を模せるようにする**ため（AGENTS.md「テストの方針」）。
+: "${CCS_RESTORE_BOOT_EPOCH:=}"
+
 # Remote Control（スマホ・デスクトップからセッションを触る仕組み）の扱い。
 #
 #   auto … hub だけに `--remote-control <名前>` を渡す（既定）
@@ -296,6 +321,8 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
                                           （既定は見せるだけ。--yes で実行）
   ccs restore [--yes] [<slug>...]         止まった／消えたセッションを同じ会話で
                                           立て直す（既定は見せるだけ）
+  ccs restore --last [--yes]              前回の停止まで生きていた組だけを戻す
+  ccs restore --since <期間> [--yes]      その期間だけ遡って戻す（例: 6h）
   ccs restore <slug> --list               その場所に残っている会話を並べる
 
   ccs hub up [--force] [--quiet]          hub を立てる（生きていれば何もしない）
@@ -2662,6 +2689,117 @@ restore_is_fresh() {
 	[ -n "$_hit" ]
 }
 
+# ---------------------------------------------------------------------------
+# 「前回の停止まで生きていた組」を切り出す（`--last` / `--since`）
+#
+# **会話ログの mtime は「最後に活動した時刻」ではなく「最後に生きていた時刻」。**
+# OS のシャットダウンは生きている claude に SIGTERM を送り、claude はそこで
+# 会話ログを書き切る ── だから**丸 1 日アイドルだったセッションも、停止の瞬間に
+# 書き込まれる**（実測 2026-08-27: 最後の実内容は 8/26 なのに mtime は停止時刻の
+# 20:50。末尾は timestamp を持たないメタ行 `last-prompt` / `bridge-session`）。
+#
+# これが効くのは、**手で畳んだセッションはその瞬間に書き込みが止まる**から。
+# 一斉に書かれた塊に乗っているかどうかで、「一緒に落ちた」と「その前に畳んだ」を
+# 区別できる。時刻の塊を見るのに根拠があるのはこの一点だけで、単なる
+# クラスタリングとしてやっているのではない。
+#
+# **スナップショットは持たない。** `ccs` は状態ファイルを持たず tmux から導出する
+# （design.md §2.1）という制約が第一だが、そもそも要らない ── 上のとおり会話ログの
+# mtime が既にスナップショットになっている。仮に持つとしても書くタイミングが詰む:
+# 定期に書けばデーモンが要り、shutdown フックは電源断・パニック・SIGKILL で
+# 走らない。**走らない場面がまさに一番欲しい場面。**
+#
+# 切り出しは 4 手:
+#
+#   1. 起動時刻 T_boot を OS に訊く
+#   2. 候補のうち mtime < T_boot のものだけを見る（起動後に動いたものは前回ではない）
+#   3. その最大値 T_last を取る（＝実質、停止の瞬間）
+#   4. [T_last - CCS_RESTORE_LAST_WINDOW, T_boot) に入るものを戻す
+#
+# **一斉書き込みが起きない止まり方（電源断・強制再起動）では 1 の塊ができず、
+# `--last` は「単に直近に触ったもの」に劣化する。** そのときのために
+# `--since <期間>` を置いてある ── `--last` は「起動時刻を基準にした `--since`」。
+# ---------------------------------------------------------------------------
+
+# ファイルの mtime を epoch 秒で。取れなければ 1 を返す。
+#
+# **`date -r <ファイル>` は BSD と GNU の両方にある**（`restore_mtime_of` と
+# 同じ理由）。`stat` は `-f` と `-c` で綴りが割れるので使わない。
+restore_epoch_of() {
+	_e=$(date -r "$1" '+%s' 2>/dev/null) || return 1
+	is_uint "$_e" || return 1
+	printf '%s' "$_e"
+}
+
+# 現在の起動時刻を epoch 秒で。取れなければ 1 を返す。
+#
+# **設定が最優先。** 読めない OS のための逃げ道であり、テストが再起動を
+# 模すための差し替え点でもある（`CCS_RESTORE_BOOT_EPOCH`）。
+restore_boot_epoch() {
+	# 整数であることは config_validate が見ている。
+	if [ -n "$CCS_RESTORE_BOOT_EPOCH" ]; then
+		printf '%s' "$CCS_RESTORE_BOOT_EPOCH"
+		return 0
+	fi
+
+	# BSD / macOS: `{ sec = 1787840564, usec = 903594 } Thu Aug 27 23:22:44 2026`
+	#
+	# **`.*sec` で拾わない。** `.*` は貪欲なので `usec` のほうに当たり、
+	# 起動時刻ではなくマイクロ秒（903594）が返る ── 1970 年として扱われ、
+	# 上限で全部が落ちて「候補なし」になる（実測。この形で一度踏んだ）。
+	if have sysctl; then
+		_b=$(sysctl -n kern.boottime 2>/dev/null |
+			sed -n 's/.*{ *sec *= *\([0-9][0-9]*\).*/\1/p')
+		[ -z "$_b" ] || {
+			printf '%s' "$_b"
+			return 0
+		}
+	fi
+
+	# Linux: /proc/stat の `btime <epoch>`
+	if [ -r /proc/stat ]; then
+		_b=$(sed -n 's/^btime  *\([0-9][0-9]*\).*/\1/p' /proc/stat 2>/dev/null | head -1)
+		[ -z "$_b" ] || {
+			printf '%s' "$_b"
+			return 0
+		}
+	fi
+
+	return 1
+}
+
+# `--since` の綴りを「いまから何秒前か」に落とす。読めなければ 1 を返す。
+#
+# **相対だけを受ける。** 絶対時刻を epoch に直す綴りは BSD（`date -j -f`）と
+# GNU（`date -d`）で割れていて、両方を書き分けると「どちらの環境でも試して
+# いない分岐」が必ず残る。遡る幅は人にも hub にも書けるので、これで足りる。
+restore_since_seconds() {
+	_n=${1%?}
+	_u=${1#"$_n"}
+	is_uint "$_n" || return 1
+	[ "$_n" -gt 0 ] || return 1
+	case $_u in
+	s) printf '%s' "$_n" ;;
+	m) printf '%s' "$((_n * 60))" ;;
+	h) printf '%s' "$((_n * 3600))" ;;
+	d) printf '%s' "$((_n * 86400))" ;;
+	*) return 1 ;;
+	esac
+}
+
+# 候補に mtime を足す。<slug>\t<path>\t<uuid> → <slug>\t<path>\t<uuid>\t<epoch>
+#
+# **会話ログが無い行は落とす。** 「いつまで生きていたか」の証拠がその行に
+# 無いので、塊に入れるかどうかを決められない。名指し（`ccs restore <slug>`）は
+# ここを通らないので、戻せない理由の報告は今までどおり出る。
+restore_with_mtime() {
+	while IFS="$(printf '\t')" read -r _slug _path _uuid; do
+		[ -n "$_slug" ] || continue
+		_m=$(restore_epoch_of "$(transcript_path "$_path" "$_uuid")") || continue
+		printf '%s\t%s\t%s\t%s\n' "$_slug" "$_path" "$_uuid" "$_m"
+	done
+}
+
 # 実在しないかもしれない `<root>/<leaf>` を、実在する root を通して正規化する。
 #
 # **消えた枠のパスもエンコードの入力になる。** `/tmp` が `/private/tmp` に化ける
@@ -2907,31 +3045,66 @@ cmd_restore() {
 	_apply=''
 	_all=''
 	_list=''
+	_last=''
+	_since=''
+	_has_since=''
 	_ntargets=0
 	CCS_RESTORE_SESSION_ID=''
 
 	# **オプションと対象は混ざる**（`ccs restore tmp-1 --yes`）ので 2 周する。
 	# `$@` を崩さないのは、空白を含むパスを対象に取れるようにするため。
-	_want_sid=''
+	_want=''
 	for _arg in "$@"; do
-		if [ -n "$_want_sid" ]; then
+		case $_want in
+		sid)
 			CCS_RESTORE_SESSION_ID=$_arg
-			_want_sid=''
+			_want=''
 			continue
-		fi
+			;;
+		since)
+			# **空文字列も「指定された」。** 覚えておかないと
+			# `--since ''` が「--since 無し」に化けて、絞ったつもりの
+			# 人が候補を全部立ち上げることになる（実測で踏んだ）。
+			_since=$_arg
+			_has_since=1
+			_want=''
+			continue
+			;;
+		esac
 		case $_arg in
 		-y | --yes) _apply=1 ;;
 		--all) _all=1 ;;
 		--list) _list=1 ;;
-		--session-id) _want_sid=1 ;;
+		--last) _last=1 ;;
+		--since) _want=since ;;
+		--session-id) _want=sid ;;
 		-*) die "$EX_USAGE" "restore: 知らないオプション: ${_arg}" ;;
 		*) _ntargets=$((_ntargets + 1)) ;;
 		esac
 	done
-	[ -z "$_want_sid" ] || die "$EX_USAGE" 'restore: --session-id に uuid がありません'
+	[ "$_want" != sid ] || die "$EX_USAGE" 'restore: --session-id に uuid がありません'
+	[ "$_want" != since ] || die "$EX_USAGE" 'restore: --since に期間がありません（例: ccs restore --since 6h）'
 
 	if [ -n "$CCS_RESTORE_SESSION_ID" ] && [ "$_ntargets" -ne 1 ]; then
 		die "$EX_USAGE" 'restore: --session-id は戻す先を 1 つ指定したときだけ使えます（例: ccs restore tmp-1 --session-id <uuid>）'
+	fi
+
+	# **`--last` と `--since` は「どこから遡るか」の指定なので 1 つだけ。**
+	# 両方あると、基準が起動時刻なのか現在時刻なのかが決まらない。
+	if [ -n "$_last" ] && [ -n "$_has_since" ]; then
+		die "$EX_USAGE" 'restore: --last と --since は一緒に使えません（基準が決まりません）'
+	fi
+
+	# **名指しとは混ぜない。** 名指しは「これを戻す」という答えそのもので、
+	# 絞り込みが要らない（古さの線も同じ理由で効かせていない）。
+	if [ "$_ntargets" -gt 0 ] && { [ -n "$_last" ] || [ -n "$_has_since" ]; }; then
+		die "$EX_USAGE" 'restore: --last / --since は候補を絞る指定なので、slug の名指しとは一緒に使えません'
+	fi
+
+	_since_sec=''
+	if [ -n "$_has_since" ]; then
+		_since_sec=$(restore_since_seconds "$_since") ||
+			die "$EX_USAGE" "restore: --since は <数><s|m|h|d> の形で指定してください（例: 6h）: ${_since}"
 	fi
 
 	# --- 候補を作る ---
@@ -2940,15 +3113,15 @@ cmd_restore() {
 	if [ "$_ntargets" -gt 0 ]; then
 		# **名指しは古さで絞らない。** 人が名前を打っているなら、1 か月前の
 		# 会話でもそれが意図。
-		_want_sid=''
+		_want=''
 		for _arg in "$@"; do
-			if [ -n "$_want_sid" ]; then
-				_want_sid=''
+			if [ -n "$_want" ]; then
+				_want=''
 				continue
 			fi
 			case $_arg in
-			--session-id)
-				_want_sid=1
+			--session-id | --since)
+				_want=1
 				continue
 				;;
 			-*) continue ;;
@@ -2964,8 +3137,49 @@ cmd_restore() {
 "
 		done
 	else
-		[ -z "$_all" ] || CCS_RESTORE_MAX_AGE=0
+		# **`--last` / `--since` は列挙の古さの線を外す。** マシンが 7 日以上
+		# 落ちていたら、戻したい塊がまるごと `restore_is_fresh` に落とされる。
+		# 外したぶんは、このあとの窓が締める。
+		if [ -n "$_all" ] || [ -n "$_last" ] || [ -n "$_has_since" ]; then
+			CCS_RESTORE_MAX_AGE=0
+		fi
 		_rows=$(restore_candidates)
+	fi
+
+	# --- 「前回の停止まで生きていた組」に絞る ---
+
+	if [ -n "$_last" ] || [ -n "$_has_since" ]; then
+		_dated=$(printf '%s\n' "$_rows" | restore_with_mtime)
+
+		# 上限。`--last` は起動時刻で切り、`--since` は切らない
+		# （現在時刻から遡る指定なので、上限は「いま」）。
+		_hi=''
+		if [ -n "$_last" ]; then
+			_hi=$(restore_boot_epoch) || _hi=''
+			[ -n "$_hi" ] ||
+				warn 'ccs: 起動時刻が取れないので、起動より前かどうかは見ません（CCS_RESTORE_BOOT_EPOCH で指定できます）。'
+		fi
+		if [ -n "$_hi" ]; then
+			_dated=$(printf '%s\n' "$_dated" |
+				awk -F'\t' -v hi="$_hi" 'NF == 4 && $4 < hi')
+		fi
+
+		# 下限。`--last` は塊の先頭（＝実質、停止の瞬間）から遡る。
+		if [ -n "$_last" ]; then
+			_t_last=$(printf '%s\n' "$_dated" |
+				awk -F'\t' 'NF == 4 && $4 > m { m = $4 } END { print m + 0 }')
+			if [ "${_t_last:-0}" -le 0 ] 2>/dev/null; then
+				printf '前回の停止まで生きていたセッションはありません。\n'
+				return 0
+			fi
+			_lo=$((_t_last - CCS_RESTORE_LAST_WINDOW))
+		else
+			_lo=$(($(date +%s) - _since_sec))
+		fi
+
+		_rows=$(printf '%s\n' "$_dated" |
+			awk -F'\t' -v lo="$_lo" 'BEGIN { OFS = "\t" }
+				NF == 4 && $4 >= lo { print $1, $2, $3 }')
 	fi
 
 	if [ -z "$_rows" ]; then
@@ -3047,7 +3261,15 @@ cmd_restore() {
 	[ -n "$_ready" ] || return 0
 
 	if [ -z "$_apply" ]; then
-		printf '実行するには: ccs restore --yes\n'
+		# **絞り込んだときは、その絞り込みごと繰り返せる形で出す。** ここで
+		# `ccs restore --yes` と出すと、絞ったつもりの人が全部戻すことになる。
+		if [ -n "$_last" ]; then
+			printf '実行するには: ccs restore --last --yes\n'
+		elif [ -n "$_has_since" ]; then
+			printf '実行するには: ccs restore --since %s --yes\n' "$_since"
+		else
+			printf '実行するには: ccs restore --yes\n'
+		fi
 		printf '別の会話を選ぶ: ccs restore <slug> --list\n'
 		return 0
 	fi
@@ -3129,10 +3351,14 @@ validate_config() {
 	[ "$CCS_HUB_SLUG" != 'tmp' ] ||
 		die "$EX_USAGE" 'CCS_HUB_SLUG に tmp は使えません（使い捨て作業枠の予約語です）'
 
-	for _v in CCS_SCRATCH_SLOTS CCS_NEW_TIMEOUT CCS_RESTORE_MAX_AGE CCS_HUB_RC_TIMEOUT CCS_HUB_BACKOFF_WINDOW CCS_HUB_BACKOFF_MAX CCS_HUB_AGENT_INTERVAL; do
+	for _v in CCS_SCRATCH_SLOTS CCS_NEW_TIMEOUT CCS_RESTORE_MAX_AGE CCS_RESTORE_LAST_WINDOW CCS_HUB_RC_TIMEOUT CCS_HUB_BACKOFF_WINDOW CCS_HUB_BACKOFF_MAX CCS_HUB_AGENT_INTERVAL; do
 		eval "_n=\$$_v"
 		is_uint "$_n" || die "$EX_USAGE" "${_v} は 0 以上の整数です: ${_n}"
 	done
+
+	# **空を許すので上の輪に混ぜられない。** 既定は空（OS に訊く）。
+	[ -z "$CCS_RESTORE_BOOT_EPOCH" ] || is_uint "$CCS_RESTORE_BOOT_EPOCH" ||
+		die "$EX_USAGE" "CCS_RESTORE_BOOT_EPOCH は epoch 秒（0 以上の整数）です: ${CCS_RESTORE_BOOT_EPOCH}"
 }
 
 config_source_of() {
@@ -3366,6 +3592,9 @@ hub_ensure_home() {
 - **自分自身（\`${CCS_PREFIX}${CCS_HUB_SLUG}\`）を畳まない。** 落とすと、スマホから
   操作する経路そのものが消える。立て直しは \`ccs hub restart\`
 - \`ccs kill\` / \`ccs gc --yes\` は、人がそう言ったときだけ
+- **再起動のあとの立て直しは \`ccs restore --last\`。** 前回の停止まで生きていた組
+  だけに絞れるので、slug を目視で選ばない。既定は dry-run なので、見てから
+  \`ccs restore --last --yes\`。素の \`ccs restore --yes\` は何日か前の残骸まで戻す
 
 このファイルは編集して構いません（ccs は上書きしません）。
 EOF
@@ -3596,8 +3825,13 @@ hub_restore_hint() {
 	[ "${_hb_n:-0}" -gt 0 ] 2>/dev/null || return 0
 	warn ''
 	warn "ccs: 止まっているセッションが ${_hb_n} 本あります（hub は立て直しました）。"
-	warn '  見る:     ccs restore'
-	warn '  立て直す: ccs restore --yes'
+	# **`--last` を先に出す。** ここへ来るのはたいてい再起動の直後で、
+	# 候補には「一緒に落ちた組」と「それ以前から止まっていた残骸」が混ざる。
+	# 素の `ccs restore --yes` は残骸まで立ち上げるので、既定の導線にしない。
+	warn '  前回の停止まで生きていた組だけ:'
+	warn '    見る:     ccs restore --last'
+	warn '    立て直す: ccs restore --last --yes'
+	warn "  止まっているもの全部（${_hb_n} 本）: ccs restore"
 }
 
 cmd_hub_status() {
