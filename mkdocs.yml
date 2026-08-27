@@ -70,6 +70,7 @@ nav:
       - ハブの組み込みツール: agent-tools.md
   - 運用:
       - hub を常時立てる: hub.md
+      - 盤面を 1 コマンドで取る: board.md
       - 止まったセッションを戻す: restore.md
       - 設定: configuration.md
   - 設計:

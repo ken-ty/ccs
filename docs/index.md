@@ -40,6 +40,7 @@ tmux・CLI を選んだ理由。
 | --- | --- |
 | `ccs new <target> [-- <初期プロンプト>]` | セッションを立てる |
 | `ccs ls [--json]` | 立っているものを一覧する |
+| [`ccs ls -l [--json]`](board.md) | 盤面 ── 直近の依頼 / RSS / 最終更新も出す |
 | `ccs attach [<slug>]` | 乗り込む（slug を省くと番号で選ぶ） |
 | `ccs kill [--force] <slug>` | 畳む |
 | `ccs gc [--yes]` | 止まったセッション・空の作業枠・不要になった worktree を掃除する |
