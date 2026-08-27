@@ -54,6 +54,7 @@ ccs attach [<slug>]                      # 人間が乗り込む（slug を省�
 ccs kill <slug>                          # ペインごと畳む
 ccs gc                                   # 死んだペイン・空の一時ディレクトリ・不要な worktree を掃除
 ccs restore [--yes] [<slug>...]          # 止まった／消えたセッションを同じ会話で立て直す
+ccs restore --last [--yes]               # 前回の停止まで生きていた組だけを戻す
 
 ccs hub up                               # ハブを立てる（生きていれば何もしない）
 ccs hub status [--json]                  # ハブの状態（終了コードで分岐できる）
@@ -158,6 +159,20 @@ ghq 配下で**印のある**会話）。印は「会話ログの 1 行目が `c
 `ccs new` が `-n <slug>` を渡すことに由来する ── デスクトップアプリや VS Code の
 会話は同じ場所に溜まるが、この印が付かないので拾わない。**`ccs hub up` は restore を
 しない**（自動起動から 5 分おきに走るので、人が畳んだものが生き返ってしまう）。
+
+候補には「一緒に落ちた組」と「それ以前からの残骸」が混ざる。**前者だけに絞るのが
+`--last`。**
+
+```console
+$ ccs restore --last          # 前回の停止まで生きていた組だけ（既定は dry-run）
+$ ccs restore --last --yes    # 戻す
+```
+
+根拠は会話ログの mtime。**OS のシャットダウンは生きている `claude` に SIGTERM を
+送り、`claude` はそこで会話ログを書き切る**ので、丸 1 日アイドルだったセッションも
+停止の瞬間の mtime を持つ（実測）。手で畳んだものはその瞬間に書き込みが止まるので、
+塊に乗らない。塊の切り出しには起動時刻（`kern.boottime` / `/proc/stat`）を基準点に使う。
+
 詳細は [docs/restore.md](docs/restore.md)。
 
 ## 自分の環境に合わせる
