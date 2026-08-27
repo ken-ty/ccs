@@ -382,6 +382,54 @@ _wt_commit() {
 	[[ "$output" != *"不要になった worktree"* ]] || return 1
 }
 
+@test "gc: 前提の確認 — git branch -d は上流に merge 済みなら通す" {
+	# **この挙動が gc の判定を「厳しい側」に置いている理由。**
+	# `branch -d` は「HEAD に merge 済み **または上流に merge 済み**」で通す。
+	# つまり push 済みでありさえすれば素通しするので、gc が push 済みだけで
+	# 消す候補にすると、`branch -d` は歯止めにならない。
+	#
+	# **当初これを「HEAD に merge 済みか」だけだと書いていた**（W3）。
+	# 実機で `close-19` を消したときに警告付きで通って気づいた。
+	_wt_repo
+	_wt_add pushed-wip
+	_wt_commit pushed-wip
+	git -C "${CCS_TEST_REPO}/.worktrees/pushed-wip" push -q -u origin pushed-wip
+	git -C "$CCS_TEST_REPO" worktree remove '.worktrees/pushed-wip'
+
+	run git -C "$CCS_TEST_REPO" branch -d pushed-wip
+	[ "$status" -eq 0 ]
+}
+
+@test "gc: push 済みでも main に未 merge なら報告だけ" {
+	# **gc は `git branch -d` より意図的に厳しい。** push 済みは
+	# コミットが remote に残っていることしか意味せず、作業が終わった
+	# ことを意味しない。掃除の対象は「終わったもの」であって
+	# 「保存されているもの」ではない。
+	_wt_repo
+	_wt_add pushed-wip
+	_wt_commit pushed-wip
+	git -C "${CCS_TEST_REPO}/.worktrees/pushed-wip" push -q -u origin pushed-wip
+
+	run "$CCS_BIN" gc
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"未 merge"* ]] || return 1
+	[[ "$output" != *"不要になった worktree"* ]] || return 1
+}
+
+@test "gc --yes: push 済み・未 merge の worktree は消さない" {
+	_wt_repo
+	_wt_add pushed-wip
+	_wt_commit pushed-wip
+	git -C "${CCS_TEST_REPO}/.worktrees/pushed-wip" push -q -u origin pushed-wip
+
+	run "$CCS_BIN" gc --yes
+	[ "$status" -eq 0 ]
+	[ -d "${CCS_TEST_REPO}/.worktrees/pushed-wip" ]
+
+	run git -C "$CCS_TEST_REPO" branch --list pushed-wip
+	[[ "$output" == *"pushed-wip"* ]] || return 1
+}
+
 # --- C. dirty ----------------------------------------------------------------
 
 @test "gc: 追跡外ファイルだけでも dirty として報告する" {
