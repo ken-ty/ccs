@@ -7,8 +7,14 @@
 
 ```bash
 git clone git@github.com:ken-ty/ccs.git ~/ghq/github.com/ken-ty/ccs
-ln -sf ~/ghq/github.com/ken-ty/ccs/bin/ccs ~/.local/bin/ccs
+cd ~/ghq/github.com/ken-ty/ccs && make install
 ```
+
+`make install` は `~/.local/share/ccs/versions/<版>` に置いて `~/.local/bin/ccs` を
+そこへ向ける（同じマシンの `claude` と同じ形）。**PATH の `ccs` が git の作業ツリーを
+指さない**のが要点 ── 指していると、走るコードは checkout の HEAD 次第で勝手に変わる。
+以降は `ccs hub up` の鼓動に相乗りして自動で最新に追従する。
+→ [版と更新](docs/versioning.md)
 
 ## なぜ要るのか
 
@@ -66,6 +72,7 @@ ccs hub agent [--print]                  # 自動起動（launchd / systemd）�
 ccs resolve <target> [--json]            # <target> がどこに解決されるかを見る
 ccs config [--json]                      # 効いている設定と、その出どころ
 ccs version [--short]                    # どの版が走っているか（コミットまで出る）
+ccs doctor                               # 何の版が入っていて、最新か
 ```
 
 `resolve` は副作用を持たない（使い捨て枠の確保を除く）。**立てる前に、どのリポジトリの

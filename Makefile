@@ -20,6 +20,7 @@ help:
 	@echo 'make reap   前回の実行が取り残したテストのサンドボックスを回収する'
 	@echo 'make docs   ドキュメントをローカルで配信する'
 	@echo
+	@echo 'make install      ccs を ~/.local/share/ccs へ入れて PATH の symlink を差し替える'
 	@echo 'make setup-hooks  git のフックを張る（clone したら 1 度。worktree では不要）'
 
 .PHONY: lint
@@ -42,6 +43,10 @@ lint:
 	@# テストの後片付けも検査する。**壊れても誰も気づかない**種類のもの
 	@# （黙って何も片付けなくなるだけ）なので、静的に見る。
 	$(SHELLCHECK) -s sh test/reap-tmux
+	@# インストーラも検査する。**入れる前に走る**ので、ccs 本体より先に
+	@# 壊れていることに気づけない ── 壊れたインストーラは「入らない」ではなく
+	@# 「変なものを入れる」side に倒れうる。
+	$(SHELLCHECK) -s sh scripts/install.sh
 	@# **素の `tmux` を禁じる。** ソケットを指定しない tmux は、利用者が実際に
 	@# 開いているサーバを触る。テストが中断されるとそこにセッションが残り、
 	@# `cc/` 接頭辞が無いので `ccs ls` にも出ない ── 誰も気づけない
@@ -99,6 +104,20 @@ lint:
 #
 # **CI は main への push でしか回らない。**このフックが唯一の関門なので、
 # 新しい clone では必ずこれを実行すること。
+# ccs を ghq のチェックアウトの外へ入れる。
+#
+# **PATH の ccs が作業ツリーを指したままだと、走るコードは main checkout の
+# HEAD 次第で勝手に変わる**（2026-08-29 の事故）。版ごとのディレクトリに
+# 置いて symlink で指す ── 同じマシンの claude / cursor-agent と同じ形。
+#
+# ここで入るのは**いまの作業ツリー**（dirty ならその印が版に付く）。
+# origin/main を入れたいときは scripts/install.sh --auto。
+.PHONY: install
+install:
+	./scripts/install.sh
+	@echo
+	@echo '確かめる: ccs doctor'
+
 .PHONY: setup-hooks
 setup-hooks:
 	git config core.hooksPath hooks
