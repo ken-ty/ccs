@@ -109,6 +109,27 @@ plist / timer に焼き込むので、設定ファイルや env を変えただ�
 | `CCS_HUB_BACKOFF_WINDOW` | `600` | 再起動の暴走を見る窓（秒） |
 | `CCS_HUB_BACKOFF_MAX` | `3` | その窓で許す再起動の回数 |
 
+## 版と更新
+
+置き場所と、自動更新の振る舞い。詳しくは **[版と更新](versioning.md)**。
+
+| キー | 既定 | 何を変えるか |
+| --- | --- | --- |
+| `CCS_INSTALL_ROOT` | `~/.local/share/ccs` | 版の置き場所（`versions/` と記録がここに入る） |
+| `CCS_BIN_DIR` | `~/.local/bin` | symlink を置く場所。**PATH が通っているところ**にする |
+| `CCS_AUTO_UPDATE` | `on` | `off` にすると自動では切り替えず、**検知して報告するだけ**になる |
+| `CCS_UPDATE_INTERVAL` | `3600` | 検知でネットワークを使う間隔（秒）。`hub up` は 5 分ごとに走るが、fetch はこの間隔に 1 回 |
+| `CCS_KEEP_VERSIONS` | `5` | 残す版の数。**2 未満にはならない** ── 巻き戻し先が消えては困る |
+
+### 自動更新を止める場合
+
+無人で切り替わるのが困る環境では `off` にする。検知そのものは続くので、
+古くなったことは `ccs doctor` と `hub.log` に出る。
+
+```
+CCS_AUTO_UPDATE=off
+```
+
 ## 差し替え点（テストと特殊な環境向け）
 
 | キー | 既定 |

@@ -12,7 +12,7 @@
 
 ```bash
 git clone git@github.com:ken-ty/ccs.git ~/ghq/github.com/ken-ty/ccs
-ln -sf ~/ghq/github.com/ken-ty/ccs/bin/ccs ~/.local/bin/ccs
+cd ~/ghq/github.com/ken-ty/ccs && make install
 ```
 
 必要なものは `tmux` と `jq`、それに `claude` 2.1.x 以降。

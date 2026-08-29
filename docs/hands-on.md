@@ -30,7 +30,7 @@ jq-1.8.1
     symlink を張る。
 
     ```bash
-    ln -sf ~/ghq/github.com/ken-ty/ccs/bin/ccs ~/.local/bin/ccs
+    cd ~/ghq/github.com/ken-ty/ccs && make install
     ```
 
 ??? question "`tmux` か `jq` が無い"

@@ -102,6 +102,11 @@ CCS_HUB_BACKOFF_MAX
 CCS_HUB_AUTOSTART
 CCS_HUB_AGENT_LABEL
 CCS_HUB_AGENT_INTERVAL
+CCS_INSTALL_ROOT
+CCS_BIN_DIR
+CCS_AUTO_UPDATE
+CCS_UPDATE_INTERVAL
+CCS_KEEP_VERSIONS
 '
 
 # どこから来た値かを覚えておく（`ccs config` が出す）。
@@ -296,6 +301,27 @@ load_config
 : "${CCS_HUB_AGENT_LABEL:=local.ccs.hub}"
 : "${CCS_HUB_AGENT_INTERVAL:=300}"
 
+# --- install（版の配布）-----------------------------------------------------
+#
+# **PATH の ccs は git の作業ツリーを指してはいけない。** 指していると、走る
+# コードは「main checkout の HEAD がその瞬間に何であるか」そのものになる
+# （2026-08-29 の事故）。版ごとのディレクトリに置いて symlink で指す。
+# 入れるのは scripts/install.sh で、ccs 自身は自分を更新しない ── 4 責務の
+# 5 つ目にしないため。ccs が知っているのは「インストーラがどこに居るか」だけ。
+: "${CCS_INSTALL_ROOT:=${HOME}/.local/share/ccs}"
+: "${CCS_BIN_DIR:=${HOME}/.local/bin}"
+
+# 古い版のまま気づかないことを防ぐ。**off にすれば自動では切り替わらない**
+# （検知と報告だけになる）。
+: "${CCS_AUTO_UPDATE:=on}"
+
+# 検知でネットワークを使う間隔（秒）。hub up は 300 秒ごとに走るが、
+# **毎回 fetch はしない。**
+: "${CCS_UPDATE_INTERVAL:=3600}"
+
+# 残す版の数。**巻き戻し先が消えては困る**ので 2 未満にはしない。
+: "${CCS_KEEP_VERSIONS:=5}"
+
 # ---------------------------------------------------------------------------
 # 版の導出
 #
@@ -417,6 +443,45 @@ cmd_version() {
 }
 
 # ---------------------------------------------------------------------------
+# インストーラとの境界
+#
+# **ccs は自分を更新しない。** どこから取ってきて、どう置いて、どう切り替えるか
+# は scripts/install.sh が持つ（その複製が $CCS_INSTALL_ROOT/bin/ccs-install に
+# 居る）。ccs が知っているのは「インストーラの在処」と「終了コードの意味」だけ。
+#
+# 分けているのは 4 責務（design.md §1）を守るため。`ccs upgrade` を生やすと、
+# ccs が GitHub とネットワークを知ることになる。
+# ---------------------------------------------------------------------------
+
+CCS_INSTALL_STALE=10   # 新しい版がある
+CCS_INSTALL_UNSURE=11  # 確認できなかった
+
+ccs_installer() {
+	_ci_path="${CCS_INSTALL_ROOT}/bin/ccs-install"
+	[ -x "$_ci_path" ] || return 1
+	printf '%s\n' "$_ci_path"
+}
+
+# インストーラを呼ぶ。
+#
+# **設定ファイルの値を env で渡す。** インストーラは設定ファイルを読まない
+# （読ませると設定の解析が 2 箇所にでき、必ず食い違う）。
+ccs_install_run() {
+	_ir_bin=$(ccs_installer) || return 127
+	CCS_INSTALL_ROOT="$CCS_INSTALL_ROOT" \
+		CCS_BIN_DIR="$CCS_BIN_DIR" \
+		CCS_UPDATE_INTERVAL="$CCS_UPDATE_INTERVAL" \
+		CCS_KEEP_VERSIONS="$CCS_KEEP_VERSIONS" \
+		CCS_GIT_BIN="$CCS_GIT_BIN" \
+		"$_ir_bin" "$@"
+}
+
+# `--check` の KEY=VALUE から 1 つ取る。
+ccs_install_field() {
+	printf '%s\n' "$1" | sed -n "s/^${2}=//p" | head -1
+}
+
+# ---------------------------------------------------------------------------
 # 終了コード
 #
 # 呼び出し側（ハブのエージェント、launchd）が分岐できるよう、意味を固定する。
@@ -476,6 +541,7 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
   ccs resolve <target> [--json]           <target> がどこに解決されるかを見る
   ccs resolve --tmp [--json]              次に取る作業枠を見る
   ccs config [--json]                     効いている設定と、その出どころを見る
+  ccs doctor                              いま何の版が走っていて、最新かを見る
   ccs help                                このヘルプ
   ccs version [--short]                   バージョン（--short は X.Y.Z だけ）
 
@@ -3963,6 +4029,51 @@ hub_teardown() {
 	printf '%s' "$_hb_old"
 }
 
+# 古い ccs のまま気づかないことを防ぐ。
+#
+# **新しいデーモンは作らない**（design.md §2.1）。`hub up` は launchd / systemd
+# から 5 分ごとに冪等に走っているので、その鼓動に相乗りする ── 既に在るものが
+# 気づくだけで、監視の仕組みを増やしてはいない。ネットワークを使うのは
+# CCS_UPDATE_INTERVAL（既定 1 時間）に 1 回だけ（間引きはインストーラ側）。
+#
+# **ここを実行しているのは、切り替えられる当人（古い版）である。** symlink の
+# 差し替えは走っているプロセスに影響しない（自分が開いたファイルを持ち続ける）
+# ので動作は安全だが、**記録に自分の版を書くと「何から何へ」を取り違える**。
+# 記録はインストーラが「切り替え後の版」で書く。
+#
+# 確認できなかったとき（オフライン等）は**騒がない**。5 分ごとに「分からない」
+# と言われても人にできることは無く、肝心の変化が埋もれる ── 「確認できていない」
+# を見せるのは、人が訊いたとき（`ccs doctor`）。
+hub_check_update() {
+	_hu_quiet=${1:-}
+
+	# インストーラが居ない = まだ install していない。何もしない。
+	ccs_installer >/dev/null 2>&1 || return 0
+
+	_hu_out=$(ccs_install_run --check 2>/dev/null) && _hu_st=0 || _hu_st=$?
+	[ "$_hu_st" = "$CCS_INSTALL_STALE" ] || return 0
+
+	_hu_latest=$(ccs_install_field "$_hu_out" latest)
+
+	if [ "$CCS_AUTO_UPDATE" = 'off' ]; then
+		hub_log 'update-available' "latest=${_hu_latest}"
+		[ -n "$_hu_quiet" ] || {
+			warn "ccs: 新しい版があります: ${_hu_latest}（自動更新は off）"
+			warn "  入れる: $(ccs_installer) --auto"
+		}
+		return 0
+	fi
+
+	if _hu_res=$(ccs_install_run --auto 2>&1); then
+		hub_log 'updated' "to=${_hu_latest}"
+		[ -n "$_hu_quiet" ] || warn "$_hu_res"
+	else
+		hub_log 'update-failed' "latest=${_hu_latest}"
+		warn "ccs: 新しい版 ${_hu_latest} に切り替えられませんでした。いまの版のまま続けます。"
+		warn '  何が起きたか: ccs doctor'
+	fi
+}
+
 cmd_hub_up() {
 	require_deps
 
@@ -3976,6 +4087,9 @@ cmd_hub_up() {
 		esac
 		shift
 	done
+
+	# 5 分ごとの鼓動に相乗りして、古いままを検知する。
+	hub_check_update "$_hb_quiet"
 
 	_hb_state=$(hub_state)
 
@@ -4419,6 +4533,88 @@ cmd_hub_agent() {
 	esac
 }
 
+# いま何が走っていて、それが最新かを 1 画面で見せる。
+#
+# **読むだけ。切り替えない。** 打つべきコマンドを出すところまでが仕事で、
+# 実行するのはインストーラ（`ccs` は自分を更新しない）。
+#
+# 事故（2026-08-29）のとき、この情報はどこからも取れなかった ── `ccs version`
+# は古い版と新しい版に同じ答えを返し、PATH の ccs が何を指しているかは
+# `ls -l` を打つしかなかった。
+cmd_doctor() {
+	[ $# -eq 0 ] || die "$EX_USAGE" "doctor: 知らない引数: $1"
+
+	printf '走っている ccs\n'
+	printf '  版:   %s\n' "$(ccs_build_id)"
+	printf '  実体: %s\n' "$(tilde_path "$(ccs_real_path "$0" 2>/dev/null || printf '?')")"
+
+	if [ -z "$CCS_BUILD" ]; then
+		printf '\n'
+		printf '  **これはインストールされた実体ではありません**（版が焼き込まれていない）。\n'
+		printf '  リポジトリの bin/ccs を直に叩いています。\n'
+	fi
+
+	_dr_link="${CCS_BIN_DIR}/ccs"
+	printf '\nPATH の ccs\n'
+	if [ -L "$_dr_link" ]; then
+		printf '  %s\n    → %s\n' "$(tilde_path "$_dr_link")" \
+			"$(tilde_path "$(readlink "$_dr_link")")"
+	elif [ -e "$_dr_link" ]; then
+		printf '  %s（**symlink ではありません**）\n' "$(tilde_path "$_dr_link")"
+	else
+		printf '  %s は在りません\n' "$(tilde_path "$_dr_link")"
+	fi
+
+	printf '\n更新\n'
+	if ! _dr_inst=$(ccs_installer); then
+		printf '  インストーラが居ません（%s）。\n' "$(tilde_path "${CCS_INSTALL_ROOT}/bin/ccs-install")"
+		printf '  まだ install していません。チェックアウトで:\n'
+		printf '    make install\n'
+		return "$EX_FAIL"
+	fi
+
+	_dr_out=$(ccs_install_run --check 2>/dev/null) && _dr_st=0 || _dr_st=$?
+	_dr_state=$(ccs_install_field "$_dr_out" state)
+	_dr_src=$(ccs_install_field "$_dr_out" source)
+	[ -n "$_dr_src" ] && printf '  install 元: %s\n' "$(tilde_path "$_dr_src")"
+	printf '  自動更新:   %s\n' "$CCS_AUTO_UPDATE"
+
+	case $_dr_state in
+	current)
+		printf '  状態:       最新（origin/main と同じ）\n'
+		;;
+	stale)
+		printf '  origin/main: %s\n' "$(ccs_install_field "$_dr_out" latest)"
+		printf '  状態:       **古い**\n'
+		if [ "$CCS_AUTO_UPDATE" = 'off' ]; then
+			printf '\n  入れる: %s --auto\n' "$(tilde_path "$_dr_inst")"
+		else
+			printf '\n  次の hub up（5 分以内）で自動的に切り替わります。\n'
+			printf '  いま入れる: %s --auto\n' "$(tilde_path "$_dr_inst")"
+		fi
+		;;
+	*)
+		# **黙って「最新です」と言わない。** 確認できていないなら、そう言う。
+		# 検知は fetch できて初めて意味を持つので、ここを曖昧にすると
+		# 「見ていないのに大丈夫と言う」状態になる。
+		if [ "$_dr_st" = "$CCS_INSTALL_UNSURE" ]; then
+			printf '  状態:       **確認できていません**\n'
+		else
+			printf '  状態:       **調べられませんでした**（インストーラが %s で終了）\n' "$_dr_st"
+		fi
+		_dr_why=$(ccs_install_field "$_dr_out" reason)
+		[ -n "$_dr_why" ] && printf '  理由:       %s\n' "$_dr_why"
+		;;
+	esac
+
+	printf '\n入っている版（* がいま指しているもの）\n'
+	ccs_install_run --list 2>/dev/null | sed 's/^/  /' || true
+	printf '\n  巻き戻す: %s --switch <版>\n' "$(tilde_path "$_dr_inst")"
+	printf '  記録:     %s\n' "$(tilde_path "${CCS_INSTALL_ROOT}/install.log")"
+
+	return "$_dr_st"
+}
+
 cmd_hub() {
 	[ $# -ge 1 ] || {
 		warn 'ccs: hub のサブコマンドを指定してください'
@@ -4479,6 +4675,7 @@ main() {
 	hub) cmd_hub "$@" ;;
 	resolve) cmd_resolve "$@" ;;
 	config) cmd_config "$@" ;;
+	doctor) cmd_doctor "$@" ;;
 	help | --help | -h) usage ;;
 	version | --version | -V) cmd_version "$@" ;;
 	*)
