@@ -73,6 +73,7 @@ nav:
       - 盤面を 1 コマンドで取る: board.md
       - 止まったセッションを戻す: restore.md
       - 設定: configuration.md
+      - 版と更新: versioning.md
   - 設計:
       - 設計調査: design.md
       - スマホから端末を触る: mobile-terminal.md

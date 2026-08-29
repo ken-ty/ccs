@@ -66,10 +66,13 @@ teardown() {
 	[ "$status" -eq 0 ]
 }
 
-@test "version: バージョンだけを出す" {
+@test "version: 1 行で版を出す" {
+	# **形の検証は test/unit/version.bats が持つ。** ここは入口の分岐だけ見る。
+	# 素の X.Y.Z を返す契約は `version --short` へ移った（そちらも version.bats）。
 	run "$CCS_BIN" version
 	[ "$status" -eq 0 ]
-	[[ "$output" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+	[ -n "$output" ]
+	[ "$(printf '%s' "$output" | grep -c .)" = '1' ]
 }
 
 # --- 使い方の誤り ----------------------------------------------------------

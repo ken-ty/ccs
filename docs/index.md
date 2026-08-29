@@ -48,6 +48,7 @@ tmux・CLI を選んだ理由。
 | [`ccs restore [--yes]`](restore.md) | 止まった／消えたセッションを同じ会話で立て直す |
 | `ccs resolve <target> [--json]` | 立てる前に、どこに解決されるかを見る |
 | `ccs config [--json]` | 効いている設定と、その出どころを見る |
+| [`ccs version [--short]`](versioning.md) | どの版が走っているかを見る（コミットまで） |
 | [`ccs hub …`](hub.md) | 常時 1 本のハブを立て、落ちても戻るようにする |
 
 ## 手元にいないときのために
