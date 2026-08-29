@@ -263,6 +263,56 @@ ccs_advance_upstream() {
 	[ "$(cat "${CCS_INSTALL_ROOT}/current")" = "$before" ]
 }
 
+# --- install 元が消えたとき ----------------------------------------------
+
+@test "check: install 元が消えたら「分からない」と言う（別のリポジトリにすり替えない）" {
+	# **実測で踏んだバグ。** 控えが辿れないときに「自分が居るリポジトリ」へ
+	# 落ちると、**基準点が黙って別のリポジトリにすり替わる** ── install 元を
+	# 消したあと ccs の作業ツリーから --check を打つと、そちらの origin/main を
+	# 「新しい版」として報告した。検知の根拠が入れ替わるのは、古さを見逃すより悪い。
+	ccs_make_upstream
+	"$CCS_INSTALLER" "$repo" >/dev/null
+	gone="$repo"
+	rm -rf "$repo"
+
+	run "$CCS_INSTALLER" --check --force
+	[ "$status" -eq 11 ]
+	[[ "$output" == *"state=unsure"* ]] || return 1
+	# 消えた場所を名指しする（何を直せばよいか分かるように）。
+	[[ "$output" == *"${gone}"* ]] || return 1
+	# **別のリポジトリを基準にしていない。**
+	[[ "$output" != *"state=stale"* ]] || return 1
+	[[ "$output" != *"$CCS_REPO_ROOT"* ]] || return 1
+}
+
+@test "auto: install 元が消えたら切り替えない" {
+	ccs_make_upstream
+	"$CCS_INSTALLER" "$repo" >/dev/null
+	before=$(cat "${CCS_INSTALL_ROOT}/current")
+	rm -rf "$repo"
+
+	run "$CCS_INSTALLER" --auto
+	[ "$status" -eq 11 ]
+	[ "$(cat "${CCS_INSTALL_ROOT}/current")" = "$before" ]
+}
+
+@test "switch: install 元が消えても巻き戻せる（複製を置いている狙い）" {
+	# インストーラの複製と過去の版は $CCS_INSTALL_ROOT に残る。
+	# **巻き戻しがチェックアウトに依存したら「別 path で管理する」が徹底できない。**
+	ccs_make_upstream
+	"$CCS_INSTALLER" "$repo" >/dev/null
+	first=$(cat "${CCS_INSTALL_ROOT}/current")
+	ccs_advance_upstream
+	"$CCS_INSTALLER" --auto >/dev/null
+	rm -rf "$repo"
+
+	run "${CCS_INSTALL_ROOT}/bin/ccs-install" --switch "$first"
+	[ "$status" -eq 0 ]
+	[ "$(cat "${CCS_INSTALL_ROOT}/current")" = "$first" ]
+	run "${CCS_BIN_DIR}/ccs" version
+	[ "$output" = "$first" ]
+}
+
 # --- 巻き戻し --------------------------------------------------------------
 
 @test "switch: 1 手で前の版へ戻せる" {

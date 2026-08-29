@@ -137,19 +137,36 @@ read_meta() {
 	sed -n "s/^${_rm_key}=//p" "${META_DIR}/${_rm_id}" | head -1
 }
 
-# install 元のチェックアウト。覚えていなければ、このスクリプトの在処から辿る。
-resolve_source() {
-	if [ -f "$SOURCE_FILE" ]; then
-		_rs=$(cat "$SOURCE_FILE")
-		# worktree の .git は**ファイル**なので、-d だけでは弾いてしまう。
-		if [ -d "${_rs}/.git" ] || [ -f "${_rs}/.git" ]; then
-			printf '%s\n' "$_rs"
-			return 0
-		fi
+# 控えてある install 元のチェックアウト。**代わりを勝手に探さない。**
+#
+# 消えていたら「分からない」と言う。ここで「自分が居るリポジトリ」に落ちると、
+# **基準点が黙って別のリポジトリにすり替わる** ── 実測で踏んだ: install 元を
+# 消したあと ccs の作業ツリーから --check を打つと、そちらの origin/main を
+# 「新しい版」として報告した。検知の根拠が入れ替わるのは、古さを見逃すより悪い。
+recorded_source() {
+	[ -f "$SOURCE_FILE" ] || return 1
+	_rs=$(cat "$SOURCE_FILE")
+	[ -n "$_rs" ] || return 1
+	# worktree の .git は**ファイル**なので、-d だけでは弾いてしまう。
+	if [ -d "${_rs}/.git" ] || [ -f "${_rs}/.git" ]; then
+		printf '%s\n' "$_rs"
+		return 0
 	fi
-	_rs_self=$(cd "$(dirname "$0")" && pwd -P)
-	_rs_top=$("$CCS_GIT_BIN" -C "$_rs_self" rev-parse --show-toplevel 2>/dev/null) || return 1
-	printf '%s\n' "$_rs_top"
+	return 1
+}
+
+# 控えが無いときに、このスクリプトの在処から辿る。
+#
+# **初回の install 専用。** clone しただけの状態で `make install` を打てる
+# ようにするためのもので、検知（--check / --auto）では使わない。
+enclosing_checkout() {
+	_ec_self=$(cd "$(dirname "$0")" && pwd -P) || return 1
+	"$CCS_GIT_BIN" -C "$_ec_self" rev-parse --show-toplevel 2>/dev/null
+}
+
+resolve_source() {
+	recorded_source && return 0
+	enclosing_checkout
 }
 
 # --- 切り替え ---------------------------------------------------------------
@@ -324,9 +341,19 @@ do_check() {
 	_dc_installed=$(read_current)
 	[ -n "$_dc_installed" ] || _dc_installed='(未インストール)'
 
-	_dc_repo=$(resolve_source) || {
-		printf 'state=unsure\ninstalled=%s\nreason=%s\n' \
-			"$_dc_installed" 'install 元のチェックアウトが分かりません'
+	# **控えてある install 元だけを見る**（resolve_source の fallback は使わない）。
+	# 代わりを探すと基準点が黙って別のリポジトリにすり替わる。
+	_dc_repo=$(recorded_source) || {
+		_dc_was=''
+		[ -f "$SOURCE_FILE" ] && _dc_was=$(cat "$SOURCE_FILE")
+		if [ -n "$_dc_was" ]; then
+			printf 'state=unsure\ninstalled=%s\nfetched=no\nreason=%s\n' \
+				"$_dc_installed" \
+				"install 元のチェックアウトがありません: ${_dc_was}（消えた／移動した？）"
+		else
+			printf 'state=unsure\ninstalled=%s\nfetched=no\nreason=%s\n' \
+				"$_dc_installed" 'install 元のチェックアウトを控えていません'
+		fi
 		return "$EX_UNSURE"
 	}
 
