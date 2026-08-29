@@ -66,6 +66,27 @@ lint:
 		echo '行末に `|| return 1` を足してください。' >&2; \
 		exit 1; \
 	fi
+	@# **焼き込み済みの bin/ccs をコミットさせない。** CCS_BUILD は
+	@# scripts/install.sh が install 時に埋めるところで、リポジトリの中では
+	@# 必ず空。埋まったままコミットすると、そのファイルはどのコミットに
+	@# 置かれても同じ版を名乗り続ける ── 手書きの番号が 0.0.3 で止まって
+	@# 「restore --last を持つ版と持たない版が同じ答えを返す」に陥ったのと
+	@# **まったく同じ壊れ方**を、自動化した経路で再現することになる。
+	@if ! grep -q "^CCS_BUILD=''$$" bin/ccs; then \
+		echo 'bin/ccs の CCS_BUILD が空ではありません。' >&2; \
+		grep -n '^CCS_BUILD=' bin/ccs >&2; \
+		echo '' >&2; \
+		echo '焼き込みは install が行うもので、コミットしてはいけません。' >&2; \
+		echo "CCS_BUILD='' に戻してください。" >&2; \
+		exit 1; \
+	fi
+	@# 錨（tag がまだ無いときの版）は X.Y.Z の形であること。
+	@# `--short` が返す対外的な契約がここから出るため。
+	@if ! grep -qE "^CCS_VERSION='[0-9]+\.[0-9]+\.[0-9]+'$$" bin/ccs; then \
+		echo 'bin/ccs の CCS_VERSION が X.Y.Z の形ではありません。' >&2; \
+		grep -n '^CCS_VERSION=' bin/ccs >&2; \
+		exit 1; \
+	fi
 
 # core.hooksPath は .git/config に入る**リポジトリごとのローカル設定**で、
 # **clone には付いてこない**（.git/config は複製されない）。だから clone したら

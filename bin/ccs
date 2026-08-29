@@ -8,7 +8,26 @@
 
 set -eu
 
+# --- 版 ---------------------------------------------------------------------
+#
+# **版は人が打つものではなく、コミットから導出する。**
+#
+# 手書きの番号は実際に腐った ── 0.1.0 → 0.2.0 → **0.0.1**（docs だけの PR で
+# 後退している）→ 0.0.3 と動いたあと、3 つの機能 PR をまたいで 0.0.3 のまま
+# 止まっていた。その間 `ccs version` は、`restore --last` を**持つ**版と
+# **持たない**版に同じ答えを返していた ── **「前」と「後」を区別できない番号は
+# 版として機能しない**。実際、それが原因の事故（PATH の ccs が古く
+# `--last` を知らない）を `ccs version` では診断できなかった。
+#
+# CCS_VERSION は **tag がまだ無いときの錨**。tag を打てばそちらが勝つ。
+# CCS_BUILD は **install が焼き込む**（scripts/install.sh）。ここが埋まって
+# いる = repo の外へコピーされた実体、という意味になる。
+#
+# **コミットされた bin/ccs では CCS_BUILD は必ず空。** 焼き込み済みの
+# ファイルをコミットすると、そこから先ずっと嘘の版を名乗り続ける
+# （まさに手書き番号が腐ったのと同じ壊れ方）。`make lint` が見張る。
 CCS_VERSION='0.0.3'
+CCS_BUILD=''
 
 # ---------------------------------------------------------------------------
 # 出力
@@ -278,6 +297,126 @@ load_config
 : "${CCS_HUB_AGENT_INTERVAL:=300}"
 
 # ---------------------------------------------------------------------------
+# 版の導出
+#
+# 焼き込み（installed）→ git から導出（repo / worktree）→ unknown の 3 段。
+# ---------------------------------------------------------------------------
+
+# symlink をたどって実体のパスを返す。
+#
+# **`ccs_self_path` と使い分ける。** あちらは自動起動のユニットに焼き込む
+# パスなので、**symlink のまま**でなければならない（版を切り替えたときに
+# launchd が新しい実体を掴むのは、symlink を経由しているからこそ）。
+# こちらは「自分のソースが git の中にあるか」を見るためのものなので、
+# 実体まで解決する。混ぜると、版を切り替えても launchd が古い実体に
+# 貼り付いたままになる。
+#
+# `readlink -f` は使わない（BSD に無い時期がある）。自前でたどる。
+ccs_real_path() {
+	_rp=$1
+	_rp_hops=0
+	while [ -L "$_rp" ] && [ "$_rp_hops" -lt 16 ]; do
+		_rp_hops=$((_rp_hops + 1))
+		_rp_link=$(readlink "$_rp" 2>/dev/null) || break
+		case $_rp_link in
+		/*) _rp=$_rp_link ;;
+		*) _rp="$(dirname "$_rp")/${_rp_link}" ;;
+		esac
+	done
+	_rp_dir=$(cd "$(dirname "$_rp")" 2>/dev/null && pwd -P) || return 1
+	printf '%s/%s\n' "$_rp_dir" "$(basename "$_rp")"
+}
+
+# 自分のソースが置かれている git リポジトリから版を導出する。
+#
+# 出力は `<種別> <値>` の 2 語。種別は `tag` か `sha`。
+#
+# **種別を綴りから当てない。** 短い sha は数字で始まることがある
+# （実測: `3f5673a`）ので、「数字で始まれば tag 由来」は誤判定する。
+# `--always` を付けずに `describe` させ、**成否そのもの**を種別にする ──
+# tag が 1 つも無ければ describe は失敗するので、そこで sha に落とす。
+ccs_describe_self() {
+	# **`$0` は必ずパスになる**ので、PATH から引き直す必要は無い。shebang の
+	# スクリプトはカーネルがインタプリタに**パスを渡して**起動するため、
+	# argv[0] を偽装しても（`exec -a`）`$0` はパスのまま ── 実測で確認した。
+	# 相対パス（`./bin/ccs` や `sh ccs`）のときも、指す先は必ず本体の在処。
+	_vd_self=$(ccs_real_path "$0" 2>/dev/null) || return 1
+	_vd_dir=$(dirname "$_vd_self")
+	_vd_git="${CCS_GIT_BIN:-git}"
+
+	if _vd_out=$("$_vd_git" -C "$_vd_dir" describe --tags --dirty 2>/dev/null) &&
+		[ -n "$_vd_out" ]; then
+		printf 'tag %s\n' "${_vd_out#v}"
+		return 0
+	fi
+
+	_vd_sha=$("$_vd_git" -C "$_vd_dir" rev-parse --short HEAD 2>/dev/null) || return 1
+	[ -n "$_vd_sha" ] || return 1
+	# `describe --dirty` と同じ基準（追跡されている変更だけを見る）に揃える。
+	"$_vd_git" -C "$_vd_dir" diff --quiet HEAD 2>/dev/null || _vd_sha="${_vd_sha}-dirty"
+	printf 'sha %s\n' "$_vd_sha"
+}
+
+# 版の文字列。
+#
+# **焼き込みがあればそれを信じる。** repo の外に出た実体は git を引けないので、
+# ここが唯一の根拠になる。無いときだけ git に訊き、それも駄目なら unknown。
+ccs_build_id() {
+	if [ -n "$CCS_BUILD" ]; then
+		printf '%s\n' "$CCS_BUILD"
+		return 0
+	fi
+
+	if _vb_desc=$(ccs_describe_self); then
+		case $_vb_desc in
+		# tag 由来 ── それ自体が版。
+		'tag '*) printf '%s\n' "${_vb_desc#tag }" ;;
+		# tag がまだ無い ── 錨に sha を足して版にする。
+		*) printf '%s+%s\n' "$CCS_VERSION" "${_vb_desc#sha }" ;;
+		esac
+		return 0
+	fi
+
+	printf '%s+unknown\n' "$CCS_VERSION"
+}
+
+# 機械可読な X.Y.Z だけ。`--short` が返すもの。
+#
+# **この形は対外的な契約**（以前の `ccs version` の出力そのもの）。
+# 最初の `-` か `+` までを取る: 0.0.3+3fed500 → 0.0.3 / 0.1.0-3-g… → 0.1.0
+ccs_version_short() {
+	_vs_id=$(ccs_build_id)
+	_vs_id=${_vs_id%%+*}
+	_vs_id=${_vs_id%%-*}
+	printf '%s\n' "$_vs_id"
+}
+
+cmd_version() {
+	_vc_short=''
+	while [ $# -gt 0 ]; do
+		case $1 in
+		-s | --short) _vc_short=1 ;;
+		*) die "$EX_USAGE" "version: 知らないオプション: $1" ;;
+		esac
+		shift
+	done
+
+	if [ -n "$_vc_short" ]; then
+		ccs_version_short
+		return 0
+	fi
+
+	# **焼き込まれていない = インストールされた実体ではない**ことを言う。
+	# 手元の worktree を直に叩いているのか、入っているものを叩いているのかは、
+	# 一致していないときに真っ先に知りたい情報。
+	if [ -n "$CCS_BUILD" ]; then
+		printf '%s\n' "$(ccs_build_id)"
+	else
+		printf '%s (dev)\n' "$(ccs_build_id)"
+	fi
+}
+
+# ---------------------------------------------------------------------------
 # 終了コード
 #
 # 呼び出し側（ハブのエージェント、launchd）が分岐できるよう、意味を固定する。
@@ -338,7 +477,7 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
   ccs resolve --tmp [--json]              次に取る作業枠を見る
   ccs config [--json]                     効いている設定と、その出どころを見る
   ccs help                                このヘルプ
-  ccs version                             バージョン
+  ccs version [--short]                   バージョン（--short は X.Y.Z だけ）
 
 <target>:
   <repo>        ghq 配下のリポジトリ名（例: x01）
@@ -4341,7 +4480,7 @@ main() {
 	resolve) cmd_resolve "$@" ;;
 	config) cmd_config "$@" ;;
 	help | --help | -h) usage ;;
-	version | --version | -V) printf '%s\n' "$CCS_VERSION" ;;
+	version | --version | -V) cmd_version "$@" ;;
 	*)
 		warn "ccs: 未知のサブコマンド: ${_cmd}"
 		warn ''

@@ -65,6 +65,7 @@ ccs hub agent [--print]                  # 自動起動（launchd / systemd）�
 
 ccs resolve <target> [--json]            # <target> がどこに解決されるかを見る
 ccs config [--json]                      # 効いている設定と、その出どころ
+ccs version [--short]                    # どの版が走っているか（コミットまで出る）
 ```
 
 `resolve` は副作用を持たない（使い捨て枠の確保を除く）。**立てる前に、どのリポジトリの
@@ -224,7 +225,7 @@ make docs-build  # 静的ビルド
 
 ## 関連
 
-- [hub の運用](docs/hub.md) / [設定](docs/configuration.md)
+- [hub の運用](docs/hub.md) / [設定](docs/configuration.md) / [版と更新](docs/versioning.md)
 - スキル側（ハブがいつ・どう呼ぶかの判断）は `agent-skills-store` の `cross-session-hub`
 - 調査で参照した資料は [docs/references.md](docs/references.md)
 
