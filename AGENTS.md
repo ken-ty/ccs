@@ -239,8 +239,8 @@ macOS は `$TMPDIR` を数日で自動的に掃除する ── **プロセス�
 ### 手元の環境に依存させない
 
 CI（ubuntu / tmux の外 / C ロケール）と手元（macOS / **tmux の中** / ja_JP.UTF-8）は
-違う。ここを踏むと「CI では通るのに手元でだけ落ちる」が起きて、
-**検証ゲート（下記）が使い物にならなくなる**。実際に 2 つ踏んだ。
+違う。ここを踏むと「CI では通るのに手元でだけ落ちる」（逆もある）が起きて、
+**検証ゲート（下記）が使い物にならなくなる**。実際に 3 つ踏んだ。
 
 - **ロケール**: macOS 標準の bash 3.2 + bats だと、日本語を含むテスト名が化けて
   「unknown test name」になり **1 件も実行されない**。Makefile の
@@ -248,6 +248,16 @@ CI（ubuntu / tmux の外 / C ロケール）と手元（macOS / **tmux の中**
 - **tmux**: ccs は tmux のためのツールなので、開発者は **tmux の中**で
   `make check` を回す。「tmux の外」を前提にするテストは ambient の `$TMUX` を
   継承しないよう、**テスト側で明示的に `unset TMUX TMUX_PANE` する**
+- **git の既定ブランチ名**: `git init` が作る HEAD は `init.defaultBranch` 次第で、
+  macOS の Apple Git は `main`、**ubuntu の既定は `master`**。テストが bare
+  リポジトリを作って `main` を push すると、**bare の HEAD は `master` を指したまま**に
+  なり、そこから `clone` しても**作業ツリーが空**になる ── `${dir}/bin/ccs` への
+  追記が `No such file or directory` で落ちる。**手元では緑、CI でだけ 12 件落ちた**
+  （2026-08-29、実測）。bare を作ったら
+  `git -C <bare> symbolic-ref HEAD refs/heads/main` で**明示する**。
+  **Makefile で既定を固定しない** ── 固定すると `make check` が runner の条件を
+  二度と再現できなくなる。手元で runner を模すには
+  `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch GIT_CONFIG_VALUE_0=master`
 
 ## 検証ゲート — 手元とマージ前の 2 段
 

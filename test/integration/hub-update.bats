@@ -37,6 +37,12 @@ ccs_make_upstream() {
 	up="${CCS_TEST_TMP}/upstream.git"
 	repo="${CCS_TEST_TMP}/repo"
 	git init -q --bare "$up"
+	# **既定のブランチ名を環境に決めさせない。** `git init` が作る HEAD は
+	# `init.defaultBranch` 次第で、macOS の Apple Git は `main`、ubuntu の
+	# 既定は `master`。放っておくと bare の HEAD が `master` を指したまま
+	# `main` を push することになり、**clone しても作業ツリーが空**になる ──
+	# 手元では緑で CI でだけ 12 件落ちた（2026-08-29、実測）。
+	git -C "$up" symbolic-ref HEAD refs/heads/main
 	git clone -q "$up" "$repo" 2>/dev/null
 	mkdir -p "${repo}/bin"
 	cp "$CCS_BIN" "${repo}/bin/ccs"
