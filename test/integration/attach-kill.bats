@@ -351,3 +351,149 @@ _pick() {
 	[ "$status" -eq 0 ]
 	[[ "$output" != *"worktree は残しています"* ]] || return 1
 }
+
+# --- 自分で終わる（--self） ------------------------------------------------
+#
+# **アプリでアーカイブしても tmux のセッションは残る。** アーカイブは会話一覧の
+# 操作で、CLI のプロセスは生き続ける ── `ccs` が idle を誤読しているのではなく、
+# 本当に生きている（実測 2026-08-28。bin/ccs の `kill_self_slug` の上）。だから
+# 終わる意思のあるセッションが自分で終わる口を用意する。
+#
+# **「中から呼んだ」ことは、ここでは env で作る。** 本当にペインの中から実行すると
+# 自分ごと消えるので、テストのプロセスが結果を見られない。`current_tmux_session` が
+# 見るのは `$TMUX` / `$TMUX_PANE` とソケットの一致だけなので、そこを揃えれば
+# 判定は同じ経路を通る。**「自分を殺したプロセスが最後まで走れない」ところだけは
+# ここでは再現できない**ので、それは docs/hands-on.md の手動確認が受け持つ。
+
+# そのセッションの中から呼んだように見せる env を組み立てる。
+_inside() {
+	local sock pane
+	sock=$(ccs_tmux display-message -p '#{socket_path}')
+	pane=$(ccs_tmux list-panes -t "=cc/$1" -F '#{pane_id}' | head -1)
+	printf 'TMUX=%s,1,0\nTMUX_PANE=%s\n' "$sock" "$pane"
+}
+
+# `ccs kill --self` を、そのセッションの中から呼んだ形で実行する。
+_run_self() {
+	local slug=$1
+	shift
+	# shellcheck disable=SC2046  # 1 行 1 変数なので分割してよい
+	run env $(_inside "$slug") "$CCS_BIN" kill --self "$@"
+}
+
+@test "kill --self: slug を打たずに自分を畳む" {
+	_new myrepo >/dev/null
+	ccs_tmux has-session -t '=cc/myrepo'
+
+	_run_self myrepo
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"cc/myrepo を畳みました"* ]] || return 1
+
+	run ccs_tmux has-session -t '=cc/myrepo'
+	[ "$status" -ne 0 ]
+}
+
+@test "kill --self: 作業中でも畳める（自分が作業中だから）" {
+	# **この ccs を動かしているのが自分自身**なので、自分の status は必ず
+	# 作業中になる。ここに working の門を掛けると --self は常に断られる。
+	export FAKE_CLAUDE_STATUS=working
+	_new myrepo >/dev/null
+
+	_run_self myrepo
+	[ "$status" -eq 0 ]
+
+	run ccs_tmux has-session -t '=cc/myrepo'
+	[ "$status" -ne 0 ]
+}
+
+@test "kill --self: 報告は畳む前に出し切る" {
+	# 畳んだあとに置いた処理は動かない（ペインごと消える）。順序が仕様。
+	_out=$(_new myrepo)
+	_id=$(echo "$_out" | jq -r '.sessionId')
+
+	_run_self myrepo
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"claude --resume ${_id}"* ]] || return 1
+}
+
+@test "kill --self: 未コミットの変更があれば断る" {
+	# ファイルは消えないが、終わると言っている本人に「本当に終わったのか」を
+	# 訊けるのは作業ツリーの状態だけ。追跡していないファイルも数える。
+	local _repo="${CCS_TEST_TMP}/ghq/github.com/o/x01"
+	ccs_make_git_repo "$_repo"
+	ccs_stub_ghq "$_repo"
+	run --separate-stderr "$CCS_BIN" new x01
+	[ "$status" -eq 0 ]
+	printf 'wip\n' >"${_repo}/wip.txt"
+
+	_run_self x01
+	[ "$status" -eq 1 ]
+	[[ "$output" == *"未コミット"* ]] || return 1
+	[[ "$output" == *"--force"* ]] || return 1
+
+	ccs_tmux has-session -t '=cc/x01'
+}
+
+@test "kill --self --force: 未コミットでも畳む" {
+	local _repo="${CCS_TEST_TMP}/ghq/github.com/o/x01"
+	ccs_make_git_repo "$_repo"
+	ccs_stub_ghq "$_repo"
+	run --separate-stderr "$CCS_BIN" new x01
+	[ "$status" -eq 0 ]
+	printf 'wip\n' >"${_repo}/wip.txt"
+
+	_run_self x01 --force
+	[ "$status" -eq 0 ]
+
+	run ccs_tmux has-session -t '=cc/x01'
+	[ "$status" -ne 0 ]
+}
+
+@test "kill --self: git の管理下でなければ門は掛からない" {
+	# 使い捨ての作業枠は git リポジトリではない。ここで断ると畳めなくなる。
+	_new myrepo >/dev/null
+
+	_run_self myrepo
+	[ "$status" -eq 0 ]
+}
+
+@test "kill --self: worktree は残し、片付け先を案内する" {
+	# **kill と同じ方針。** 自分で終わったからといって作業ツリーは消さない。
+	local _repo="${CCS_TEST_TMP}/ghq/github.com/o/x01"
+	ccs_make_git_repo "$_repo"
+	ccs_stub_ghq "$_repo"
+
+	run --separate-stderr "$CCS_BIN" new 'x01@topic'
+	[ "$status" -eq 0 ]
+	local _p
+	_p=$(echo "$output" | jq -r '.path')
+
+	_run_self 'x01@topic'
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"worktree は残しています"* ]] || return 1
+	[ -d "$_p" ]
+}
+
+@test "kill --self: hub は畳ませない" {
+	# **hub が落ちると、スマホから ccs を叩く経路そのものが消える。**
+	export CCS_HUB_HOME="${CCS_TEST_TMP}/hub"
+	run "$CCS_BIN" hub up
+	[ "$status" -eq 0 ]
+
+	_run_self hub
+	[ "$status" -eq 1 ]
+	[[ "$output" == *"hub"* ]] || return 1
+
+	ccs_tmux has-session -t '=cc/hub'
+}
+
+@test "kill --self --force: hub は --force でも畳ませない" {
+	export CCS_HUB_HOME="${CCS_TEST_TMP}/hub"
+	run "$CCS_BIN" hub up
+	[ "$status" -eq 0 ]
+
+	_run_self hub --force
+	[ "$status" -eq 1 ]
+
+	ccs_tmux has-session -t '=cc/hub'
+}
