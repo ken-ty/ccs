@@ -497,3 +497,96 @@ _run_self() {
 
 	ccs_tmux has-session -t '=cc/hub'
 }
+
+# --- 管轄外のセッションが自分で終わる（--self、A2） ------------------------
+#
+# **`cc/` のペインを持たないセッションにも、終わる意思はある。** アプリや
+# VS Code から開いたものは ccs 管轄外なので `kill_self_slug` が成立しないが、
+# `--self` が言っているのは「自分が終わる」であって「ccs が立てたものを畳む」
+# ではない。`ccs adopt`（A1）が「引き取るので閉じて」と頼んだときの受け皿。
+#
+# **claude 役は「ccs を呼ぶ親プロセス」で作る。** `self_registry_file` は
+# 祖先の pid でレジストリを引くので、親が自分のぶんの項目を書いてから ccs を
+# 呼べば、本物と同じ経路をそのまま通る。SIGTERM を trap して受け取ったことを
+# 記録するので、畳まれても最後まで走れる（**本物はここで死ぬ**ので、
+# 「殺したプロセスが走り切れない」ところだけは docs/hands-on.md が受け持つ）。
+
+_SELF_UUID='11111111-2222-3333-4444-555555555555'
+
+_run_self_external() {
+	local _cwd=$1
+	shift
+	cat >"${CCS_TEST_TMP}/outsider.sh" <<EOF
+unset TMUX TMUX_PANE
+trap 'echo GOT-TERM' TERM
+printf '{"pid":%d,"sessionId":"%s","cwd":"%s","name":"%s"}\n' \\
+	"\$\$" '${_SELF_UUID}' '${_cwd}' 'outsider' >"\${CCS_SESSIONS_DIR}/\$\$.json"
+'${CCS_BIN}' kill --self $*
+echo "ccs=\$?"
+EOF
+	run sh "${CCS_TEST_TMP}/outsider.sh"
+}
+
+@test "kill --self: 管轄外のセッションでも自分を畳める" {
+	local _cwd="${CCS_TEST_TMP}/outside"
+	mkdir -p "$_cwd"
+
+	_run_self_external "$_cwd"
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"outsider を畳みました"* ]] || return 1
+	[[ "$output" == *"ccs=0"* ]] || return 1
+	# SIGTERM が本当に届いた。**畳んだと言うだけでは終わっていない。**
+	[[ "$output" == *"GOT-TERM"* ]] || return 1
+}
+
+@test "kill --self: 管轄外でも uuid を添える（戻る手掛かりを消さない）" {
+	local _cwd="${CCS_TEST_TMP}/outside"
+	mkdir -p "$_cwd"
+
+	_run_self_external "$_cwd"
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"claude --resume ${_SELF_UUID}"* ]] || return 1
+}
+
+@test "kill --self: 管轄外でも未コミットの変更があれば断る" {
+	local _repo="${CCS_TEST_TMP}/outside-repo"
+	ccs_make_git_repo "$_repo"
+	printf 'wip\n' >"${_repo}/wip.txt"
+
+	_run_self_external "$_repo"
+	[[ "$output" == *"未コミットの変更があります"* ]] || return 1
+	[[ "$output" == *"ccs=1"* ]] || return 1
+	# **断ったなら畳んでいない。**
+	[[ "$output" != *"GOT-TERM"* ]] || return 1
+}
+
+@test "kill --self --force: 管轄外で未コミットでも畳む" {
+	local _repo="${CCS_TEST_TMP}/outside-repo"
+	ccs_make_git_repo "$_repo"
+	printf 'wip\n' >"${_repo}/wip.txt"
+
+	_run_self_external "$_repo" --force
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"GOT-TERM"* ]] || return 1
+}
+
+@test "kill --self: 祖先でないレジストリは掴まない" {
+	# **ここが `CLAUDE_PID` を信じない理由。** レジストリに項目があるだけの
+	# 他人を「自分」と読むと、`--self` が他人を畳む道具になる。祖先を辿る限り
+	# 見つかるものは定義上そのプロセスの親なので、取り違えが起きない。
+	sleep 30 &
+	local _other=$!
+	# 畳んだときのジョブ通知でテスト出力を汚さない。
+	disown "$_other" 2>/dev/null || true
+	printf '{"pid":%d,"sessionId":"%s","cwd":"%s","name":"%s"}\n' \
+		"$_other" "$_SELF_UUID" "$CCS_TEST_TMP" 'someone-else' \
+		>"${CCS_SESSIONS_DIR}/${_other}.json"
+
+	run --separate-stderr env -u TMUX -u TMUX_PANE "$CCS_BIN" kill --self
+	[ "$status" -eq 2 ]
+	[[ "$stderr" == *"--self"* ]] || return 1
+
+	# **巻き添えにしていない。**
+	kill -0 "$_other"
+	kill "$_other" 2>/dev/null || true
+}

@@ -522,7 +522,8 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
   ccs kill [--force] <slug>               セッションを畳む
                                           （作業中は --force が要る）
   ccs kill --self [--force]               いま自分が動いているセッションを畳む
-                                          （未コミットがあれば --force が要る）
+                                          （ccs 管轄外からも使える。
+                                            未コミットがあれば --force が要る）
   ccs gc [--yes]                          止まったセッション・空の作業枠・不要な worktree を掃除する
                                           （既定は見せるだけ。--yes で実行）
   ccs restore [--yes] [<slug>...]         止まった／消えたセッションを同じ会話で
@@ -2275,6 +2276,73 @@ kill_self_slug() {
 	printf '%s' "${_s#"$CCS_PREFIX"}"
 }
 
+# いま自分を動かしている claude のレジストリファイル。引けなければ 1 を返す。
+#
+# **祖先の pid で引く。** レジストリのファイル名が pid そのものなので、
+# 「どれが自分か」は「祖先のどれがレジストリを持つか」に落ちる。
+#
+# **`CLAUDE_PID` を信じない。** claude は自分の pid を子プロセスへ渡すが
+# （実測 2026-08-30）、env は継承されるので**入れ子や古い値で他人を指しうる**。
+# ここは kill の宛先なので、取り違えたときに壊れるのは他人のセッションになる。
+# 祖先を辿れば、見つかったものは定義上そのプロセスの親であって、そもそも
+# 取り違えが起きない ── env を読むより 1 段遅いだけで、危険が消える。
+self_registry_file() {
+	_sr_pid=$$
+	while [ -n "$_sr_pid" ] && is_uint "$_sr_pid" && [ "$_sr_pid" -gt 1 ]; do
+		if [ -f "${CCS_SESSIONS_DIR}/${_sr_pid}.json" ]; then
+			printf '%s\n' "${CCS_SESSIONS_DIR}/${_sr_pid}.json"
+			return 0
+		fi
+		_sr_pid=$("$CCS_PS_BIN" -o ppid= -p "$_sr_pid" 2>/dev/null | tr -d ' ') ||
+			_sr_pid=''
+	done
+	return 1
+}
+
+# tmux の外に居る「自分」を畳む。畳めたら戻らない。
+# 相手が見つからなければ 1 を返して、呼び手に続けさせる。
+#
+# **`cc/` のペインを持たないセッションにも、終わる意思はある。** アプリや
+# VS Code から開いたセッションは ccs 管轄外なので `kill_self_slug` が
+# 成立しないが、`--self` が言っているのは「自分が終わる」であって
+# 「ccs が立てたものを畳む」ではない。**自分で名乗り出ているのだから、
+# 他人のプロセスに手を出すことにはならない** ── ccs が管轄外に触らない、
+# という線はここでも破れていない。
+kill_self_external() {
+	_kse_force=$1
+
+	_kse_file=$(self_registry_file) || return 1
+	_kse_pid=$(registry_num_field "$_kse_file" pid)
+	is_uint "$_kse_pid" || return 1
+
+	_kse_cwd=$(registry_field "$_kse_file" cwd)
+	_kse_id=$(registry_field "$_kse_file" sessionId)
+	_kse_name=$(registry_field "$_kse_file" name)
+	[ -n "$_kse_name" ] || _kse_name="pid ${_kse_pid}"
+
+	# **門は tmux の中と同じ。** 終わると言っている本人に「本当に終わったのか」
+	# を訊けるのは、作業ツリーの状態だけ。
+	if [ -z "$_kse_force" ] && path_has_uncommitted "$_kse_cwd"; then
+		warn "ccs: ${_kse_name} には未コミットの変更があります。畳みませんでした。"
+		warn ''
+		warn "  見る:         git -C $(tilde_path "$_kse_cwd") status --short"
+		warn '  それでも畳む: ccs kill --self --force'
+		exit "$EX_FAIL"
+	fi
+
+	# **報告を先に出し切ってから畳む**（tmux の中と同じ理由。畳んだあとに
+	# 置いた処理は、自分を殺したプロセスなので走り切れない）。
+	kill_report "$_kse_name" "$_kse_id" "$_kse_cwd"
+
+	# **SIGTERM で頼む。SIGKILL には昇格しない。** claude は SIGTERM を
+	# 受けると会話ログを書き切る（design.md §10 の実測）。KILL で落とすと
+	# 書き切られていない会話が残り、`--resume` で戻す先が壊れる ──
+	# 畳むことより、戻せることのほうが大事。
+	kill -TERM "$_kse_pid" 2>/dev/null ||
+		die "$EX_FAIL" "畳めませんでした（pid ${_kse_pid}）"
+	exit "$EX_OK"
+}
+
 # その作業ディレクトリに未コミットの変更があるか。
 #
 # **`ccs kill` はファイルを消さない**ので、これは「失われる」ことへの門ではない。
@@ -2332,8 +2400,16 @@ cmd_kill() {
 		# **自分を指すのに名前を打たせない。** それが --self の理由で、
 		# slug と併記できると「自分だと思って他人を畳む」余地が残る。
 		[ -z "$_slug" ] || die "$EX_USAGE" "kill: --self に <slug> は付けられません: ${_slug}"
-		_slug=$(kill_self_slug) ||
-			die "$EX_USAGE" 'kill: --self は ccs が立てたセッションの中でだけ使えます'
+		if ! _slug=$(kill_self_slug); then
+			# **tmux の外にも「自分」は居る。** ccs 管轄外のセッションは
+			# `cc/` のペインを持たないが、終わる意思は同じように表明できる。
+			# 畳めたらここから戻らない。
+			# **`||` で受ける。** `set -e` の下では、返り値 1 が
+			# そのままスクリプトの終了になり `die` まで届かない
+			# （終了コードが 2 ではなく 1 になって現れた）。
+			kill_self_external "$_force" ||
+				die "$EX_USAGE" 'kill: --self は claude のセッションの中でだけ使えます'
+		fi
 	fi
 
 	[ -n "$_slug" ] || die "$EX_USAGE" 'kill: <slug> を指定してください（自分を畳むなら ccs kill --self）'
