@@ -535,6 +535,8 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
   ccs new <target> [-- <初期プロンプト>]  セッションを立てる
   ccs new <repo>@<branch> [-- ...]        worktree を切ってそこに立てる
   ccs new --tmp [-- <初期プロンプト>]     使い捨ての作業枠に立てる
+  ccs new … --label k=v                   紐付けの目印を付ける（反復可。
+                                          ccs は中身を解釈しない）
   ccs ls [--json]                         ccs のセッションを一覧する
   ccs ls -l [--json]                      盤面（直近の依頼 / RSS / 最終更新）も出す
   ccs agents [-l] [--json]                このマシンの claude を俯瞰する
@@ -1697,6 +1699,19 @@ live_cwd_for() {
 }
 
 
+# `--label` で渡された `k=v` の並びを、そのセッションに書く。
+#
+# **渡した key だけを上書きし、他は消さない。** 「いま渡したものが全部」に
+# すると、ラベルを知らない側が `ccs new` を打つたびに紐付けが消える。
+apply_labels() {
+	[ -n "$2" ] || return 0
+	printf '%s\n' "$2" | while IFS= read -r _al_kv; do
+		[ -n "$_al_kv" ] || continue
+		labels_set "$1" "${_al_kv%%=*}" "${_al_kv#*=}" ||
+			warn "ccs: ラベルを書けませんでした: ${_al_kv}"
+	done
+}
+
 cmd_new() {
 	require_deps
 
@@ -1708,6 +1723,7 @@ cmd_new() {
 
 	_target=''
 	_prompt=''
+	_labels=''
 	_want_scratch=''
 
 	while [ $# -gt 0 ]; do
@@ -1718,6 +1734,22 @@ cmd_new() {
 			break
 			;;
 		--tmp) _want_scratch=1 ;;
+		--label)
+			shift
+			[ $# -gt 0 ] || die "$EX_USAGE" 'new: --label に k=v がありません'
+			case $1 in
+			*=*) ;;
+			*) die "$EX_USAGE" "new: --label は k=v の形です: $1" ;;
+			esac
+			[ -n "${1%%=*}" ] || die "$EX_USAGE" "new: --label の key が空です: $1"
+			# **改行は運ばない。** 対応表を 1 行 1 セッションで読むので、
+			# 値に改行が入るとその行から先がずれる。
+			case $1 in
+			*"$CCS_NEWLINE"*) die "$EX_USAGE" 'new: --label の値に改行は使えません' ;;
+			esac
+			_labels="${_labels}$1
+"
+			;;
 		-*) die "$EX_USAGE" "new: 知らないオプション: $1" ;;
 		*)
 			[ -z "$_target" ] || die "$EX_USAGE" "new: <target> は 1 つだけです: ${_target} と $1"
@@ -1774,6 +1806,7 @@ cmd_new() {
 		if _existing=$(live_session_id_for "$_slug"); then
 			_cwd=$(live_cwd_for "$_slug" || printf '%s' "$_path")
 			[ -n "$_cwd" ] || _cwd=$_path
+			apply_labels "$_session" "$_labels"
 			emit_session_json "$_slug" "$_existing" "$_cwd" "$_session" \
 				"$(transcript_path "$_cwd" "$_existing")" false true
 			return 0
@@ -1838,6 +1871,7 @@ cmd_new() {
 		exit "$EX_FAIL"
 	fi
 
+	apply_labels "$_session" "$_labels"
 	emit_session_json "$_slug" "$_uuid" "$_path" "$_session" "$_transcript" true true
 }
 
@@ -1855,6 +1889,67 @@ cmd_new() {
 # ---------------------------------------------------------------------------
 
 # ccs が立てた tmux セッションの slug を、名前順に並べる。
+# ---------------------------------------------------------------------------
+# ラベル（C2）
+#
+# **`ccs` は中身を解釈しない。** ccb がタスクとセッションを紐付けるための
+# 不透明な文字列を運ぶだけで、知らせると 4 責務が 5 つ目に膨らむ
+# （design.md §9）。だから検査するのは「key があること」だけ。
+#
+# **1 つの tmux ユーザオプションに JSON で入れる。** key ごとにオプションを
+# 分けると、読むときに**セッション 1 本につき 1 回 tmux を起こす**ことになる
+# （`ls_rss_table` と同じ理由でそれは避ける）。1 つにまとめておけば、
+# `list-sessions -F` の 1 回で全部まとめて引ける。
+#
+# **組み立ては `jq` に任せる。** 値には `"` も改行も入りうるので、自前で
+# 引用符を書くと必ず壊れる。`jq` は必須の依存なので新しい前提も増えない。
+# ---------------------------------------------------------------------------
+
+CCS_LABEL_OPTION='@ccs_labels'
+
+# 改行そのもの。
+#
+# **`$(printf '\n')` では作れない。** コマンド置換は末尾の改行を落とすので
+# 空文字になり、`case $x in *""*)` が**何にでも当たる**（実測で踏んだ ──
+# 改行を弾くつもりの検査が、全部のラベルを弾いていた）。
+CCS_NEWLINE='
+'
+
+# <session> のラベル（JSON オブジェクト）。無ければ `{}`。
+labels_of_session() {
+	_los=$("$CCS_TMUX_BIN" show-options -t "$1" -qv "$CCS_LABEL_OPTION" 2>/dev/null) || _los=''
+	case $_los in
+	'{'*) printf '%s' "$_los" ;;
+	*) printf '{}' ;;
+	esac
+}
+
+# <session> に <k>=<v> を 1 つ足す。**既にある key は上書き、他は消さない。**
+labels_set() {
+	# shellcheck disable=SC2016  # $k / $v は jq の変数。展開させない
+	_lst_new=$(labels_of_session "$1" |
+		"$CCS_JQ_BIN" -c --arg k "$2" --arg v "$3" '. + {($k): $v}' 2>/dev/null) || return 1
+	[ -n "$_lst_new" ] || return 1
+	"$CCS_TMUX_BIN" set-option -t "$1" "$CCS_LABEL_OPTION" "$_lst_new" >/dev/null 2>&1
+}
+
+# `<session>\t<labels JSON>` を全セッションぶん 1 回で引く。
+#
+# **行ごとに tmux を起こさない。** `ccs ls` の列を増やすたびにプロセスが
+# 本数ぶん増えると、一覧の存在理由（低コスト）をそのまま削ることになる。
+labels_table() {
+	"$CCS_TMUX_BIN" list-sessions -F "#{session_name}	#{${CCS_LABEL_OPTION}}" 2>/dev/null
+}
+
+# 対応表から <slug> のラベルを引く。無ければ `{}`。
+labels_from_table() {
+	_lft=$(printf '%s\n' "$1" | awk -F'\t' -v s="$2" '$1 == s { print $2; exit }')
+	case $_lft in
+	'{'*) printf '%s' "$_lft" ;;
+	*) printf '{}' ;;
+	esac
+}
+
 list_slugs() {
 	"$CCS_TMUX_BIN" list-sessions -F '#{session_name}' 2>/dev/null |
 		sed -n "s|^${CCS_PREFIX}||p" |
@@ -1935,16 +2030,21 @@ ls_json_tmux() {
 
 ls_as_json() {
 	_rows=$1
+	# **`|| true` が要る。** tmux セッションが 1 本も無いと
+	# `list-sessions` は非 0 で終わり、`set -e` の下では
+	# `var=$(失敗する命令)` がその場でスクリプトごと終了させる。
+	_lbl=$(labels_table || true)
 	printf '['
 	_first=1
 	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid; do
 		[ -n "$_slug" ] || continue
 		[ "$_first" = 1 ] || printf ','
 		_first=0
-		printf '{"slug":%s,"status":%s,"sessionId":%s,"path":%s,"tmux":%s}' \
+		printf '{"slug":%s,"status":%s,"sessionId":%s,"path":%s,"tmux":%s,"labels":%s}' \
 			"$(ls_json_slug "$_slug")" "$(json_str "$_status")" \
 			"$(json_str "$_id")" "$(json_str "$_path")" \
-			"$(ls_json_tmux "$_slug")"
+			"$(ls_json_tmux "$_slug")" \
+			"$(labels_from_table "$_lbl" "${CCS_PREFIX}${_slug}")"
 	done
 	printf ']\n'
 }
@@ -2225,16 +2325,18 @@ json_num() {
 # 既に読んでいる側を壊さない。
 ls_as_json_long() {
 	_rows=$1
+	_lbl=$(labels_table || true)
 	printf '['
 	_first=1
 	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid _rss _mt _req; do
 		[ -n "$_slug" ] || continue
 		[ "$_first" = 1 ] || printf ','
 		_first=0
-		printf '{"slug":%s,"status":%s,"sessionId":%s,"path":%s,"tmux":%s,"pid":%s,"rssMb":%s,"updatedAt":%s,"age":%s,"request":%s}' \
+		printf '{"slug":%s,"status":%s,"sessionId":%s,"path":%s,"tmux":%s,"labels":%s,"pid":%s,"rssMb":%s,"updatedAt":%s,"age":%s,"request":%s}' \
 			"$(ls_json_slug "$_slug")" "$(json_str "$_status")" \
 			"$(json_str "$_id")" "$(json_str "$_path")" \
 			"$(ls_json_tmux "$_slug")" \
+			"$(labels_from_table "$_lbl" "${CCS_PREFIX}${_slug}")" \
 			"$(json_num "$_pid")" "$(json_num "$_rss")" \
 			"$(json_num "$_mt")" "$(json_str "$(ls_age_text "$_mt")")" \
 			"$(json_str "$_req")"

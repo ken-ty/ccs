@@ -343,3 +343,89 @@ teardown() {
 	printf '%s' "$output" | jq -e . >/dev/null
 	[[ "$output" != *"ccs:"* ]] || return 1
 }
+
+# --- 紐付けの目印（C2） ----------------------------------------------------
+#
+# **`ccs` は中身を解釈しない。** ccb がタスクとセッションを紐付けるための
+# 不透明な文字列を運ぶだけ（design.md §9）。知らせると 4 責務が 5 つ目に膨らむ。
+
+@test "new --label: ls --json が返す" {
+	mkdir -p "${CCS_TEST_TMP}/work/mine"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/mine" --label task=T-12
+	[ "$status" -eq 0 ]
+
+	run --separate-stderr "$CCS_BIN" ls --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].labels.task')" = 'T-12' ]
+}
+
+@test "new --label: 反復できる" {
+	mkdir -p "${CCS_TEST_TMP}/work/mine"
+	"$CCS_BIN" new "${CCS_TEST_TMP}/work/mine" --label task=T-12 --label board=main >/dev/null
+
+	run --separate-stderr "$CCS_BIN" ls --json
+	[ "$(printf '%s' "$output" | jq -r '.[0].labels.task')" = 'T-12' ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].labels.board')" = 'main' ]
+}
+
+@test "new --label: 中身を解釈しない（空白も = も日本語も運ぶ）" {
+	# **不透明な文字列として運ぶだけ。** 検査するのは key があることだけ。
+	mkdir -p "${CCS_TEST_TMP}/work/mine"
+	"$CCS_BIN" new "${CCS_TEST_TMP}/work/mine" \
+		--label 'note=a b "c" = d' --label 'ja=日本語' >/dev/null
+
+	run --separate-stderr "$CCS_BIN" ls --json
+	[ "$(printf '%s' "$output" | jq -r '.[0].labels.note')" = 'a b "c" = d' ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].labels.ja')" = '日本語' ]
+}
+
+@test "new --label: 2 回目は上書きし、他の key は消さない" {
+	# **「いま渡したものが全部」にしない。** ラベルを知らない側が ccs new を
+	# 打つたびに紐付けが消えることになる。
+	mkdir -p "${CCS_TEST_TMP}/work/mine"
+	"$CCS_BIN" new "${CCS_TEST_TMP}/work/mine" --label task=T-12 --label board=main >/dev/null
+	"$CCS_BIN" new "${CCS_TEST_TMP}/work/mine" --label task=T-99 >/dev/null
+
+	run --separate-stderr "$CCS_BIN" ls --json
+	[ "$(printf '%s' "$output" | jq -r '.[0].labels.task')" = 'T-99' ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].labels.board')" = 'main' ]
+}
+
+@test "new: label を付けなければ空のオブジェクト" {
+	# **既定の出力の形を変えない。** 読む側が有無で分岐しなくて済む。
+	mkdir -p "${CCS_TEST_TMP}/work/mine"
+	"$CCS_BIN" new "${CCS_TEST_TMP}/work/mine" >/dev/null
+
+	run --separate-stderr "$CCS_BIN" ls --json
+	[ "$(printf '%s' "$output" | jq -c '.[0].labels')" = '{}' ]
+}
+
+@test "new --label: ls -l --json でも返る" {
+	mkdir -p "${CCS_TEST_TMP}/work/mine"
+	"$CCS_BIN" new "${CCS_TEST_TMP}/work/mine" --label task=T-12 >/dev/null
+
+	run --separate-stderr "$CCS_BIN" ls -l --json
+	[ "$(printf '%s' "$output" | jq -r '.[0].labels.task')" = 'T-12' ]
+}
+
+@test "new --label: k=v でなければ使い方の誤り" {
+	run --separate-stderr "$CCS_BIN" new --tmp --label nope
+	[ "$status" -eq 2 ]
+	[ "$(printf '%s' "$output" | jq -r '.error.code')" = 'usage' ]
+
+	run --separate-stderr "$CCS_BIN" new --tmp --label '=v'
+	[ "$status" -eq 2 ]
+
+	run --separate-stderr "$CCS_BIN" new --tmp --label
+	[ "$status" -eq 2 ]
+}
+
+@test "new --label: ラベルは他のセッションに漏れない" {
+	mkdir -p "${CCS_TEST_TMP}/work/a" "${CCS_TEST_TMP}/work/b"
+	"$CCS_BIN" new "${CCS_TEST_TMP}/work/a" --label task=T-1 >/dev/null
+	"$CCS_BIN" new "${CCS_TEST_TMP}/work/b" >/dev/null
+
+	run --separate-stderr "$CCS_BIN" ls --json
+	[ "$(printf '%s' "$output" | jq -r '.[] | select(.slug=="a") | .labels.task')" = 'T-1' ]
+	[ "$(printf '%s' "$output" | jq -c '.[] | select(.slug=="b") | .labels')" = '{}' ]
+}
