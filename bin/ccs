@@ -1061,7 +1061,12 @@ resolve_as_scratch() {
 	while [ "$_i" -le "$CCS_SCRATCH_SLOTS" ]; do
 		_slot="${CCS_SCRATCH_ROOT}/${_i}"
 
-		if tmux_session_exists "${CCS_PREFIX}tmp-${_i}"; then
+		# **占有は 2 つの and ではなく or で見る。** tmux の名前は改名で
+		# 変わりうるので、それだけに頼ると稼働中の枠を横取りする（I1）。
+		# cwd の照合を足すぶん、今までより**厳しい側**にしか倒れない。
+		_slot_abs=$(abs_dir "$_slot" 2>/dev/null || printf '%s' "$_slot")
+		if tmux_session_exists "${CCS_PREFIX}tmp-${_i}" ||
+			live_ccs_registry_at "$_slot_abs" >/dev/null; then
 			_i=$((_i + 1))
 			continue
 		fi
@@ -1516,6 +1521,51 @@ registry_is_live() {
 	kill -0 "$_pid" 2>/dev/null
 }
 
+# その作業ディレクトリで生きている ccs のセッションのレジストリファイル。
+# 無ければ 1 を返す。<path> は正規化済み（`abs_dir` を通したもの）を渡すこと。
+#
+# **名前ではなく cwd で照合する**（[ADR-0002](docs/adr/0002-session-identity.md)
+# 決定 3）。占有と冪等性を「`cc/<slug>` という tmux があるか」で当てると、
+# **改名されたセッションが「居ない」ことになる** ── 稼働中の枠が横取りされ、
+# `ccs new <repo>` が同じ作業ツリーに 2 本目を立てる。tmux 名も claude の
+# `name` も表示用のラベルで、同一性の根拠にしない。
+#
+# **管轄下のものだけ数える。** レジストリにはアプリや VS Code のセッションも
+# 並ぶが、そちらは ccs の冪等性の対象ではない ── 数えてしまうと、その場所を
+# 開いているだけで `ccs new` が断られる。引き取るなら `ccs adopt`。
+#
+# **比較の前に `abs_dir` を通す。** レジストリに入っているのは claude が見た
+# 文字列で、綴りが違いうる（`/tmp` と `/private/tmp` で 2 度踏んでいる）。
+live_ccs_registry_at() {
+	_lra_want=$1
+	[ -n "$_lra_want" ] || return 1
+
+	for _lra_f in "$CCS_SESSIONS_DIR"/*.json; do
+		[ -e "$_lra_f" ] || continue
+		registry_is_live "$_lra_f" || continue
+
+		case $(registry_field "$_lra_f" tmux) in
+		"${CCS_PREFIX}"*) ;;
+		*) continue ;;
+		esac
+
+		_lra_cwd=$(registry_field "$_lra_f" cwd)
+		[ -n "$_lra_cwd" ] || continue
+		_lra_cwd=$(abs_dir "$_lra_cwd" 2>/dev/null || printf '%s' "$_lra_cwd")
+		[ "$_lra_cwd" = "$_lra_want" ] || continue
+
+		printf '%s\n' "$_lra_f"
+		return 0
+	done
+	return 1
+}
+
+# そのレジストリファイルが指す tmux セッション名（`cc/<slug>`）。
+registry_tmux_session() {
+	_rts=$(registry_field "$1" tmux)
+	printf '%s' "${_rts%%:*}"
+}
+
 # 立っているセッションの sessionId を引く。
 live_session_id_for() {
 	_f=$(registry_file_for_slug "$1") || return 1
@@ -1537,6 +1587,25 @@ pane_session_id_for() {
 			-e "s/.*--session-id '\{0,1\}\([0-9a-f-]\{36\}\).*/\1/p" \
 			-e "s/.*--resume '\{0,1\}\([0-9a-f-]\{36\}\).*/\1/p" |
 		head -1
+}
+
+# その tmux セッションで claude が生きているか。
+#
+# **名前だけで引かない。** `live_session_id_for` は `"tmux":"cc/<slug>:"` で
+# 引き当てるので、**改名されたセッションが「止まっている」ことになる** ──
+# `ccs gc` はそれを畳みに行くので、**生きている相手を殺す**（実測 2026-08-30:
+# 改名した稼働中のセッションが `gc --yes` で消えた）。
+#
+# ペインの起動コマンドに残る uuid は改名しても変わらないので、そちらを
+# レジストリと突き合わせる。**残骸を「生きている」と読まない**ように、
+# 見つけたファイルには `registry_is_live` を掛ける。
+session_is_live() {
+	live_session_id_for "$1" >/dev/null 2>&1 && return 0
+
+	_sil_uuid=$(pane_session_id_for "${CCS_PREFIX}${1}")
+	[ -n "$_sil_uuid" ] || return 1
+	_sil_f=$(registry_file_for "$_sil_uuid") || return 1
+	registry_is_live "$_sil_f"
 }
 
 # 立っているセッションの cwd を引く。取れなければ空。
@@ -1596,6 +1665,25 @@ cmd_new() {
 	_slug=$CCS_RESOLVED_SLUG
 	_path=$CCS_RESOLVED_PATH
 	_session="${CCS_PREFIX}${_slug}"
+
+	# **同じ作業ツリーに 2 本目を立てない**（ADR-0002 決定 3、I1）。
+	#
+	# 下の冪等は「`cc/<slug>` という tmux があるか」で当てているので、
+	# **改名されたセッションが「居ない」ことになる** ── そのまま素通りすると、
+	# 1 つの作業ツリーを 2 本の claude が触ることになる。名前が変わっていても
+	# **cwd は変わらない**ので、そちらで先に照合する。
+	#
+	# 返すのは相手が名乗る tmux 名から起こした slug。**打った綴りではない**
+	# ── 頼んだ側が欲しいのは「その場所のセッション」で、ccs が知っている
+	# 宛先はそれ 1 つしかない。
+	if ! tmux_session_exists "$_session" && _at=$(live_ccs_registry_at "$_path"); then
+		_at_session=$(registry_tmux_session "$_at")
+		emit_session_json "${_at_session#"$CCS_PREFIX"}" \
+			"$(registry_field "$_at" sessionId)" "$_path" "$_at_session" \
+			"$(transcript_path "$_path" "$(registry_field "$_at" sessionId)")" \
+			false true
+		return 0
+	fi
 
 	# 冪等。**同じ slug を 2 度頼まれたら、立て直さず既にあるものを返す。**
 	# ハブは「その名前のセッションが欲しい」と言っているのであって、
@@ -2684,7 +2772,11 @@ orphan_slots() {
 	_i=1
 	while [ "$_i" -le "$CCS_SCRATCH_SLOTS" ]; do
 		_slot="${CCS_SCRATCH_ROOT}/${_i}"
-		if [ -d "$_slot" ] && ! tmux_session_exists "${CCS_PREFIX}tmp-${_i}"; then
+		# **占有の判定は `resolve_as_scratch` と同じ or**（I1）。片方だけ
+		# 直すと、`ccs new --tmp` が使わない枠を `ccs gc` が消しに行く。
+		_slot_abs=$(abs_dir "$_slot" 2>/dev/null || printf '%s' "$_slot")
+		if [ -d "$_slot" ] && ! tmux_session_exists "${CCS_PREFIX}tmp-${_i}" &&
+			! live_ccs_registry_at "$_slot_abs" >/dev/null; then
 			if dir_is_empty "$_slot"; then
 				printf 'empty\t%s\n' "$_slot"
 			else
@@ -2895,7 +2987,9 @@ cmd_gc() {
 	_stopped=''
 	_hub_stopped=''
 	for _slug in $(list_slugs); do
-		if live_session_id_for "$_slug" >/dev/null 2>&1; then
+		# **名前で「止まっている」と決めない**（I1）。ここは畳む対象を
+		# 選ぶ場所なので、取り違えると生きているセッションを殺す。
+		if session_is_live "$_slug"; then
 			continue
 		fi
 		if [ "$_slug" = "$CCS_HUB_SLUG" ]; then
