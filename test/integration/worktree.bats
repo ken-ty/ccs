@@ -189,7 +189,9 @@ teardown() {
 	ccs_stub_ghq "${CCS_TEST_TMP}/ghq/github.com/o/notgit"
 
 	run --separate-stderr "$CCS_BIN" new 'notgit@topic'
-	[ -z "$output" ]
+	# **C5 以降、失敗時の stdout は 1 行の JSON。** 人間向けの文は混ぜない。
+	printf '%s' "$output" | jq -e . >/dev/null
+	[[ "$output" != *"ccs:"* ]] || return 1
 }
 
 @test "worktree: 同じブランチが他所で開かれていれば、理由を出して落ちる" {
@@ -202,7 +204,8 @@ teardown() {
 	[[ "$stderr" == *"worktree を作れませんでした"* ]] || return 1
 	# 次の手が分かること
 	[[ "$stderr" == *"worktree list"* ]] || return 1
-	[ -z "$output" ]
+	printf '%s' "$output" | jq -e . >/dev/null
+	[[ "$output" != *"ccs:"* ]] || return 1
 }
 
 # --- 素性を git から引く（ADR-0003 決定 3、W1） -------------------------------

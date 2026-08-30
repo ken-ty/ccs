@@ -259,9 +259,87 @@ teardown() {
 	[ "$(echo "$output" | wc -l | tr -d ' ')" = '1' ]
 }
 
-@test "new: 失敗時は stdout を汚さない" {
+@test "new: 失敗時も stdout は JSON だけ" {
+	# **要件は「空であること」ではなく「パースできること」**（C5 で contract が
+	# 変わった）。人間向けの文は stderr、機械向けの 1 行は stdout。
 	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/nope"
 	[ "$status" -eq 1 ]
-	[ -z "$output" ]
+	printf '%s' "$output" | jq -e . >/dev/null
+	# **`printf '%s'` で数えない。** bats は末尾の改行を落とすので、
+	# `wc -l`（改行の数）が 0 になる。1 行なら改行を足して数える。
+	[ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 1 ]
+	[[ "$output" != *"ccs:"* ]] || return 1
 	[ -n "$stderr" ]
+}
+
+# --- 失敗も機械可読に（C5） ------------------------------------------------
+#
+# **`ccs new` の stdout は最初から機械のためのもの**（成功すると JSON を出す）。
+# 失敗したときだけ何も出ないと、読む側は終了コード 1 しか手掛かりが無い ──
+# 「曖昧で選べない」のか「trust で固まった」のかが区別できない。
+#
+# 出口は 1 つ（EXIT の trap）にしてある。1 か所ずつ足すと必ず取りこぼすので、
+# ここでは**散らばった失敗のそれぞれ**が JSON になることを見張る。
+
+@test "new: 引数の誤りは code:usage で返る" {
+	run --separate-stderr "$CCS_BIN" new
+	[ "$status" -eq 2 ]
+	[ "$(printf '%s' "$output" | jq -r '.error.code')" = 'usage' ]
+	[ "$(printf '%s' "$output" | jq -r '.error.exit')" -eq 2 ]
+	# **文言は人間向けのものと同じ。** 2 つ書くと必ずずれる。
+	[[ "$stderr" == *"$(printf '%s' "$output" | jq -r '.error.message')"* ]] || return 1
+}
+
+@test "new: 知らないオプションも JSON で返る" {
+	run --separate-stderr "$CCS_BIN" new --bogus
+	[ "$status" -eq 2 ]
+	[ "$(printf '%s' "$output" | jq -r '.error.code')" = 'usage' ]
+}
+
+@test "new --tmp: 枠が全部埋まっていれば code:scratch-full" {
+	# **ハブが読む価値のある区別。** 枠が無いのは待てば直るが、
+	# 解決できないのは打ち直しが要る。
+	export CCS_SCRATCH_SLOTS=1
+	"$CCS_BIN" new --tmp >/dev/null
+
+	run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 1 ]
+	[ "$(printf '%s' "$output" | jq -r '.error.code')" = 'scratch-full' ]
+}
+
+@test "new: 登録されなければ code:not-registered" {
+	export FAKE_CLAUDE_NEVER_REGISTER=1
+	export CCS_NEW_TIMEOUT=2
+	mkdir -p "${CCS_TEST_TMP}/work/mine"
+
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/mine"
+	[ "$status" -eq 1 ]
+	[ "$(printf '%s' "$output" | jq -r '.error.code')" = 'not-registered' ]
+}
+
+@test "new: ペインが残っていて claude が死んでいれば code:stale-pane" {
+	export FAKE_CLAUDE_EXIT_AFTER=1
+	mkdir -p "${CCS_TEST_TMP}/work/mine"
+	"$CCS_BIN" new "${CCS_TEST_TMP}/work/mine" >/dev/null
+	ccs_wait_until 10 ccs_registry_count_is 0
+
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/mine"
+	[ "$status" -eq 1 ]
+	[ "$(printf '%s' "$output" | jq -r '.error.code')" = 'stale-pane' ]
+}
+
+@test "new: 成功したときの形は変わらない（error を足さない）" {
+	# **既定の出力を変えない。** 既に読んでいる側を壊さない。
+	mkdir -p "${CCS_TEST_TMP}/work/mine"
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/mine"
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r 'has("error")')" = 'false' ]
+	[ "$(printf '%s' "$output" | jq -r '.created')" = 'true' ]
+}
+
+@test "new: stdout に人間向けの文を混ぜない" {
+	run --separate-stderr "$CCS_BIN" new
+	[ "$status" -eq 2 ]
+	printf '%s' "$output" | jq -e . >/dev/null
+	[[ "$output" != *"ccs:"* ]] || return 1
 }
