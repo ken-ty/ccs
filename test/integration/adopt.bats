@@ -27,55 +27,16 @@ setup() {
 	# 戻す先の会話が無ければ引き取れない。**tmux サーバの環境は起動時に
 	# 固定される**ので、最初の ccs 実行より前に export する。
 	export FAKE_CLAUDE_TRANSCRIPT=1
-	# **pid はファイルに書く。変数では届かない。** `_outsider` は
-	# コマンド置換ごしに呼ぶので、そこでの代入はサブシェルに閉じる ──
-	# 変数に溜めると teardown から見えず、外部セッション役が残る。
-	# **残ると bats が終われない**（子プロセスを待つため。実測: 全 8 件が
-	# ok になったあと、bats だけが返ってこない形で現れた）。
-	CCS_OUTSIDERS="${CCS_TEST_TMP}/outsiders"
-	export CCS_OUTSIDERS
-	: >"$CCS_OUTSIDERS"
 }
 
 teardown() {
-	# **KILL で落とす。** `FAKE_CLAUDE_IGNORE_TERM` を使う test が居るので、
-	# TERM を送って `wait` すると**永遠に返ってこない**。後片付けに作法は要らない。
-	for _p in $(cat "${CCS_OUTSIDERS:-/dev/null}" 2>/dev/null); do
-		kill -KILL "$_p" 2>/dev/null || true
-		wait "$_p" 2>/dev/null || true
-	done
+	ccs_stop_outsiders
 	ccs_kill_own_tmux_server
 	ccs_teardown_sandbox
 }
 
-# ccs 管轄外の生きているセッションを 1 本立てて、その pid を返す。
-#
-# **tmux の外で fake-claude を動かすだけ。** スタブは tmux の中にいるときしか
-# `tmux` 欄を書かないので、外で動かせばそれがそのまま「管轄外」になる ──
-# アプリや VS Code から開いたセッションと同じ形（design.md §2.1 の実測で、
-# レジストリは `cli`（tmux 有り）と `claude-desktop` / `claude-vscode`
-# （tmux 無し）に二分されることが確認されている）。
-#
-# **`exec` で置き換える。** 挟まないとサブシェルが親に残り、`$!` が
-# レジストリの pid と食い違う ── 「引き取ったあと元が消えた」を pid で
-# 確かめられなくなる。
-#
-# **fd をすべて手放す（特に `3>&-`）。** bats は fd 3 で結果を集めるので、
-# 握ったままのバックグラウンドプロセスが居ると **bats が終われずに固まる**
-# （AGENTS.md「teardown は呼ばれないことがある」の落とし穴と同じもの。
-# 実測: これを落として 10 分のタイムアウトを 1 度踏んだ）。
 _outsider() {
-	local _dir=$1 _uuid=$2 _name=${3:-outsider}
-	mkdir -p "$_dir"
-	(
-		cd "$_dir" || exit 1
-		unset TMUX TMUX_PANE
-		exec "$CCS_FAKE_CLAUDE" -n "$_name" --session-id "$_uuid"
-	) </dev/null >/dev/null 2>&1 3>&- &
-	local _p=$!
-	printf '%s\n' "$_p" >>"$CCS_OUTSIDERS"
-	ccs_wait_until 10 test -f "${CCS_SESSIONS_DIR}/${_p}.json" || return 1
-	printf '%s' "$_p"
+	ccs_start_outsider "$@"
 }
 
 _uuid() {

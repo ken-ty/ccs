@@ -311,6 +311,54 @@ ccs_start_fake_claude_outside_tmux() {
 	export CCS_FAKE_PID
 }
 
+# ccs 管轄外の生きているセッションを 1 本立てて、その pid を返す。
+#
+# **tmux の外で fake-claude を動かすだけ。** スタブは tmux の中にいるときしか
+# `tmux` 欄を書かないので、外で動かせばそれがそのまま「管轄外」になる ──
+# アプリや VS Code から開いたセッションと同じ形（design.md §2.1 の実測で、
+# レジストリは `cli`（tmux 有り）と `claude-desktop` / `claude-vscode`
+# （tmux 無し）に二分されることが確認されている）。
+#
+# **`exec` で置き換える。** 挟まないとサブシェルが親に残り、`$!` がレジストリの
+# pid と食い違う ── 「引き取ったあと元が消えた」を pid で確かめられなくなる。
+#
+# **fd をすべて手放す（特に `3>&-`）。** bats は fd 3 で結果を集める。
+#
+# **pid はファイルに書く。変数では届かない。** この関数はコマンド置換ごしに
+# 呼ぶので、そこでの代入はサブシェルに閉じる。変数に溜めると teardown から
+# 見えず、外部セッション役が残る ── **残ると bats が終われない**（子プロセスを
+# 待つため。実測: 全件 ok になったあと bats だけが返ってこない形で現れた）。
+ccs_start_outsider() {
+	local _dir=$1 _uuid=$2 _name=${3:-outsider}
+	mkdir -p "$_dir"
+	(
+		cd "$_dir" || exit 1
+		unset TMUX TMUX_PANE
+		exec "$CCS_FAKE_CLAUDE" -n "$_name" --session-id "$_uuid"
+	) </dev/null >/dev/null 2>&1 3>&- &
+	local _p=$!
+	printf '%s\n' "$_p" >>"${CCS_TEST_TMP}/outsiders"
+	ccs_wait_until 10 test -f "${CCS_SESSIONS_DIR}/${_p}.json" || return 1
+	printf '%s' "$_p"
+}
+
+# ccs_start_outsider で立てたものを全部止める。teardown から呼ぶ。
+#
+# **KILL で落とす。** `FAKE_CLAUDE_IGNORE_TERM` を使う test が居るので、
+# TERM を送って `wait` すると永遠に返ってこない。後片付けに作法は要らない。
+ccs_stop_outsiders() {
+	local _f="${CCS_TEST_TMP:-}/outsiders"
+	[ -f "$_f" ] || return 0
+	local _p
+	while IFS= read -r _p; do
+		[ -n "$_p" ] || continue
+		kill -KILL "$_p" 2>/dev/null || true
+		wait "$_p" 2>/dev/null || true
+	done <"$_f"
+	: >"$_f"
+	return 0
+}
+
 # ccs_start_fake_claude で起動したものを止める。teardown から呼ぶ。
 ccs_stop_fake_claude() {
 	[ -n "${CCS_FAKE_PID:-}" ] || return 0

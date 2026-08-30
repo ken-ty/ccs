@@ -525,6 +525,9 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
   ccs new --tmp [-- <初期プロンプト>]     使い捨ての作業枠に立てる
   ccs ls [--json]                         ccs のセッションを一覧する
   ccs ls -l [--json]                      盤面（直近の依頼 / RSS / 最終更新）も出す
+  ccs agents [-l] [--json]                このマシンの claude を俯瞰する
+                                          （管轄外は SLUG が `-`。畳めるのは ls に
+                                            出るものだけ。引き取るなら ccs adopt）
   ccs attach [<slug>]                     セッションに乗り込む
                                           （slug を省くと番号で選ぶ）
   ccs adopt <target> [--pid <pid>]        ccs 管轄外のセッションを引き取る
@@ -1748,6 +1751,22 @@ collect_session_row() {
 	printf '%s\t%s\t%s\t%s\t%s\n' "$_slug" "$_status" "$_id" "$_path" "$_pid"
 }
 
+# 管轄外の行（slug が `-`）では slug と tmux を null にする。
+#
+# **`-` は表の綴りで、JSON の綴りではない**（`json_num` と同じ考え方）。
+# そして **`slug: null` が「打てる宛先が無い」の唯一の signal** ── 別に
+# `managed` のようなキーを足さない。表で SLUG が `-` であることと、
+# 同じ 1 つの事実を指している。
+#
+# `ccs ls` の出力は変わらない（あちらの slug が `-` になることは無い）。
+ls_json_slug() {
+	if [ "$1" = '-' ]; then printf 'null'; else json_str "$1"; fi
+}
+
+ls_json_tmux() {
+	if [ "$1" = '-' ]; then printf 'null'; else json_str "${CCS_PREFIX}${1}"; fi
+}
+
 ls_as_json() {
 	_rows=$1
 	printf '['
@@ -1757,9 +1776,9 @@ ls_as_json() {
 		[ "$_first" = 1 ] || printf ','
 		_first=0
 		printf '{"slug":%s,"status":%s,"sessionId":%s,"path":%s,"tmux":%s}' \
-			"$(json_str "$_slug")" "$(json_str "$_status")" \
+			"$(ls_json_slug "$_slug")" "$(json_str "$_status")" \
 			"$(json_str "$_id")" "$(json_str "$_path")" \
-			"$(json_str "${CCS_PREFIX}${_slug}")"
+			"$(ls_json_tmux "$_slug")"
 	done
 	printf ']\n'
 }
@@ -2047,9 +2066,9 @@ ls_as_json_long() {
 		[ "$_first" = 1 ] || printf ','
 		_first=0
 		printf '{"slug":%s,"status":%s,"sessionId":%s,"path":%s,"tmux":%s,"pid":%s,"rssMb":%s,"updatedAt":%s,"age":%s,"request":%s}' \
-			"$(json_str "$_slug")" "$(json_str "$_status")" \
+			"$(ls_json_slug "$_slug")" "$(json_str "$_status")" \
 			"$(json_str "$_id")" "$(json_str "$_path")" \
-			"$(json_str "${CCS_PREFIX}${_slug}")" \
+			"$(ls_json_tmux "$_slug")" \
 			"$(json_num "$_pid")" "$(json_num "$_rss")" \
 			"$(json_num "$_mt")" "$(json_str "$(ls_age_text "$_mt")")" \
 			"$(json_str "$_req")"
@@ -2115,18 +2134,116 @@ cmd_ls() {
 "
 	done
 
-	if [ -n "$_long" ]; then
-		_rows=$(ls_board_rows "$_rows")
-		if [ -n "$_json" ]; then
-			ls_as_json_long "$_rows"
+	ls_render "$_rows" "$_long" "$_json"
+}
+
+# 集めた行を、指定された形で出す。`ccs ls` と `ccs agents` で共有する。
+ls_render() {
+	_lr_rows=$1
+	_lr_long=$2
+	_lr_json=$3
+
+	if [ -n "$_lr_long" ]; then
+		_lr_rows=$(ls_board_rows "$_lr_rows")
+		if [ -n "$_lr_json" ]; then
+			ls_as_json_long "$_lr_rows"
 		else
-			ls_as_table_long "$_rows"
+			ls_as_table_long "$_lr_rows"
 		fi
-	elif [ -n "$_json" ]; then
-		ls_as_json "$_rows"
+	elif [ -n "$_lr_json" ]; then
+		ls_as_json "$_lr_rows"
 	else
-		ls_as_table "$_rows"
+		ls_as_table "$_lr_rows"
 	fi
+}
+
+# ---------------------------------------------------------------------------
+# 俯瞰（agents）
+#
+# **`ccs ls` には混ぜない。** あちらの行が `kill` / `gc` の対象と一致している
+# ことが、いまの安全性の根拠そのものになっている（`cc/` であることが「ccs が
+# 立てた」証拠。§4.2・§10.1）。管轄外を混ぜると、人の判断も
+# `ccs ls --json | jq` 系も、他人のセッションを巻き込む方向に倒れる。
+#
+# **見えるのはこのマシンの claude だけ。** `ListAgents` はサブエージェントも
+# クラウドも他マシンも並べるので母集団が違う（実測 2026-08-30: レジストリ 20 /
+# `claude agents --json` 20 に対し `ListAgents` は 39）。ここを取り違えると、
+# 「全部見えている」と思って居ないものを探すことになる。
+#
+# **情報源はレジストリの直読み。** `claude agents --json` は `tmux` 欄を
+# 持たないので、「どれが管轄か」をあの出力から判定できない（§2.1 の訂正）。
+# ---------------------------------------------------------------------------
+
+# ccs 管轄外の生きているセッションを、`collect_session_row` と同じ形の行にする。
+#   slug<TAB>status<TAB>sessionId<TAB>path<TAB>pid
+#
+# **slug は `-`。** 打てる宛先が無いことを、列そのもので表す ── 名乗っている
+# `name` を SLUG 欄に置くと、打てない文字列が打てる位置に座る（実測で
+# `8/26 ヨドバシエアコン tmp-7` のような空白・日本語・`/` 入りの名前が付く）。
+#
+# **`status` は無いことがある**（実測 2026-08-30: アプリ由来のセッションに
+# `status` キーそのものが無かった）。その場合も `-` を置いて、無いことを
+# 無いまま出す。
+agents_external_rows() {
+	for _ax_f in "$CCS_SESSIONS_DIR"/*.json; do
+		[ -e "$_ax_f" ] || continue
+		registry_is_live "$_ax_f" || continue
+
+		case $(registry_field "$_ax_f" tmux) in
+		"${CCS_PREFIX}"*) continue ;;
+		esac
+
+		_ax_status=$(registry_field "$_ax_f" status)
+		[ -n "$_ax_status" ] || _ax_status='-'
+		_ax_id=$(registry_field "$_ax_f" sessionId)
+		[ -n "$_ax_id" ] || _ax_id='-'
+		_ax_path=$(registry_field "$_ax_f" cwd)
+		[ -n "$_ax_path" ] || _ax_path='-'
+		_ax_pid=$(registry_num_field "$_ax_f" pid)
+		[ -n "$_ax_pid" ] || _ax_pid='-'
+
+		printf '%s\t%s\t%s\t%s\t%s\n' '-' "$_ax_status" "$_ax_id" "$_ax_path" "$_ax_pid"
+	done | sort -t"$(printf '\t')" -k4,4
+}
+
+cmd_agents() {
+	require_deps
+
+	_json=''
+	_long=''
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--json) _json=1 ;;
+		-l | --long) _long=1 ;;
+		*) die "$EX_USAGE" "agents: 知らないオプション: $1" ;;
+		esac
+		shift
+	done
+
+	# **管轄ぶんが先、管轄外はそのあと。** こうすると上半分が `ccs ls` と
+	# 行単位で一致するので、2 つの表の関係が説明なしで読める。
+	_rows=''
+	for _slug in $(list_slugs); do
+		_rows="${_rows}$(collect_session_row "$_slug")
+"
+	done
+
+	_ext=$(agents_external_rows)
+	if [ -n "$_ext" ]; then
+		_rows="${_rows}${_ext}
+"
+	fi
+
+	if [ -z "$_rows" ]; then
+		if [ -n "$_json" ]; then
+			printf '[]\n'
+		else
+			printf 'このマシンで動いている claude はありません。\n'
+		fi
+		return 0
+	fi
+
+	ls_render "$_rows" "$_long" "$_json"
 }
 
 # ---------------------------------------------------------------------------
@@ -4959,6 +5076,7 @@ main() {
 	new) cmd_new "$@" ;;
 	adopt) cmd_adopt "$@" ;;
 	ls) cmd_ls "$@" ;;
+	agents) cmd_agents "$@" ;;
 	attach) cmd_attach "$@" ;;
 	kill) cmd_kill "$@" ;;
 	gc) cmd_gc "$@" ;;

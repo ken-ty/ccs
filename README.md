@@ -56,6 +56,7 @@ ccs new <target> [-- <初期プロンプト>]   # target: リポジトリ名 | g
 ccs new --tmp [-- <初期プロンプト>]      # 使い捨ての作業枠（"tmp" は短い綴り）
 ccs ls [--json]                          # cc/ 接頭辞のセッションだけを整形して出す
 ccs ls -l [--json]                       # 盤面（直近の依頼 / RSS / 最終更新）も出す
+ccs agents [-l] [--json]                 # このマシンの claude を俯瞰（管轄外は SLUG が -）
 ccs attach [<slug>]                      # 人間が乗り込む（slug を省くと番号で選ぶ）
 ccs adopt <target> [--pid <pid>]         # ccs 管轄外のセッションを引き取る
 ccs kill <slug>                          # ペインごと畳む
