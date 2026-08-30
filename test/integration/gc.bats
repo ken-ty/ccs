@@ -581,3 +581,103 @@ _wt_commit() {
 	[[ "$output" != *"不要になった worktree"* ]] || return 1
 	[ -d "${CCS_TEST_REPO}/.worktrees/live2" ]
 }
+
+# --- squash マージも「入っている」と見なす（G1） ---------------------------
+#
+# **squash はコミットを作り直す**ので、枝の先端が本体の祖先にならない。
+# `git branch --merged` だけで見ていると、squash 運用のリポジトリでは消す候補が
+# ほぼ発生しない（実測 2026-08-26: このリポジトリ自身がそれで詰まった）。
+#
+# **判定を緩める変更なので、外れ方が片側に倒れていることを見張る。**
+# 「一部だけ取り込まれた」を拾わないことが、ここでいちばん大事な test。
+
+_wt_commit2() {
+	printf 'one\n' >"${CCS_TEST_REPO}/.worktrees/${1}/${1}.txt"
+	git -C "${CCS_TEST_REPO}/.worktrees/$1" add -A
+	git -C "${CCS_TEST_REPO}/.worktrees/$1" commit -q -m "$1 one"
+	printf 'two\n' >>"${CCS_TEST_REPO}/.worktrees/${1}/${1}.txt"
+	git -C "${CCS_TEST_REPO}/.worktrees/$1" commit -q -am "$1 two"
+}
+
+@test "gc: squash マージされた worktree を消す候補に出す" {
+	_wt_repo
+	_wt_add sq
+	_wt_commit2 sq
+	git -C "${CCS_TEST_REPO}/.worktrees/sq" push -q -u origin sq
+	# **2 コミットを 1 つに潰す。** patch-id では当たらない形。
+	git -C "$CCS_TEST_REPO" merge -q --squash sq
+	git -C "$CCS_TEST_REPO" commit -q -m 'squash: sq'
+
+	run "$CCS_BIN" gc
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"不要になった worktree"* ]] || return 1
+	[[ "$output" == *"sq"* ]] || return 1
+	# **根拠が読めること。** 緩めた判定で消すので、なぜかが出ないと困る。
+	[[ "$output" == *"内容は本体に入っている"* ]] || return 1
+}
+
+@test "gc: squash のあと本体が別のファイルを触っていても拾う" {
+	# **普通の運用がこれ。** 本体は他の PR で先へ進んでいる。
+	_wt_repo
+	_wt_add sq
+	_wt_commit2 sq
+	git -C "${CCS_TEST_REPO}/.worktrees/sq" push -q -u origin sq
+	git -C "$CCS_TEST_REPO" merge -q --squash sq
+	git -C "$CCS_TEST_REPO" commit -q -m 'squash: sq'
+	printf 'later\n' >"${CCS_TEST_REPO}/elsewhere.txt"
+	git -C "$CCS_TEST_REPO" add -A
+	git -C "$CCS_TEST_REPO" commit -q -m elsewhere
+
+	run "$CCS_BIN" gc
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"内容は本体に入っている"* ]] || return 1
+}
+
+@test "gc: 一部だけ取り込まれた worktree は消す候補に出さない" {
+	# **ここが本丸。** 2 つのうち 1 つだけを cherry-pick した状態を、
+	# 「入っている」と読んではいけない。
+	_wt_repo
+	_wt_add half
+	_wt_commit2 half
+	git -C "${CCS_TEST_REPO}/.worktrees/half" push -q -u origin half
+	# `cherry-pick` に -q は無い（実測: 使い方エラーで 129）。
+	git -C "$CCS_TEST_REPO" cherry-pick "$(git -C "$CCS_TEST_REPO" rev-parse half~1)" >/dev/null
+
+	run "$CCS_BIN" gc
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"内容は本体に入っている"* ]] || return 1
+	[[ "$output" == *"未 merge"* ]] || return 1
+	[ -d "${CCS_TEST_REPO}/.worktrees/half" ]
+}
+
+@test "gc: squash のあと本体が同じファイルを触ったら拾わない（安全側）" {
+	_wt_repo
+	_wt_add sq
+	_wt_commit2 sq
+	git -C "${CCS_TEST_REPO}/.worktrees/sq" push -q -u origin sq
+	git -C "$CCS_TEST_REPO" merge -q --squash sq
+	git -C "$CCS_TEST_REPO" commit -q -m 'squash: sq'
+	printf 'three\n' >>"${CCS_TEST_REPO}/sq.txt"
+	git -C "$CCS_TEST_REPO" commit -q -am 'follow-up'
+
+	run "$CCS_BIN" gc
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"内容は本体に入っている"* ]] || return 1
+	[ -d "${CCS_TEST_REPO}/.worktrees/sq" ]
+}
+
+@test "gc --yes: squash マージされた worktree とブランチを消す" {
+	_wt_repo
+	_wt_add sq
+	_wt_commit2 sq
+	git -C "${CCS_TEST_REPO}/.worktrees/sq" push -q -u origin sq
+	git -C "$CCS_TEST_REPO" merge -q --squash sq
+	git -C "$CCS_TEST_REPO" commit -q -m 'squash: sq'
+
+	run "$CCS_BIN" gc --yes
+	[ "$status" -eq 0 ]
+	[ ! -d "${CCS_TEST_REPO}/.worktrees/sq" ]
+	# **ブランチも消える。** 上流に merge 済みなので git branch -d が通る。
+	run git -C "$CCS_TEST_REPO" rev-parse --verify sq
+	[ "$status" -ne 0 ]
+}

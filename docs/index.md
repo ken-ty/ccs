@@ -46,7 +46,7 @@ tmux・CLI を選んだ理由。
 | `ccs adopt <target> [--pid <pid>]` | **ccs 管轄外のセッションを引き取る**（元を閉じ、同じ会話を `cc/<slug>` で開き直す） |
 | `ccs kill [--force] <slug>` | 畳む |
 | `ccs kill --self [--force]` | そのセッション自身を畳む（アプリのアーカイブでは残るため）。**ccs 管轄外のセッションからも使える** |
-| `ccs gc [--yes]` | 止まったセッション・空の作業枠・不要になった worktree を掃除する |
+| `ccs gc [--yes]` | 止まったセッション・空の作業枠・不要になった worktree を掃除する（worktree は **clean + 本体に入っている + push 済み** のときだけ。**squash マージも見る**） |
 | [`ccs restore [--yes] [--json]`](restore.md) | 止まった／消えたセッションを同じ会話で立て直す |
 | `ccs resolve <target> [--json]` | 立てる前に、どこに解決されるかを見る |
 | `ccs config [--json]` | 効いている設定と、その出どころを見る |
