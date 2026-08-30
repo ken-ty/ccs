@@ -15,6 +15,26 @@
 tmux セッション名（`cc/<slug>`）でもツール上の相手の名前でもある
 （[命名規約](design.md#42-命名規約)）。
 
+### `ccs ls --json` が返すもの
+
+```json
+{"slug":"x01","status":"idle","sessionId":"…","path":"/…/x01","tmux":"cc/x01",
+ "labels":{},"startedAt":1788085167489,"transcript":"/…/….jsonl","worktree":null}
+```
+
+| キー | 何 |
+| --- | --- |
+| `status` | `idle` / `busy` / `waiting` / `stopped` |
+| `startedAt` | 起動時刻（epoch ミリ秒）。止まっていれば `null` |
+| `transcript` | 会話ログの場所。**止まっていても残る**（cwd と sessionId から決まるので） |
+| `worktree` | linked worktree なら `{"repo":…,"branch":…}`、違えば `null` |
+| `labels` | `--label` で付けた目印（下記） |
+
+`ccs ls -l --json` は、これに盤面の列（`pid` / `rssMb` / `updatedAt` / `age` / `request`）が
+足される。**既定の `--json` に入れたものは、どれも新しいプロセスを増やさない** ──
+`startedAt` はレジストリから、`transcript` は組み立てるだけ、`worktree` は `.git` が
+ファイルかという安い門番で大多数が落ちる。
+
 ### 紐付けの目印（`--label`）
 
 `ccs new <target> --label k=v`（反復可）で、そのセッションに**不透明な文字列**を付けられる。

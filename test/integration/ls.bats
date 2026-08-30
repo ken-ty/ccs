@@ -283,7 +283,7 @@ _tool_result() {
 	run "$CCS_BIN" ls --json
 	[ "$status" -eq 0 ]
 	_keys=$(echo "$output" | jq -r '.[0] | keys_unsorted | join(",")')
-	[ "$_keys" = 'slug,status,sessionId,path,tmux,labels' ]
+	[ "$_keys" = 'slug,status,sessionId,path,tmux,labels,startedAt,transcript,worktree' ]
 }
 
 @test "ls -l: 直近の依頼・RSS・最終更新の列を出す" {
@@ -420,7 +420,7 @@ _tool_result() {
 	[ "$status" -eq 0 ]
 	echo "$output" | jq -e . >/dev/null
 	_keys=$(echo "$output" | jq -r '.[0] | keys_unsorted | join(",")')
-	[ "$_keys" = 'slug,status,sessionId,path,tmux,labels,pid,rssMb,updatedAt,age,request' ]
+	[ "$_keys" = 'slug,status,sessionId,path,tmux,labels,startedAt,transcript,worktree,pid,rssMb,updatedAt,age,request' ]
 	[ "$(echo "$output" | jq -r '.[0].request')" = 'いらい' ]
 	[ "$(echo "$output" | jq -r '.[0].updatedAt')" -gt 0 ]
 }
@@ -474,4 +474,64 @@ _tool_result() {
 	run "$CCS_BIN" ls -l --json
 	[ "$status" -eq 0 ]
 	[ "$(echo "$output" | jq -r 'length')" = '0' ]
+}
+
+# --- 盤面のための情報を足す（C3） ------------------------------------------
+#
+# **既存フィールドは変えない。** 追加だけなので、既に読んでいる側は壊れない。
+# `-l` ではなく既定の `--json` に入れたのは、どれも**新しいプロセスを増やさない**
+# から ── `startedAt` はレジストリから、`transcript` は cwd と sessionId から
+# 組み立てるだけ、`worktree` は `.git` がファイルかという安い門番で大多数が落ちる。
+
+@test "ls --json: startedAt / transcript / worktree を返す" {
+	_new myrepo >/dev/null
+
+	run "$CCS_BIN" ls --json
+	[ "$status" -eq 0 ]
+	[ "$(echo "$output" | jq -r '.[0].startedAt')" -gt 0 ]
+	# 置き場所は cwd の非英数字を `-` に潰した名前なので、`/myrepo/` では出ない。
+	[[ "$(echo "$output" | jq -r '.[0].transcript')" == *"-myrepo/"*".jsonl" ]] || return 1
+	# 普通のディレクトリは worktree ではない。
+	[ "$(echo "$output" | jq -r '.[0].worktree')" = 'null' ]
+}
+
+@test "ls --json: worktree は本体と枝を返す" {
+	# **git に訊く。パスの形からは判断しない**（ADR-0003 決定 3）。
+	local _repo="${CCS_TEST_TMP}/ghq/github.com/o/x01"
+	ccs_make_git_repo "$_repo"
+	ccs_stub_ghq "$_repo"
+	"$CCS_BIN" new 'x01@topic' >/dev/null
+
+	run "$CCS_BIN" ls --json
+	[ "$status" -eq 0 ]
+	[ "$(echo "$output" | jq -r '.[0].worktree.branch')" = 'topic' ]
+	[ "$(echo "$output" | jq -r '.[0].worktree.repo')" = "$(cd "$_repo" && pwd -P)" ]
+}
+
+@test "ls --json: 止まっていれば startedAt は null、transcript は残る" {
+	# **戻る手掛かりを消さない。** 会話ログの場所は cwd と sessionId から
+	# 決まるので、claude が動いていなくても組み立てられる。
+	export FAKE_CLAUDE_EXIT_AFTER=1
+	_new myrepo >/dev/null
+	ccs_wait_until 10 ccs_registry_count_is 0
+
+	run "$CCS_BIN" ls --json
+	[ "$status" -eq 0 ]
+	[ "$(echo "$output" | jq -r '.[0].status')" = 'stopped' ]
+	[ "$(echo "$output" | jq -r '.[0].startedAt')" = 'null' ]
+	[[ "$(echo "$output" | jq -r '.[0].transcript')" == *".jsonl" ]] || return 1
+}
+
+@test "ls -l --json: 足したキーは盤面のキーより前に並ぶ" {
+	_new myrepo >/dev/null
+	_f=$(_transcript_of myrepo)
+	_say "$_f" 'いらい'
+
+	run "$CCS_BIN" ls -l --json
+	[ "$status" -eq 0 ]
+	_keys=$(echo "$output" | jq -r '.[0] | keys_unsorted | join(",")')
+	[ "$_keys" = 'slug,status,sessionId,path,tmux,labels,startedAt,transcript,worktree,pid,rssMb,updatedAt,age,request' ]
+	# 盤面の列は今までどおり出る。
+	[ "$(echo "$output" | jq -r '.[0].request')" = 'いらい' ]
+	[ "$(echo "$output" | jq -r '.[0].pid')" != 'null' ]
 }
