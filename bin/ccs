@@ -3122,10 +3122,69 @@ gc_path_in_use() {
 # **厳しい側に倒れていることが大事。** 予告が実行より緩いと、消す候補に
 # 出したものが実行時に拒まれる。逆（予告のほうが厳しい）は、消せるものを
 # 消さずに報告するだけなので害が無い。
+# そのブランチの**内容**が、既に本体に入っているか（G1）。
+#
+# **squash マージを拾うための判定。** squash はコミットを作り直すので枝の
+# 先端が本体の祖先にならず、`git branch --merged` では永久に「未 merge」の
+# ままになる（実測 2026-08-26: このリポジトリ自身が squash 運用で、消す候補が
+# ほぼ発生しなかった）。
+#
+# **`git cherry` / patch-id は使わない。** あれは**コミット単位**で patch-id を
+# 突き合わせるので、**複数コミットを 1 つに潰した squash では当たらない**
+# （実測: 2 コミットの squash で `+` が 2 本残った）。当たるのは元が 1 コミット
+# だったときだけで、**いちばん拾いたい形が拾えない**。
+#
+# 代わりに**内容**を見る ── 「枝が触ったファイルのどれについても、本体と枝で
+# 中身が違わない」なら、その仕事は本体に入っている。実測（5 通り、2026-08-31）:
+#
+# | 状況 | この判定 |
+# | --- | --- |
+# | squash マージ済み（2 コミット → 1 つ） | **拾う** |
+# | squash 後、本体が別のファイルを触った（普通の運用） | **拾う** |
+# | 未 merge | 拾わない |
+# | **一部だけ取り込まれた（2 つのうち 1 つを cherry-pick）** | **拾わない** |
+# | squash 後、本体が同じファイルを更に触った | 拾わない |
+#
+# **判定を緩める変更なので、外れ方が片側に倒れていることが要る。** 上のとおり、
+# 外れるときは「消せるものを消さずに報告する」側にしか倒れない。
+#
+# **ファイル名の一覧を `--` の後ろに並べない。** 空白を含む名前が分割されて
+# **存在しないパス**になり、`diff --quiet` が「差が無い」＝ merge 済みと答える
+# ── **危険な側に倒れる**唯一の経路がそこだった。代わりに 2 つの名前一覧を
+# **行として**突き合わせる（`awk` 1 回。名前の中身に触らない）。
+gc_branch_content_in_main() {
+	_gbc_base=$("$CCS_GIT_BIN" -C "$1" merge-base HEAD "$2" 2>/dev/null) || return 1
+
+	# 枝が触ったファイル。**1 つも無ければ対象にしない** ── 何も足していない
+	# 枝を「内容が入っている」と読むと、判定の意味が変わる。
+	_gbc_touched=$("$CCS_GIT_BIN" -C "$1" diff --name-only "$_gbc_base" "$2" 2>/dev/null) ||
+		return 1
+	[ -n "$_gbc_touched" ] || return 1
+
+	# 本体と枝で中身が違うファイル。
+	_gbc_differ=$("$CCS_GIT_BIN" -C "$1" diff --name-only HEAD "$2" 2>/dev/null) || return 1
+
+	# 両方に出てくる名前があれば、枝の仕事はまだ本体に入っていない。
+	_gbc_hit=$(printf '%s\n%s\n' "$_gbc_touched" "$_gbc_differ" |
+		awk 'NF && seen[$0]++ { print; exit }')
+	[ -z "$_gbc_hit" ]
+}
+
+# どちらの根拠で merge 済みと見なしたか。報告に出す。
+CCS_GC_MERGE_KIND=''
+
 gc_branch_is_merged() {
+	CCS_GC_MERGE_KIND=''
 	_m=$("$CCS_GIT_BIN" -C "$1" branch --merged HEAD --list "$2" \
 		--format='%(refname:short)' 2>/dev/null) || return 1
-	[ -n "$_m" ]
+	if [ -n "$_m" ]; then
+		CCS_GC_MERGE_KIND='merge 済み'
+		return 0
+	fi
+
+	gc_branch_content_in_main "$1" "$2" || return 1
+	CCS_GC_MERGE_KIND='内容は本体に入っている'
+	return 0
 }
 
 # ccs が作った worktree を列挙して分類する。
@@ -3221,12 +3280,16 @@ gc_worktrees() {
 			fi
 
 			_merged=''
-			gc_branch_is_merged "$_rp" "$_br" && _merged=1
+			_why=''
+			if gc_branch_is_merged "$_rp" "$_br"; then
+				_merged=1
+				_why=$CCS_GC_MERGE_KIND
+			fi
 
 			# A. clean + merge 済み + push 済み。
 			if [ -n "$_merged" ] && [ "$_ahead" = 0 ]; then
 				printf 'removable\t%s\t%s\t%s\t%s\n' \
-					"$_rp" "$_p" "$_br" 'merge 済み・push 済み'
+					"$_rp" "$_p" "$_br" "${_why}・push 済み"
 				continue
 			fi
 
