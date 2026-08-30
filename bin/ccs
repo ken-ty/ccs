@@ -90,6 +90,7 @@ CCS_SCRATCH_ROOT
 CCS_SCRATCH_SLOTS
 CCS_PROJECTS_DIR
 CCS_NEW_TIMEOUT
+CCS_ADOPT_TIMEOUT
 CCS_RESTORE_MAX_AGE
 CCS_RESTORE_LAST_WINDOW
 CCS_RESTORE_BOOT_EPOCH
@@ -211,6 +212,13 @@ load_config
 # 本物は起動に数秒かかる（トラストダイアログで止まると永遠に載らない）。
 # 短すぎると健全な起動を失敗と誤判定し、長すぎると詰まりに気づくのが遅れる。
 : "${CCS_NEW_TIMEOUT:=30}"
+
+# 引き取るとき、元のセッションが終わるのを待つ秒数。
+#
+# **時間ではなくレジストリファイルの消滅を待つ**（`adopt_wait_gone`）ので、
+# これは「諦める」までの上限。長めでよい ── 待ちきれずに諦めても
+# **何もしていない**（元は生きたまま）ので、害は「もう一度打つ」だけ。
+: "${CCS_ADOPT_TIMEOUT:=20}"
 
 # 使い捨て作業枠の本数。
 #
@@ -519,6 +527,8 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
   ccs ls -l [--json]                      盤面（直近の依頼 / RSS / 最終更新）も出す
   ccs attach [<slug>]                     セッションに乗り込む
                                           （slug を省くと番号で選ぶ）
+  ccs adopt <target> [--pid <pid>]        ccs 管轄外のセッションを引き取る
+                                          （元を閉じ、同じ会話を cc/<slug> で開き直す）
   ccs kill [--force] <slug>               セッションを畳む
                                           （作業中は --force が要る）
   ccs kill --self [--force]               いま自分が動いているセッションを畳む
@@ -3692,6 +3702,204 @@ cmd_restore() {
 }
 
 # ---------------------------------------------------------------------------
+# 引き取る（adopt）
+#
+# **プロセスは移せない。** tmux セッションを rename してもレジストリの `tmux`
+# 欄は追随しない（実測 2026-08-30: `busy` のセッションが `ccs ls` に `stopped`
+# と出た）。あの欄は起動時に 1 度書かれるだけで、`cc/<slug>` を名乗るには
+# **claude がそのペインの中で起動する**しかない。
+#
+# だから引き取りは**会話の引き取り**になる ── 元を閉じ、同じ `sessionId` を
+# `--resume` で `cc/<slug>` のペインに開き直す。立てるところは `restore` と
+# 同じなので `restore_launch` をそのまま使う。違うのは **相手が生きている**
+# ことだけで、そこに門が要る（下記）。
+# ---------------------------------------------------------------------------
+
+# <path> にいる、ccs 管轄外の生きているセッションのレジストリファイルを並べる。
+#
+# **`cc/` を名乗っているものは対象外。** 既に管轄下なら引き取る仕事が無い。
+adopt_candidates() {
+	for _ac_f in "$CCS_SESSIONS_DIR"/*.json; do
+		[ -e "$_ac_f" ] || continue
+		registry_is_live "$_ac_f" || continue
+
+		case $(registry_field "$_ac_f" tmux) in
+		"${CCS_PREFIX}"*) continue ;;
+		esac
+
+		# **cwd は正規化してから比べる。** レジストリに入っているのは
+		# claude が見た文字列で、`abs_dir` が返すものと綴りが違いうる
+		# （symlink を挟んだ `/tmp` など）。
+		_ac_cwd=$(registry_field "$_ac_f" cwd)
+		[ -n "$_ac_cwd" ] || continue
+		_ac_cwd=$(abs_dir "$_ac_cwd" 2>/dev/null || printf '%s' "$_ac_cwd")
+		[ "$_ac_cwd" = "$1" ] || continue
+
+		printf '%s\n' "$_ac_f"
+	done
+}
+
+# そのレジストリファイルが消えるまで待つ。消えたら 0。
+#
+# **時間ではなくファイルの消滅を待つ。** claude は終了時に自分の json を
+# 消す（`registry_is_live` の但し書き）ので、消えたこと自体が「会話ログを
+# 書き切って終わった」の合図になる。固定の sleep で済ませると、速い機械では
+# 無駄に待ち、遅い機械では**まだ生きている相手の会話を 2 本目で開く**。
+adopt_wait_gone() {
+	_aw_deadline=$(($(date +%s) + CCS_ADOPT_TIMEOUT))
+	while [ "$(date +%s)" -lt "$_aw_deadline" ]; do
+		[ -e "$1" ] || return 0
+		sleep 0.2
+	done
+	return 1
+}
+
+cmd_adopt() {
+	require_deps
+
+	_want_pid=''
+	_target=''
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--pid)
+			shift
+			[ $# -gt 0 ] || die "$EX_USAGE" 'adopt: --pid に値がありません'
+			is_uint "$1" || die "$EX_USAGE" "adopt: --pid は pid（0 以上の整数）です: $1"
+			_want_pid=$1
+			;;
+		-*) die "$EX_USAGE" "adopt: 知らないオプション: $1" ;;
+		*)
+			[ -z "$_target" ] || die "$EX_USAGE" "adopt: <target> は 1 つだけです: ${_target} と $1"
+			_target=$1
+			;;
+		esac
+		shift
+	done
+
+	[ -n "$_target" ] ||
+		die "$EX_USAGE" 'adopt: <target> を指定してください（引き取るセッションの作業ディレクトリ、またはリポジトリ名）'
+
+	resolve_target "$_target"
+	_slug=$CCS_RESOLVED_SLUG
+	_path=$CCS_RESOLVED_PATH
+	_session="${CCS_PREFIX}${_slug}"
+
+	# 門 1: 冪等。**既に管轄下なら何もしない**（`ccs new` と同じ）。
+	if tmux_session_exists "$_session"; then
+		if _existing=$(live_session_id_for "$_slug"); then
+			warn "ccs: ${_slug} は既に ccs の管轄です。"
+			emit_session_json "$_slug" "$_existing" "$_path" "$_session" \
+				"$(transcript_path "$_path" "$_existing")" false true
+			return 0
+		fi
+		warn "ccs: ${_session} のペインは残っていますが、claude は動いていません。"
+		warn ''
+		warn "  同じ会話で立て直す: ccs restore ${_slug}"
+		exit "$EX_FAIL"
+	fi
+
+	# 門 2: 引き取る相手が 1 つに決まるか。
+	_cands=$(adopt_candidates "$_path")
+	if [ -n "$_want_pid" ]; then
+		_cands=$(printf '%s\n' "$_cands" | while IFS= read -r _c; do
+			[ -n "$_c" ] || continue
+			[ "$(registry_num_field "$_c" pid)" = "$_want_pid" ] || continue
+			printf '%s\n' "$_c"
+		done)
+	fi
+
+	_n=$(printf '%s\n' "$_cands" | grep -c . || true)
+	if [ "$_n" -eq 0 ]; then
+		warn "ccs: $(tilde_path "$_path") に、引き取れるセッションが見つかりません。"
+		warn ''
+		warn '  引き取れるのは、その作業ディレクトリで動いている ccs 管轄外の claude だけです。'
+		warn "  新しく立てる: ccs new ${_target}"
+		exit "$EX_FAIL"
+	fi
+	if [ "$_n" -gt 1 ]; then
+		warn "ccs: $(tilde_path "$_path") に ${_n} 本のセッションが居ます。どれを引き取るか決められません。"
+		warn ''
+		printf '%s\n' "$_cands" | while IFS= read -r _c; do
+			[ -n "$_c" ] || continue
+			warn "  --pid $(registry_num_field "$_c" pid)  $(registry_field "$_c" name)"
+		done
+		exit "$EX_FAIL"
+	fi
+
+	_file=$_cands
+	_pid=$(registry_num_field "$_file" pid)
+	_uuid=$(registry_field "$_file" sessionId)
+	_name=$(registry_field "$_file" name)
+	[ -n "$_uuid" ] || die "$EX_FAIL" "adopt: sessionId を引けません: ${_file}"
+
+	# **ここから先は、正規化した `_path` ではなく相手が名乗る cwd を使う。**
+	#
+	# 会話ログの置き場所は cwd の**文字列**から決まる（`transcript_dir_for` は
+	# 英数字以外を潰すだけなので、`/var/…` と `/private/var/…` は別の
+	# ディレクトリになる）。正規化した綴りで探すと、**相手が実際に書いた場所を
+	# 見に行かない** ── macOS の `/tmp` と `/var/folders` は symlink を挟むので
+	# これは実際に起きる（テストで踏んだ）。
+	#
+	# 立てるときも同じ綴りで `-c` する。違う綴りで立てると、戻したセッションが
+	# 自分の会話ログを別の場所に書き始め、**同じ会話が 2 か所に割れる**。
+	#
+	# 照合（`adopt_candidates`）のほうは正規化して緩く当てる ── `ccs adopt
+	# /tmp/x` が `/private/tmp/x` のセッションを見つけられないと、名指しできない
+	# 相手ができてしまう。**緩く見つけて、相手の綴りで動く。**
+	_cwd=$(registry_field "$_file" cwd)
+	[ -n "$_cwd" ] || _cwd=$_path
+
+	# 門 3: 戻せる会話があるか。**`--resume` の先が無ければ引き取れない**
+	# （検査は restore と同じ ── 会話ログの実在と cwd の答え合わせ）。
+	_why=$(restore_reject_reason "$_cwd" "$_uuid")
+	if [ -n "$_why" ]; then
+		warn "ccs: 引き取れません（${_why}）。"
+		warn ''
+		warn '  まだ 1 度もやり取りしていないセッションには、戻す先の会話がありません。'
+		exit "$EX_FAIL"
+	fi
+
+	ensure_trust "$_cwd" "$_slug"
+
+	# 門 4: **元が生きている間は絶対に立てない。**
+	#
+	# 実測 2026-08-30 ── `claude --resume` は、その会話を別プロセスが握って
+	# いても**拒まない**。同じ sessionId のレジストリが 2 件並び、しかも
+	# **引き取った側は `bridgeSessionId` が `null`** になる（先に居るほうが
+	# Remote Control を譲らない）。RC が無いことは「アプリからもハブからも
+	# 見えない」なので、**成功したように見えて見えないセッションができる**。
+	#
+	# **SIGTERM で頼む。SIGKILL には昇格しない。** SIGTERM なら claude は
+	# 会話ログを書き切る（§10 の実測）。KILL で落とすと書き切られていない
+	# 会話が残り、いま戻そうとしている先が壊れる。
+	warn "ccs: ${_name:-pid ${_pid}}（pid ${_pid}）に終わるよう頼んでいます…"
+	kill -TERM "$_pid" 2>/dev/null ||
+		die "$EX_FAIL" "adopt: 終了を頼めませんでした（pid ${_pid}）"
+
+	if ! adopt_wait_gone "$_file"; then
+		warn "ccs: ${CCS_ADOPT_TIMEOUT} 秒待ちましたが、元のセッションが終わりませんでした。"
+		warn ''
+		warn '**何もしていません**（元はそのまま生きています）。'
+		warn '  そのセッション自身に頼む: ccs kill --self'
+		warn "  終わったら、もう一度:     ccs adopt ${_target}"
+		exit "$EX_FAIL"
+	fi
+
+	restore_launch "$_slug" "$_cwd" "$_uuid" ||
+		die "$EX_FAIL" "adopt: 立て直せませんでした: ${_session}"
+
+	if ! wait_for_registration "$_uuid"; then
+		warn "ccs: ${CCS_NEW_TIMEOUT} 秒待ちましたが、引き取ったセッションが登録されませんでした。"
+		warn ''
+		warn "  乗り込んで確かめる: ccs attach ${_slug}"
+		exit "$EX_FAIL"
+	fi
+
+	emit_session_json "$_slug" "$_uuid" "$_cwd" "$_session" \
+		"$(transcript_path "$_cwd" "$_uuid")" true true
+}
+
+# ---------------------------------------------------------------------------
 # 設定の検査と表示
 # ---------------------------------------------------------------------------
 
@@ -3724,7 +3932,7 @@ validate_config() {
 	[ "$CCS_HUB_SLUG" != 'tmp' ] ||
 		die "$EX_USAGE" 'CCS_HUB_SLUG に tmp は使えません（使い捨て作業枠の予約語です）'
 
-	for _v in CCS_SCRATCH_SLOTS CCS_NEW_TIMEOUT CCS_RESTORE_MAX_AGE CCS_RESTORE_LAST_WINDOW CCS_HUB_RC_TIMEOUT CCS_HUB_BACKOFF_WINDOW CCS_HUB_BACKOFF_MAX CCS_HUB_AGENT_INTERVAL; do
+	for _v in CCS_SCRATCH_SLOTS CCS_NEW_TIMEOUT CCS_ADOPT_TIMEOUT CCS_RESTORE_MAX_AGE CCS_RESTORE_LAST_WINDOW CCS_HUB_RC_TIMEOUT CCS_HUB_BACKOFF_WINDOW CCS_HUB_BACKOFF_MAX CCS_HUB_AGENT_INTERVAL; do
 		eval "_n=\$$_v"
 		is_uint "$_n" || die "$EX_USAGE" "${_v} は 0 以上の整数です: ${_n}"
 	done
@@ -4749,6 +4957,7 @@ main() {
 
 	case $_cmd in
 	new) cmd_new "$@" ;;
+	adopt) cmd_adopt "$@" ;;
 	ls) cmd_ls "$@" ;;
 	attach) cmd_attach "$@" ;;
 	kill) cmd_kill "$@" ;;
