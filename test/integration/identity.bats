@@ -125,3 +125,59 @@ _rename() {
 	[ "$(printf '%s' "$output" | jq -r '.created')" = 'true' ]
 	[ "$(printf '%s' "$output" | jq -r '.sessionId')" != "$_id" ]
 }
+
+# --- 表示も名前に依存させない（N2） ---------------------------------------
+#
+# **破壊はしないが、いちばん目に付く症状。** 動いているセッションが `stopped`
+# と出ると、見た人は復帰の手を打とうとする（`ccs restore` を打つと、生きて
+# いる会話をもう 1 本立てることになる）。
+
+@test "ls: 改名されたセッションを stopped と出さない" {
+	run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 0 ]
+	local _id
+	_id=$(printf '%s' "$output" | jq -r '.sessionId')
+
+	_rename tmp-1 'renamed'
+
+	run --separate-stderr "$CCS_BIN" ls --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].slug')" = 'renamed' ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].status')" != 'stopped' ]
+	# **sessionId も cwd も、レジストリから引けている。**
+	[ "$(printf '%s' "$output" | jq -r '.[0].sessionId')" = "$_id" ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].path')" = "$(cd "${CCS_SCRATCH_ROOT}/1" && pwd -P)" ]
+}
+
+@test "ls -l: 改名されても pid が埋まる" {
+	# **pid が `-` だと RSS の列も落ちる。** 盤面としての情報量が減る。
+	"$CCS_BIN" new --tmp >/dev/null
+	_rename tmp-1 'renamed'
+
+	run --separate-stderr "$CCS_BIN" ls -l --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].pid')" != 'null' ]
+}
+
+@test "agents: 改名されたセッションを二重に出さない" {
+	# **管轄下として 1 行だけ。** レジストリの tmux 欄は `cc/` のままなので
+	# 管轄外の行には落ちない ── ここが崩れると同じ会話が 2 行に見える。
+	"$CCS_BIN" new --tmp >/dev/null
+	_rename tmp-1 'renamed'
+
+	run --separate-stderr "$CCS_BIN" agents --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq 'length')" -eq 1 ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].slug')" = 'renamed' ]
+}
+
+@test "ls: 本当に止まっていれば stopped のまま" {
+	# **改名の救済が、死んだセッションまで生かして見せないこと。**
+	export FAKE_CLAUDE_EXIT_AFTER=1
+	"$CCS_BIN" new --tmp >/dev/null
+	ccs_wait_until 10 ccs_registry_count_is 0
+
+	run --separate-stderr "$CCS_BIN" ls --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].status')" = 'stopped' ]
+}
