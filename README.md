@@ -55,6 +55,8 @@ cd ~/ghq/github.com/ken-ty/ccs && make install
 ccs new <target> [-- <初期プロンプト>]   # target: リポジトリ名 | ghq パス
 ccs new --tmp [-- <初期プロンプト>]      # 使い捨ての作業枠（"tmp" は短い綴り）
 ccs new <target> --label k=v             # 紐付けの目印（反復可。ccs は中身を解釈しない）
+ccs new <target> --session-id <uuid>     # 会話の id を外から決める
+ccs new <target> --prompt-file <path>    # 初期プロンプトをファイルから読む
 ccs ls [--json]                          # cc/ 接頭辞のセッションだけを整形して出す
 ccs ls -l [--json]                       # 盤面（直近の依頼 / RSS / 最終更新）も出す
 ccs agents [-l] [--json]                 # このマシンの claude を俯瞰（管轄外は SLUG が -）
