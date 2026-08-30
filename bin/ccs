@@ -33,7 +33,8 @@ CCS_BUILD=''
 # 出力
 #
 # 人間向けのメッセージは stderr に出す。stdout は機械可読な結果だけに使う
-# （`ccs new` の JSON、`ccs ls --json`、`ccs hub status --json`）。混ぜると
+# （`ccs new` の JSON、`ccs ls --json`、`ccs agents --json`、
+# `ccs restore --json`、`ccs hub status --json`）。混ぜると
 # ハブ側でパースできなくなる。
 #
 # **この 2 つだけは設定より先に定義する。** 設定ファイルの読み込み自体が
@@ -539,7 +540,8 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
                                             未コミットがあれば --force が要る）
   ccs gc [--yes]                          止まったセッション・空の作業枠・不要な worktree を掃除する
                                           （既定は見せるだけ。--yes で実行）
-  ccs restore [--yes] [<slug>...]         止まった／消えたセッションを同じ会話で
+  ccs restore [--yes] [--json] [<slug>...]
+                                          止まった／消えたセッションを同じ会話で
                                           立て直す（既定は見せるだけ）
   ccs restore --last [--yes]              前回の停止まで生きていた組だけを戻す
   ccs restore --since <期間> [--yes]      その期間だけ遡って戻す（例: 6h）
@@ -3421,7 +3423,9 @@ restore_candidates() {
 	# ── tmux セッションが在ること自体が「さっきまで居た」証拠。
 	for _slug in $(list_slugs); do
 		[ "$_slug" = "$CCS_HUB_SLUG" ] && continue
-		live_session_id_for "$_slug" >/dev/null 2>&1 && continue
+		# **名前で「止まっている」と決めない**（I1）。改名されたセッションを
+		# 候補に出すと、`--yes` が**生きているペインを畳んで立て直す**。
+		session_is_live "$_slug" && continue
 
 		_p=$(pane_or_registry_cwd "$_slug" 2>/dev/null) || _p=''
 		[ -n "$_p" ] || continue
@@ -3638,11 +3642,126 @@ restore_mtime_of() {
 	date -r "$1" '+%Y-%m-%d %H:%M' 2>/dev/null || printf '-'
 }
 
+# `<slug>\t<path>\t<uuid>` の行を JSON の配列にする。
+# 第 2 引数が空でなければ、会話ログから updatedAt と title も引く。
+#
+# **`--json` は既定の出力と同じ材料から作る。** 別経路で組み立てると、
+# 人が見る表と機械が読む JSON がずれていくので、仕分けの結果をそのまま使う。
+restore_json_array() {
+	_rja_rows=$1
+	_rja_rich=$2
+
+	printf '['
+	printf '%s\n' "$_rja_rows" | {
+		_rja_first=1
+		while IFS="$(printf '\t')" read -r _slug _path _uuid; do
+			[ -n "$_slug" ] || continue
+			[ "$_rja_first" = 1 ] || printf ','
+			_rja_first=0
+			printf '{"slug":%s,"path":%s,"sessionId":%s,"tmux":%s' \
+				"$(json_str "$_slug")" "$(json_str "$_path")" \
+				"$(json_str "$_uuid")" "$(json_str "${CCS_PREFIX}${_slug}")"
+			if [ -n "$_rja_rich" ]; then
+				_rja_f=$(transcript_path "$_path" "$_uuid")
+				printf ',"updatedAt":%s,"title":%s' \
+					"$(json_num "$(mtime_epoch_of "$_rja_f")")" \
+					"$(json_str "$(restore_title_of "$_rja_f" || printf '')")"
+			fi
+			printf '}'
+		done
+	}
+	printf ']'
+}
+
+# `<slug>\t<理由>` の行を JSON の配列にする。
+restore_json_skipped() {
+	printf '['
+	printf '%s\n' "$1" | {
+		_rjs_first=1
+		while IFS="$(printf '\t')" read -r _slug _why; do
+			[ -n "$_slug" ] || continue
+			[ "$_rjs_first" = 1 ] || printf ','
+			_rjs_first=0
+			printf '{"slug":%s,"reason":%s}' "$(json_str "$_slug")" "$(json_str "$_why")"
+		done
+	}
+	printf ']'
+}
+
+# 実行の結果（`ok\t<slug>\t<uuid>` / `ng\t<slug>`）を JSON にする。
+restore_json_applied() {
+	printf '{"applied":true,"restored":['
+	printf '%s\n' "$1" | sed -n 's/^ok\t//p' | {
+		_rjp_first=1
+		while IFS="$(printf '\t')" read -r _slug _uuid; do
+			[ -n "$_slug" ] || continue
+			[ "$_rjp_first" = 1 ] || printf ','
+			_rjp_first=0
+			printf '{"slug":%s,"sessionId":%s,"tmux":%s}' \
+				"$(json_str "$_slug")" "$(json_str "$_uuid")" \
+				"$(json_str "${CCS_PREFIX}${_slug}")"
+		done
+	}
+	printf '],"failed":['
+	printf '%s\n' "$1" | sed -n 's/^ng\t//p' | {
+		_rjf_first=1
+		while IFS= read -r _slug; do
+			[ -n "$_slug" ] || continue
+			[ "$_rjf_first" = 1 ] || printf ','
+			_rjf_first=0
+			printf '{"slug":%s,"tmux":%s}' \
+				"$(json_str "$_slug")" "$(json_str "${CCS_PREFIX}${_slug}")"
+		done
+	}
+	printf ']'
+}
+
+# 何も戻せないときの JSON。**キーの形は普段と同じ**にする ── 空のときだけ
+# 別の形にすると、読む側が 2 通りの分岐を持つことになる。
+restore_json_empty() {
+	if [ -n "$1" ]; then
+		printf '{"applied":true,"restored":[],"failed":[],"alive":[],"skipped":[]}\n'
+	else
+		printf '{"applied":false,"ready":[],"alive":[],"skipped":[]}\n'
+	fi
+}
+
+# 会話ログの一覧（`--list --json`）。
+restore_json_conversations() {
+	printf '['
+	printf '%s\n' "$1" | {
+		_rjc_first=1
+		while IFS="$(printf '\t')" read -r _slug _path _uuid; do
+			[ -n "$_slug" ] || continue
+			[ "$_rjc_first" = 1 ] || printf ','
+			_rjc_first=0
+			printf '{"slug":%s,"path":%s,"conversations":[' \
+				"$(json_str "$_slug")" "$(json_str "$_path")"
+			# shellcheck disable=SC2012  # ファイル名は <uuid>.jsonl 固定
+			ls -t "$(transcript_dir_for "$_path")"/*.jsonl 2>/dev/null | {
+				_rjc_cfirst=1
+				while IFS= read -r _rjc_f; do
+					[ -n "$_rjc_f" ] || continue
+					[ "$_rjc_cfirst" = 1 ] || printf ','
+					_rjc_cfirst=0
+					printf '{"sessionId":%s,"updatedAt":%s,"title":%s}' \
+						"$(json_str "$(basename "$_rjc_f" .jsonl)")" \
+						"$(json_num "$(mtime_epoch_of "$_rjc_f")")" \
+						"$(json_str "$(restore_title_of "$_rjc_f" || printf '')")"
+				done
+			}
+			printf ']}'
+		done
+	}
+	printf ']'
+}
+
 cmd_restore() {
 	require_deps
 
 	_apply=''
 	_all=''
+	_json=''
 	_list=''
 	_last=''
 	_since=''
@@ -3673,6 +3792,7 @@ cmd_restore() {
 		case $_arg in
 		-y | --yes) _apply=1 ;;
 		--all) _all=1 ;;
+		--json) _json=1 ;;
 		--list) _list=1 ;;
 		--last) _last=1 ;;
 		--since) _want=since ;;
@@ -3768,7 +3888,11 @@ cmd_restore() {
 			_t_last=$(printf '%s\n' "$_dated" |
 				awk -F'\t' 'NF == 4 && $4 > m { m = $4 } END { print m + 0 }')
 			if [ "${_t_last:-0}" -le 0 ] 2>/dev/null; then
-				printf '前回の停止まで生きていたセッションはありません。\n'
+				if [ -n "$_json" ]; then
+					restore_json_empty "$_apply"
+				else
+					printf '前回の停止まで生きていたセッションはありません。\n'
+				fi
 				return 0
 			fi
 			_lo=$((_t_last - CCS_RESTORE_LAST_WINDOW))
@@ -3782,13 +3906,22 @@ cmd_restore() {
 	fi
 
 	if [ -z "$_rows" ]; then
-		printf '立て直せるセッションはありません。\n'
+		if [ -n "$_json" ]; then
+			restore_json_empty "$_apply"
+		else
+			printf '立て直せるセッションはありません。\n'
+		fi
 		return 0
 	fi
 
 	# --- 会話の一覧だけ見せて終わる ---
 
 	if [ -n "$_list" ]; then
+		if [ -n "$_json" ]; then
+			restore_json_conversations "$_rows"
+			printf '\n'
+			return 0
+		fi
 		printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _path _uuid; do
 			[ -n "$_slug" ] || continue
 			restore_list_conversations "$_slug" "$_path"
@@ -3804,8 +3937,8 @@ cmd_restore() {
 	_sorted=$(printf '%s\n' "$_rows" |
 		while IFS="$(printf '\t')" read -r _slug _path _uuid; do
 			[ -n "$_slug" ] || continue
-			# 生きているものは触らない（冪等性）。
-			if live_session_id_for "$_slug" >/dev/null 2>&1; then
+			# 生きているものは触らない（冪等性）。**名前では引かない**（I1）。
+			if session_is_live "$_slug"; then
 				printf 'alive\t%s\t%s\t%s\n' "$_slug" "$_path" "$_uuid"
 				continue
 			fi
@@ -3826,8 +3959,21 @@ cmd_restore() {
 		awk -F'\t' 'NF > 1 && length($2) > m { m = length($2) } END { print (m < 4 ? 4 : m) }')
 
 	# --- 報告 ---
+	#
+	# **JSON は予告も実行も 1 つのオブジェクトで返す。** ハブは `applied` で
+	# 分岐すればよく、人間向けの 3 つの見出しを読み分ける必要がない。
+	if [ -n "$_json" ] && [ -z "$_apply" ]; then
+		printf '{"applied":false,"ready":'
+		restore_json_array "$_ready" 1
+		printf ',"alive":'
+		restore_json_array "$_alive" ''
+		printf ',"skipped":'
+		restore_json_skipped "$_skipped"
+		printf '}\n'
+		return 0
+	fi
 
-	if [ -n "$_ready" ]; then
+	if [ -z "$_json" ] && [ -n "$_ready" ]; then
 		printf '立て直せるセッション:\n'
 		printf '%s\n' "$_ready" | while IFS="$(printf '\t')" read -r _slug _path _uuid; do
 			[ -n "$_slug" ] || continue
@@ -3839,7 +3985,7 @@ cmd_restore() {
 		printf '\n'
 	fi
 
-	if [ -n "$_alive" ]; then
+	if [ -z "$_json" ] && [ -n "$_alive" ]; then
 		printf '生きているので触りません:\n'
 		printf '%s\n' "$_alive" | while IFS="$(printf '\t')" read -r _slug _rest; do
 			[ -n "$_slug" ] || continue
@@ -3848,7 +3994,7 @@ cmd_restore() {
 		printf '\n'
 	fi
 
-	if [ -n "$_skipped" ]; then
+	if [ -z "$_json" ] && [ -n "$_skipped" ]; then
 		printf '戻せません:\n'
 		printf '%s\n' "$_skipped" | while IFS="$(printf '\t')" read -r _slug _why; do
 			[ -n "$_slug" ] || continue
@@ -3857,7 +4003,18 @@ cmd_restore() {
 		printf '\n'
 	fi
 
-	[ -n "$_ready" ] || return 0
+	if [ -z "$_ready" ]; then
+		# **`--json` は必ず 1 つ出す。** 黙って終わると、読む側は
+		# 「失敗したのか、戻すものが無かったのか」を区別できない。
+		if [ -n "$_json" ] && [ -n "$_apply" ]; then
+			printf '{"applied":true,"restored":[],"failed":[],"alive":'
+			restore_json_array "$_alive" ''
+			printf ',"skipped":'
+			restore_json_skipped "$_skipped"
+			printf '}\n'
+		fi
+		return 0
+	fi
 
 	if [ -z "$_apply" ]; then
 		# **絞り込んだときは、その絞り込みごと繰り返せる形で出す。** ここで
@@ -3900,11 +4057,20 @@ cmd_restore() {
 			fi
 		done)
 
-	printf '%s\n' "$_waited" | sed -n 's/^ok\t//p' |
-		while IFS="$(printf '\t')" read -r _slug _uuid; do
-			[ -n "$_slug" ] || continue
-			printf '戻しました: %s%s（%s）\n' "$CCS_PREFIX" "$_slug" "$_uuid"
-		done
+	if [ -n "$_json" ]; then
+		restore_json_applied "$_waited"
+		printf ',"alive":'
+		restore_json_array "$_alive" ''
+		printf ',"skipped":'
+		restore_json_skipped "$_skipped"
+		printf '}\n'
+	else
+		printf '%s\n' "$_waited" | sed -n 's/^ok\t//p' |
+			while IFS="$(printf '\t')" read -r _slug _uuid; do
+				[ -n "$_slug" ] || continue
+				printf '戻しました: %s%s（%s）\n' "$CCS_PREFIX" "$_slug" "$_uuid"
+			done
+	fi
 
 	_failed=$(printf '%s\n' "$_waited" | sed -n 's/^ng\t//p')
 	[ -z "$_failed" ] || {
