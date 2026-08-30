@@ -1941,13 +1941,24 @@ labels_table() {
 	"$CCS_TMUX_BIN" list-sessions -F "#{session_name}	#{${CCS_LABEL_OPTION}}" 2>/dev/null
 }
 
-# 対応表から <slug> のラベルを引く。無ければ `{}`。
+# 対応表から <session> のラベルを引く。無ければそのセッションに直接訊く。
+#
+# **一括に賭けない。** `#{@…}` の展開は tmux の版に依る ── 実測（CI の
+# tmux 3.4）で `list-sessions -F` からは空しか返らなかった（手元の 3.7b では
+# 引ける）。**手元で緑、CI でだけ落ちる**種類なので、片方だけに寄せない。
+#
+# 一括が効く版では、ラベルの付いたセッションぶんの `show-options` が消える。
+# 効かない版でも、増えるのは**セッション 1 本につき tmux 1 回**で、`ccs ls`
+# が既に払っている `pane_session_id_for` と同じ桁に収まる。
 labels_from_table() {
 	_lft=$(printf '%s\n' "$1" | awk -F'\t' -v s="$2" '$1 == s { print $2; exit }')
 	case $_lft in
-	'{'*) printf '%s' "$_lft" ;;
-	*) printf '{}' ;;
+	'{'*)
+		printf '%s' "$_lft"
+		return 0
+		;;
 	esac
+	labels_of_session "$2"
 }
 
 list_slugs() {
