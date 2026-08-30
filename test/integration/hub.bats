@@ -455,3 +455,21 @@ _rename_hub() {
 	ccs_tmux has-session -t '=cc/hub'
 	[ "$(ccs_registry_count)" -eq 1 ]
 }
+
+@test "DIAG (一時): 改名後の実値を CI から取る" {
+	run "$CCS_BIN" hub up
+	echo "# DIAG up_status=$status" >&3
+	echo "# DIAG HUB_HOME=[$CCS_HUB_HOME]" >&3
+	echo "# DIAG abs=[$(cd "$CCS_HUB_HOME" 2>/dev/null && pwd -P)]" >&3
+	echo "# DIAG uname=$(uname -s) tmux=$(ccs_tmux -V 2>&1)" >&3
+	for f in "$CCS_SESSIONS_DIR"/*.json; do
+		echo "# DIAG reg=$(basename "$f") body=$(tr -d '\n' <"$f")" >&3
+	done
+	ccs_tmux rename-session -t '=cc/hub' 'cc/renamed'
+	echo "# DIAG sessions=[$(ccs_tmux list-sessions -F '#{session_name}' | tr '\n' ',')]" >&3
+	echo "# DIAG panes=[$(ccs_tmux list-panes -a -F '#{session_name}|#{pane_start_command}' | tr '\n' ',')]" >&3
+	run --separate-stderr "$CCS_BIN" hub status
+	echo "# DIAG status_exit=$status" >&3
+	echo "# DIAG status_out=[$(printf '%s' "$output" | tr '\n' ';')]" >&3
+	true
+}
