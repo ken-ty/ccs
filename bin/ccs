@@ -1986,7 +1986,7 @@ tilde_path() {
 }
 
 # 1 セッションぶんの情報を集めて、タブ区切りで 1 行出す。
-#   slug<TAB>status<TAB>sessionId<TAB>path
+#   slug<TAB>status<TAB>sessionId<TAB>path<TAB>pid<TAB>startedAt
 collect_session_row() {
 	_slug=$1
 	_session="${CCS_PREFIX}${_slug}"
@@ -2004,6 +2004,8 @@ collect_session_row() {
 		[ -n "$_status" ] || _status='running'
 		_path=$(registry_field "$_file" cwd)
 		_pid=$(registry_num_field "$_file" pid)
+		_started=$(registry_num_field "$_file" startedAt)
+		[ -n "$_started" ] || _started='-'
 	else
 		# claude は動いていない。**ここで uuid を落とすと復帰路が消える** ──
 		# v1 に resume が無いので、手で `claude --resume` するしかない。
@@ -2017,10 +2019,13 @@ collect_session_row() {
 		# 潰れる（POSIX: タブは IFS の空白文字）ので、空欄を運ぶと
 		# 後ろの列が 1 つずつ手前にずれる。
 		_pid='-'
+		# claude が動いていないので起動時刻も引けない。
+		_started='-'
 	fi
 
 	[ -n "$_path" ] || _path='-'
-	printf '%s\t%s\t%s\t%s\t%s\n' "$_slug" "$_status" "$_id" "$_path" "$_pid"
+	printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+		"$_slug" "$_status" "$_id" "$_path" "$_pid" "$_started"
 }
 
 # 管轄外の行（slug が `-`）では slug と tmux を null にする。
@@ -2035,6 +2040,30 @@ ls_json_slug() {
 	if [ "$1" = '-' ]; then printf 'null'; else json_str "$1"; fi
 }
 
+# 会話ログの場所。cwd と sessionId が揃っていなければ null。
+ls_json_transcript() {
+	if [ -n "$1" ] && [ "$1" != '-' ] && [ -n "$2" ] && [ "$2" != '-' ]; then
+		json_str "$(transcript_path "$1" "$2")"
+	else
+		printf 'null'
+	fi
+}
+
+# linked worktree なら本体と枝、違えば null。
+#
+# **git に訊く。パスの形からは判断しない**（ADR-0003 決定 3）。既定の
+# `ccs ls --json` に入れられるのは、`path_is_linked_worktree` が安い門番
+# （`.git` が**ファイル**か）を先に置いているから ── 大多数の行は git を
+# 起こさずに落ちるので、「既定は軽い」の約束は破れない。
+ls_json_worktree() {
+	if [ -n "$1" ] && [ "$1" != '-' ] && path_is_linked_worktree "$1"; then
+		printf '{"repo":%s,"branch":%s}' \
+			"$(json_str "$CCS_WT_MAIN")" "$(json_str "$CCS_WT_BRANCH")"
+	else
+		printf 'null'
+	fi
+}
+
 ls_json_tmux() {
 	if [ "$1" = '-' ]; then printf 'null'; else json_str "${CCS_PREFIX}${1}"; fi
 }
@@ -2047,15 +2076,18 @@ ls_as_json() {
 	_lbl=$(labels_table || true)
 	printf '['
 	_first=1
-	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid; do
+	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid _started; do
 		[ -n "$_slug" ] || continue
 		[ "$_first" = 1 ] || printf ','
 		_first=0
-		printf '{"slug":%s,"status":%s,"sessionId":%s,"path":%s,"tmux":%s,"labels":%s}' \
+		printf '{"slug":%s,"status":%s,"sessionId":%s,"path":%s,"tmux":%s,"labels":%s,"startedAt":%s,"transcript":%s,"worktree":%s}' \
 			"$(ls_json_slug "$_slug")" "$(json_str "$_status")" \
 			"$(json_str "$_id")" "$(json_str "$_path")" \
 			"$(ls_json_tmux "$_slug")" \
-			"$(labels_from_table "$_lbl" "${CCS_PREFIX}${_slug}")"
+			"$(labels_from_table "$_lbl" "${CCS_PREFIX}${_slug}")" \
+			"$(json_num "$_started")" \
+			"$(ls_json_transcript "$_path" "$_id")" \
+			"$(ls_json_worktree "$_path")"
 	done
 	printf ']\n'
 }
@@ -2068,7 +2100,7 @@ ls_as_table() {
 		awk -F'\t' 'NF && length($1) > m { m = length($1) } END { print (m < 4 ? 4 : m) }')
 
 	printf "%-${_w}s  %-8s  %-36s  %s\n" 'SLUG' 'STATUS' 'SESSION ID' 'PATH'
-	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid; do
+	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid _started; do
 		[ -n "$_slug" ] || continue
 		printf "%-${_w}s  %-8s  %-36s  %s\n" \
 			"$_slug" "$_status" "$_id" "$(tilde_path "$_path")"
@@ -2290,7 +2322,7 @@ ls_rss_of() {
 }
 
 # `collect_session_row` の行に盤面の列を足す。
-#   slug<TAB>status<TAB>sessionId<TAB>path<TAB>pid<TAB>rssMb<TAB>mtime<TAB>request
+#   slug<TAB>status<TAB>sessionId<TAB>path<TAB>pid<TAB>startedAt<TAB>rssMb<TAB>mtime<TAB>request
 ls_board_rows() {
 	_brows=$1
 
@@ -2310,15 +2342,15 @@ ls_board_rows() {
 			gsub(/[^A-Za-z0-9]/, "-", enc)
 			printf "%s\t%s/%s/%s.jsonl\n", $0, dir, enc, $3
 		}' |
-		while IFS="$(printf '\t')" read -r _slug _status _id _path _pid _bfile; do
+		while IFS="$(printf '\t')" read -r _slug _status _id _path _pid _started _bfile; do
 			[ -n "$_slug" ] || continue
 			# **無い値は `-` で運ぶ**（空欄にしない。`collect_session_row` の
 			# `_pid` と同じ理由 ── 空のタブ区切りの欄は read で潰れる）。
 			_brss_mb=$(ls_rss_of "$_brss" "$_pid")
 			_bmt=$(mtime_epoch_of "$_bfile")
 			_breq=$(last_request_of "$_bfile")
-			printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-				"$_slug" "$_status" "$_id" "$_path" "$_pid" \
+			printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+				"$_slug" "$_status" "$_id" "$_path" "$_pid" "$_started" \
 				"${_brss_mb:--}" "${_bmt:--}" "$_breq"
 		done
 }
@@ -2339,15 +2371,18 @@ ls_as_json_long() {
 	_lbl=$(labels_table || true)
 	printf '['
 	_first=1
-	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid _rss _mt _req; do
+	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid _started _rss _mt _req; do
 		[ -n "$_slug" ] || continue
 		[ "$_first" = 1 ] || printf ','
 		_first=0
-		printf '{"slug":%s,"status":%s,"sessionId":%s,"path":%s,"tmux":%s,"labels":%s,"pid":%s,"rssMb":%s,"updatedAt":%s,"age":%s,"request":%s}' \
+		printf '{"slug":%s,"status":%s,"sessionId":%s,"path":%s,"tmux":%s,"labels":%s,"startedAt":%s,"transcript":%s,"worktree":%s,"pid":%s,"rssMb":%s,"updatedAt":%s,"age":%s,"request":%s}' \
 			"$(ls_json_slug "$_slug")" "$(json_str "$_status")" \
 			"$(json_str "$_id")" "$(json_str "$_path")" \
 			"$(ls_json_tmux "$_slug")" \
 			"$(labels_from_table "$_lbl" "${CCS_PREFIX}${_slug}")" \
+			"$(json_num "$_started")" \
+			"$(ls_json_transcript "$_path" "$_id")" \
+			"$(ls_json_worktree "$_path")" \
 			"$(json_num "$_pid")" "$(json_num "$_rss")" \
 			"$(json_num "$_mt")" "$(json_str "$(ls_age_text "$_mt")")" \
 			"$(json_str "$_req")"
@@ -2367,7 +2402,7 @@ ls_as_table_long() {
 		awk -F'\t' 'NF && length($1) > m { m = length($1) } END { print (m < 4 ? 4 : m) }')
 
 	printf "%-${_w}s  %-8s  %6s  %5s  %s\n" 'SLUG' 'STATUS' 'RSS' 'AGE' 'REQUEST'
-	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid _rss _mt _req; do
+	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid _started _rss _mt _req; do
 		[ -n "$_slug" ] || continue
 		if [ -n "$_rss" ] && [ "$_rss" != '-' ]; then
 			_rss="${_rss}M"
@@ -2454,7 +2489,7 @@ ls_render() {
 # ---------------------------------------------------------------------------
 
 # ccs 管轄外の生きているセッションを、`collect_session_row` と同じ形の行にする。
-#   slug<TAB>status<TAB>sessionId<TAB>path<TAB>pid
+#   slug<TAB>status<TAB>sessionId<TAB>path<TAB>pid<TAB>startedAt
 #
 # **slug は `-`。** 打てる宛先が無いことを、列そのもので表す ── 名乗っている
 # `name` を SLUG 欄に置くと、打てない文字列が打てる位置に座る（実測で
@@ -2480,8 +2515,11 @@ agents_external_rows() {
 		[ -n "$_ax_path" ] || _ax_path='-'
 		_ax_pid=$(registry_num_field "$_ax_f" pid)
 		[ -n "$_ax_pid" ] || _ax_pid='-'
+		_ax_started=$(registry_num_field "$_ax_f" startedAt)
+		[ -n "$_ax_started" ] || _ax_started='-'
 
-		printf '%s\t%s\t%s\t%s\t%s\n' '-' "$_ax_status" "$_ax_id" "$_ax_path" "$_ax_pid"
+		printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+			'-' "$_ax_status" "$_ax_id" "$_ax_path" "$_ax_pid" "$_ax_started"
 	done | sort -t"$(printf '\t')" -k4,4
 }
 
