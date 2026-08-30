@@ -246,3 +246,97 @@ JSON
 	[ "$(echo "$output" | wc -l | tr -d ' ')" = '1' ]
 	echo "$output" | jq -e . >/dev/null
 }
+
+# --- 印を「空」と数えない（I2a） -------------------------------------------
+#
+# **ADR-0001 が守ろうとしたのは「知らないコードがそこに無い」こと**で、
+# 「空であること」はその代理指標だった。`ccs` が書いた印は知らないコードでは
+# ないので、代理指標のほうを少しだけ緩める ── そうしないと、印を置いた瞬間に
+# 枠が「空でない」に化けて、自動承認も枠の再利用も止まる（ADR-0002）。
+#
+# **緩めるのは正しい印だけ。** 名前だけ合わせた他人のファイルは数える。
+
+_mark() { # <dir> [workspaceId] [kind] [schema]
+	local _d=$1
+	mkdir -p "$_d"
+	printf '{"schema":%s,"workspaceId":"%s","kind":"%s"}\n' \
+		"${4:-1}" "${2:-$(basename "$_d")}" "${3:-scratch}" >"${_d}/.ccs.json"
+}
+
+@test "trust: 印だけの作業枠は空として扱い、自動で信頼する" {
+	_mark "${CCS_SCRATCH_ROOT}/1"
+
+	run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 0 ]
+	# **その枠が選ばれる**（印で埋まっていると見なされない）。
+	[ "$(printf '%s' "$output" | jq -r '.slug')" = 'tmp-1' ]
+	[[ "$stderr" == *"信頼済みにしました"* ]] || return 1
+}
+
+@test "trust: 印のほかに何かあれば、今までどおり空ではない" {
+	_mark "${CCS_SCRATCH_ROOT}/1"
+	printf 'work\n' >"${CCS_SCRATCH_ROOT}/1/note.txt"
+
+	run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 0 ]
+	# 枠 1 は埋まっているので次へ流れる。
+	[ "$(printf '%s' "$output" | jq -r '.slug')" = 'tmp-2' ]
+}
+
+@test "trust: kind が違う印は数える（緩めない）" {
+	_mark "${CCS_SCRATCH_ROOT}/1" '1' 'something-else'
+
+	run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.slug')" = 'tmp-2' ]
+}
+
+@test "trust: workspaceId がディレクトリ名と違う印は数える" {
+	# **素性は「そこに書いてあること」ではなく「そこと結びついていること」。**
+	# 印ごとコピーされたディレクトリが、元のものを名乗れてはいけない。
+	_mark "${CCS_SCRATCH_ROOT}/1" 'someone-else'
+
+	run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.slug')" = 'tmp-2' ]
+}
+
+@test "trust: 名前だけ .ccs.json の他人のファイルは数える" {
+	mkdir -p "${CCS_SCRATCH_ROOT}/1"
+	printf 'not json at all\n' >"${CCS_SCRATCH_ROOT}/1/.ccs.json"
+
+	run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.slug')" = 'tmp-2' ]
+}
+
+@test "trust: 印だけの枠は gc からも今までどおり空に見える" {
+	# **判定を 1 か所で緩めたので、他の読み手にもそのまま効く。**
+	_mark "${CCS_SCRATCH_ROOT}/1"
+
+	run --separate-stderr "$CCS_BIN" gc
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"空のまま残った作業枠"* ]] || return 1
+}
+
+@test "gc --yes: 印だけの枠は、印ごと消える" {
+	# **`rmdir` は中身があると失敗する。** 印を数えない側だけ直して
+	# 消すほうを直さないと、「空だと言ったのに消せない」で止まる。
+	_mark "${CCS_SCRATCH_ROOT}/1"
+
+	run --separate-stderr "$CCS_BIN" gc --yes
+	[ "$status" -eq 0 ]
+	[ ! -d "${CCS_SCRATCH_ROOT}/1" ]
+	[[ "$stderr" != *"消せませんでした"* ]] || return 1
+}
+
+@test "gc --yes: 印のほかに中身があれば消さない" {
+	# **門はそのまま。** 印を先に消すのは「印だけ」のときに限る。
+	_mark "${CCS_SCRATCH_ROOT}/1"
+	printf 'work\n' >"${CCS_SCRATCH_ROOT}/1/note.txt"
+
+	run --separate-stderr "$CCS_BIN" gc --yes
+	[ "$status" -eq 0 ]
+	[ -f "${CCS_SCRATCH_ROOT}/1/note.txt" ]
+	[ -f "${CCS_SCRATCH_ROOT}/1/.ccs.json" ]
+}
