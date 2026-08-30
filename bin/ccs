@@ -1589,9 +1589,9 @@ pane_session_id_for() {
 		head -1
 }
 
-# その tmux セッションで claude が生きているか。
+# その tmux セッションで動いている claude のレジストリファイル。無ければ 1。
 #
-# **名前だけで引かない。** `live_session_id_for` は `"tmux":"cc/<slug>:"` で
+# **名前引きで見つからなくても諦めない。** `live_session_id_for` は `"tmux":"cc/<slug>:"` で
 # 引き当てるので、**改名されたセッションが「止まっている」ことになる** ──
 # `ccs gc` はそれを畳みに行くので、**生きている相手を殺す**（実測 2026-08-30:
 # 改名した稼働中のセッションが `gc --yes` で消えた）。
@@ -1599,13 +1599,25 @@ pane_session_id_for() {
 # ペインの起動コマンドに残る uuid は改名しても変わらないので、そちらを
 # レジストリと突き合わせる。**残骸を「生きている」と読まない**ように、
 # 見つけたファイルには `registry_is_live` を掛ける。
-session_is_live() {
-	live_session_id_for "$1" >/dev/null 2>&1 && return 0
+#
+# **表示もここを通す**（N2）。通さないと、`busy` で動いているセッションが
+# `ccs ls` に `stopped` と出る ── 畳まれこそしないが、**いちばん目に付く
+# 症状はこれ**で、見た人は復帰の手を打とうとする。
+registry_file_for_session() {
+	if _rfs=$(registry_file_for_slug "$1"); then
+		printf '%s\n' "$_rfs"
+		return 0
+	fi
 
-	_sil_uuid=$(pane_session_id_for "${CCS_PREFIX}${1}")
-	[ -n "$_sil_uuid" ] || return 1
-	_sil_f=$(registry_file_for "$_sil_uuid") || return 1
-	registry_is_live "$_sil_f"
+	_rfs_uuid=$(pane_session_id_for "${CCS_PREFIX}${1}")
+	[ -n "$_rfs_uuid" ] || return 1
+	_rfs=$(registry_file_for "$_rfs_uuid") || return 1
+	registry_is_live "$_rfs" || return 1
+	printf '%s\n' "$_rfs"
+}
+
+session_is_live() {
+	registry_file_for_session "$1" >/dev/null 2>&1
 }
 
 # 立っているセッションの cwd を引く。取れなければ空。
@@ -1799,20 +1811,13 @@ tilde_path() {
 collect_session_row() {
 	_slug=$1
 	_session="${CCS_PREFIX}${_slug}"
-	_file=''
 
-	# **残骸を「生きている」と読まない**（`registry_is_live` と同じ理由）。
-	# claude は終了時に自分のファイルを消すが、SIGKILL やシグナル死では
-	# 残る。残骸を掴むと、**死んでいるセッションを `idle` と表示し、
-	# 立て直したあとも古い sessionId を出し続ける**。
-	for _f in "$CCS_SESSIONS_DIR"/*.json; do
-		[ -e "$_f" ] || continue
-		if grep -q "\"tmux\":\"${_session}:" "$_f" 2>/dev/null; then
-			registry_is_live "$_f" || continue
-			_file=$_f
-			break
-		fi
-	done
+	# **残骸を「生きている」と読まない**、**改名を「死んでいる」と読まない**。
+	# 前者は `registry_is_live`（claude は終了時に自分のファイルを消すが、
+	# SIGKILL やシグナル死では残る。残骸を掴むと死んでいるセッションを
+	# `idle` と表示し、立て直したあとも古い sessionId を出し続ける）。
+	# 後者は uuid での引き直し（`registry_file_for_session`、N2）。
+	_file=$(registry_file_for_session "$_slug" || true)
 
 	if [ -n "$_file" ]; then
 		_id=$(registry_field "$_file" sessionId)
