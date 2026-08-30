@@ -397,8 +397,14 @@ hub_field() {
 # 改名した瞬間に `absent` と読み、`ccs hub up` が 2 本目を立てる。cwd
 # （`CCS_HUB_HOME`）は改名しても変わらないので、そちらで引き当てる。
 
+# **改名先は ASCII にする。** `make check` は `LC_ALL=C` を強制する
+# （Makefile の `BATS_ENV`）ので、非 ASCII の tmux セッション名は Linux で
+# 往復しない ── 名前を `list-sessions` で読み、`has-session -t` へ渡し直す
+# 経路がここにあるため。**手元（macOS）では通り、CI でだけ落ちる**ので、
+# 気づくのはマージ後になる。見たいのは「改名されたこと」であって
+# 「日本語であること」ではないので、題材のほうを寄せる。
 _rename_hub() {
-	ccs_tmux rename-session -t "=cc/hub" 'cc/朝会夕会'
+	ccs_tmux rename-session -t "=cc/hub" 'cc/renamed-hub'
 }
 
 @test "hub status: 改名しても absent にならない" {
@@ -423,7 +429,7 @@ _rename_hub() {
 	[ "$status" -eq 0 ]
 	run ccs_tmux has-session -t '=cc/hub'
 	[ "$status" -ne 0 ]
-	ccs_tmux has-session -t '=cc/朝会夕会'
+	ccs_tmux has-session -t '=cc/renamed-hub'
 	[ "$(ccs_registry_count)" -eq 1 ]
 }
 
@@ -436,7 +442,7 @@ _rename_hub() {
 
 	run "$CCS_BIN" hub status --json
 	[ "$status" -eq 0 ]
-	[ "$(hub_json "$output" | jq -r '.tmux')" = 'cc/朝会夕会' ]
+	[ "$(hub_json "$output" | jq -r '.tmux')" = 'cc/renamed-hub' ]
 	[ "$(hub_json "$output" | jq -r '.state')" = 'healthy' ]
 	[ "$(hub_json "$output" | jq -r '.sessionId')" != '' ]
 }
@@ -450,26 +456,9 @@ _rename_hub() {
 	run "$CCS_BIN" hub restart
 	[ "$status" -eq 0 ]
 	# **古い名前のペインが残っていない。**
-	run ccs_tmux has-session -t '=cc/朝会夕会'
+	run ccs_tmux has-session -t '=cc/renamed-hub'
 	[ "$status" -ne 0 ]
 	ccs_tmux has-session -t '=cc/hub'
 	[ "$(ccs_registry_count)" -eq 1 ]
 }
 
-@test "DIAG (一時): 改名後の実値を CI から取る" {
-	run "$CCS_BIN" hub up
-	echo "# DIAG up_status=$status" >&3
-	echo "# DIAG HUB_HOME=[$CCS_HUB_HOME]" >&3
-	echo "# DIAG abs=[$(cd "$CCS_HUB_HOME" 2>/dev/null && pwd -P)]" >&3
-	echo "# DIAG uname=$(uname -s) tmux=$(ccs_tmux -V 2>&1)" >&3
-	for f in "$CCS_SESSIONS_DIR"/*.json; do
-		echo "# DIAG reg=$(basename "$f") body=$(tr -d '\n' <"$f")" >&3
-	done
-	ccs_tmux rename-session -t '=cc/hub' 'cc/renamed'
-	echo "# DIAG sessions=[$(ccs_tmux list-sessions -F '#{session_name}' | tr '\n' ',')]" >&3
-	echo "# DIAG panes=[$(ccs_tmux list-panes -a -F '#{session_name}|#{pane_start_command}' | tr '\n' ',')]" >&3
-	run --separate-stderr "$CCS_BIN" hub status
-	echo "# DIAG status_exit=$status" >&3
-	echo "# DIAG status_out=[$(printf '%s' "$output" | tr '\n' ';')]" >&3
-	true
-}
