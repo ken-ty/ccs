@@ -233,6 +233,35 @@ $ ccs restore --since 6h --yes
 `--last` は「起動時刻を基準にした `--since`」なので、絞り込みの仕組みは共通。
 **どちらも `slug` の名指しとは一緒に使えない**（名指しは絞り込みではなく答えそのもの）。
 
+## 機械で読む（`--json`）
+
+ハブのエージェントが結果を読めるように、`--json` を付けると **1 つのオブジェクト**を返す。
+
+```console
+$ ccs restore --json
+{"applied":false,
+ "ready":[{"slug":"tmp-1","path":"…","sessionId":"…","tmux":"cc/tmp-1",
+           "updatedAt":1788055863,"title":"…"}],
+ "alive":[],
+ "skipped":[]}
+
+$ ccs restore --json --yes
+{"applied":true,
+ "restored":[{"slug":"tmp-1","sessionId":"…","tmux":"cc/tmp-1"}],
+ "failed":[],
+ "alive":[],"skipped":[]}
+```
+
+**`applied` で分岐すれば足りる。** 人間向けの 3 つの見出し（立て直せる / 生きているので
+触りません / 戻せません）を読み分けさせない、というのがこの形の理由。
+
+- **戻すものが無くてもキーの形は変わらない。** 空のときだけ別の形にすると、読む側が
+  2 通りの分岐を持つことになる
+- **`--yes` を付けたら必ず 1 つ返す。** 黙って終わると「失敗したのか、対象が無かったのか」
+  を区別できない
+- **stdout は JSON だけ。** 人間向けの案内は stderr へ出す（混ぜるとパースできなくなる）
+- `--list --json` は、その場所に残っている会話を `conversations` に並べる
+
 ## 戻さないもの
 
 | 相手 | 理由 |

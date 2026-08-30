@@ -595,3 +595,107 @@ _wipe_slots() {
 	[ "$status" -eq 0 ]
 	[[ "$output" != *"起動時刻が取れない"* ]] || return 1
 }
+
+# --- 機械可読な出力（R2） --------------------------------------------------
+#
+# **ハブのエージェントが結果を読めるようにする。** 人間向けの 3 つの見出し
+# （立て直せる / 生きているので触りません / 戻せません）を読み分けさせない。
+# `applied` で分岐すれば足りる 1 つのオブジェクトにする。
+
+@test "restore --json: 予告は applied:false と 3 つの配列" {
+	local _uuid
+	_uuid=$(_new_tmp)
+	_wipe_session tmp-1
+
+	run --separate-stderr "$CCS_BIN" restore --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.applied')" = 'false' ]
+	[ "$(printf '%s' "$output" | jq -r '.ready[0].slug')" = 'tmp-1' ]
+	[ "$(printf '%s' "$output" | jq -r '.ready[0].sessionId')" = "$_uuid" ]
+	[ "$(printf '%s' "$output" | jq -r '.ready[0].tmux')" = 'cc/tmp-1' ]
+	# **予告なので立てていない。**
+	run ccs_tmux has-session -t '=cc/tmp-1'
+	[ "$status" -ne 0 ]
+}
+
+@test "restore --json --yes: applied:true と restored" {
+	local _uuid
+	_uuid=$(_new_tmp)
+	_wipe_session tmp-1
+
+	run --separate-stderr "$CCS_BIN" restore --json --yes
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.applied')" = 'true' ]
+	[ "$(printf '%s' "$output" | jq -r '.restored[0].slug')" = 'tmp-1' ]
+	# **同じ会話で戻っている。**
+	[ "$(printf '%s' "$output" | jq -r '.restored[0].sessionId')" = "$_uuid" ]
+	[ "$(printf '%s' "$output" | jq '.failed | length')" -eq 0 ]
+	ccs_tmux has-session -t '=cc/tmp-1'
+}
+
+@test "restore --json: 戻すものが無くてもキーの形は変わらない" {
+	# **空のときだけ別の形にしない。** 読む側が 2 通りの分岐を持つことになる。
+	run --separate-stderr "$CCS_BIN" restore --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.applied')" = 'false' ]
+	[ "$(printf '%s' "$output" | jq '.ready | length')" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -c 'keys')" = '["alive","applied","ready","skipped"]' ]
+}
+
+@test "restore --json --yes: 戻すものが無くても 1 つ返す" {
+	# **黙って終わらない。** 失敗したのか対象が無かったのかを区別できなくなる。
+	run --separate-stderr "$CCS_BIN" restore --json --yes
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.applied')" = 'true' ]
+	[ "$(printf '%s' "$output" | jq '.restored | length')" -eq 0 ]
+}
+
+@test "restore --json: 生きているものは alive に入る" {
+	_new_tmp >/dev/null
+
+	run --separate-stderr "$CCS_BIN" restore tmp-1 --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.alive[0].slug')" = 'tmp-1' ]
+	[ "$(printf '%s' "$output" | jq '.ready | length')" -eq 0 ]
+}
+
+@test "restore --json: stdout は JSON だけ（人間向けの文を混ぜない）" {
+	# **混ぜるとハブ側でパースできなくなる**（design.md の出力の約束）。
+	local _uuid
+	_uuid=$(_new_tmp)
+	_wipe_session tmp-1
+
+	run --separate-stderr "$CCS_BIN" restore --json
+	[ "$status" -eq 0 ]
+	printf '%s' "$output" | jq -e . >/dev/null
+	[[ "$output" != *"立て直せるセッション"* ]] || return 1
+	[[ "$output" != *"実行するには"* ]] || return 1
+}
+
+@test "restore --list --json: 会話ログを並べる" {
+	local _uuid
+	_uuid=$(_new_tmp)
+	_wipe_session tmp-1
+
+	run --separate-stderr "$CCS_BIN" restore tmp-1 --list --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].slug')" = 'tmp-1' ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].conversations[0].sessionId')" = "$_uuid" ]
+}
+
+@test "restore: 改名された稼働中のセッションを立て直しに行かない" {
+	# **I1 と同じ穴が restore にもあった。** 名前で「止まっている」と決めると、
+	# --yes が生きているペインを畳んで立て直す（会話は残るが、走っていた作業は
+	# 巻き添えになる）。
+	local _uuid
+	_uuid=$(_new_tmp)
+	ccs_tmux rename-session -t '=cc/tmp-1' 'cc/renamed'
+
+	run --separate-stderr "$CCS_BIN" restore --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq '.ready | length')" -eq 0 ]
+
+	# **畳まれていない。**
+	ccs_tmux has-session -t '=cc/renamed'
+	[ "$(ccs_registry_count)" -eq 1 ]
+}

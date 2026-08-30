@@ -47,7 +47,7 @@ tmux・CLI を選んだ理由。
 | `ccs kill [--force] <slug>` | 畳む |
 | `ccs kill --self [--force]` | そのセッション自身を畳む（アプリのアーカイブでは残るため）。**ccs 管轄外のセッションからも使える** |
 | `ccs gc [--yes]` | 止まったセッション・空の作業枠・不要になった worktree を掃除する |
-| [`ccs restore [--yes]`](restore.md) | 止まった／消えたセッションを同じ会話で立て直す |
+| [`ccs restore [--yes] [--json]`](restore.md) | 止まった／消えたセッションを同じ会話で立て直す |
 | `ccs resolve <target> [--json]` | 立てる前に、どこに解決されるかを見る |
 | `ccs config [--json]` | 効いている設定と、その出どころを見る |
 | [`ccs version [--short]`](versioning.md) | どの版が走っているかを見る（コミットまで） |
