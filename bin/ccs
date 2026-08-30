@@ -48,6 +48,17 @@ die() {
 	_code=$1
 	shift
 	warn "ccs: $*"
+	# **失敗の素性を覚えておく**（C5）。機械可読な出力を出すコマンドは、
+	# 終了する直前にこれを 1 行の JSON にする。既に立っている素性は
+	# 上書きしない ── その場所のほうが具体的だから。
+	if [ -z "${CCS_ERROR_CODE:-}" ]; then
+		if [ "$_code" = "${EX_USAGE:-2}" ]; then
+			CCS_ERROR_CODE='usage'
+		else
+			CCS_ERROR_CODE='fail'
+		fi
+		CCS_ERROR_MESSAGE=$*
+	fi
 	exit "$_code"
 }
 
@@ -599,6 +610,36 @@ have() {
 	command -v "$1" >/dev/null 2>&1
 }
 
+# ---------------------------------------------------------------------------
+# 失敗を機械にも読める形で返す（C5）
+#
+# **出口を 1 つにする。** `ccs new` が失敗する場所は、target の解決から
+# 登録待ちまで散っている。1 つずつ JSON を足すと**必ず取りこぼす** ──
+# 足したあとに増えた出口が漏れるし、漏れたことに気づく手立てが無い。
+# 代わりに EXIT の trap で、終了コードが 0 でないときだけ 1 行出す。
+#
+# **文言は人間向けのものをそのまま使う。** 2 つ書くと必ずずれる。
+# ---------------------------------------------------------------------------
+CCS_JSON_ERRORS=''
+CCS_ERROR_CODE=''
+CCS_ERROR_MESSAGE=''
+
+# 失敗の素性を立てる。**具体的なものを先に立てておけば `die` は上書きしない。**
+error_is() {
+	CCS_ERROR_CODE=$1
+	CCS_ERROR_MESSAGE=$2
+}
+
+# shellcheck disable=SC2329  # trap から呼ぶので静的には見えない
+json_error_on_exit() {
+	_jee_status=$?
+	[ -n "$CCS_JSON_ERRORS" ] || return 0
+	[ "$_jee_status" -ne 0 ] || return 0
+	printf '{"error":{"code":%s,"message":%s,"exit":%s}}\n' \
+		"$(json_str "${CCS_ERROR_CODE:-fail}")" \
+		"$(json_str "$CCS_ERROR_MESSAGE")" "$_jee_status"
+}
+
 require_deps() {
 	_missing=''
 	have "$CCS_TMUX_BIN" || _missing="${_missing} ${CCS_TMUX_BIN}"
@@ -1083,6 +1124,7 @@ resolve_as_scratch() {
 		_i=$((_i + 1))
 	done
 
+	error_is 'scratch-full' "使い捨ての作業枠が全部埋まっています（${CCS_SCRATCH_ROOT} に ${CCS_SCRATCH_SLOTS} 本）"
 	warn "ccs: 使い捨ての作業枠が全部埋まっています（${CCS_SCRATCH_ROOT} に ${CCS_SCRATCH_SLOTS} 本）"
 	warn ''
 	warn '  使い終わったものを片付ける: ccs gc'
@@ -1643,6 +1685,12 @@ live_bridge_for() {
 cmd_new() {
 	require_deps
 
+	# **`ccs new` の stdout は最初から機械のためのもの**（成功すると JSON を
+	# 出す）。失敗したときだけ何も出ないと、読む側は終了コード 1 しか手掛かりが
+	# 無い ── 「曖昧で選べない」のか「trust で固まった」のかが区別できない。
+	CCS_JSON_ERRORS=1
+	trap json_error_on_exit EXIT
+
 	_target=''
 	_prompt=''
 	_want_scratch=''
@@ -1715,6 +1763,7 @@ cmd_new() {
 		# ペインは残っているが claude は動いていない。ハブは会話相手を
 		# 求めているので、これを成功として返すと嘘になる。
 		_stale=$(pane_session_id_for "$_session")
+		error_is 'stale-pane' "${_session} のペインは残っていますが、claude は動いていません"
 		warn "ccs: ${_session} のペインは残っていますが、claude は動いていません。"
 		warn ''
 		if [ -n "$_stale" ]; then
@@ -1748,10 +1797,13 @@ cmd_new() {
 	[ -n "$_prompt" ] && _cmd="${_cmd} $(shq "$_prompt")"
 	_cmd="${_cmd}; exec $(shq "${SHELL:-/bin/sh}")"
 
-	"$CCS_TMUX_BIN" new-session -d -s "$_session" -c "$_path" sh -c "$_cmd" ||
+	"$CCS_TMUX_BIN" new-session -d -s "$_session" -c "$_path" sh -c "$_cmd" || {
+		error_is 'tmux' "tmux セッションを作れませんでした: ${_session}"
 		die "$EX_FAIL" "tmux セッションを作れませんでした: ${_session}"
+	}
 
 	if ! wait_for_registration "$_uuid"; then
+		error_is 'not-registered' "${CCS_NEW_TIMEOUT} 秒待ちましたが、セッションが登録されませんでした"
 		warn "ccs: ${CCS_NEW_TIMEOUT} 秒待ちましたが、セッションが登録されませんでした。"
 		warn ''
 		warn 'ペインの中身:'

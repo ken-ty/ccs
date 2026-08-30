@@ -15,6 +15,27 @@
 tmux セッション名（`cc/<slug>`）でもツール上の相手の名前でもある
 （[命名規約](design.md#42-命名規約)）。
 
+### `ccs new` が失敗したとき
+
+**stdout に 1 行の JSON が出る。** 終了コードだけでは「曖昧で選べない」のか
+「trust で固まった」のかが区別できない。
+
+```console
+$ ccs new
+{"error":{"code":"usage","message":"new: <target> を指定してください（…）","exit":2}}
+```
+
+| `code` | 何が起きたか | 打ち直しで直るか |
+| --- | --- | --- |
+| `usage` | 引数の誤り（未知のオプション、target 無し） | **直る** |
+| `scratch-full` | 使い捨ての作業枠が全部埋まっている | 片付ければ直る（`ccs gc`） |
+| `stale-pane` | ペインは残っているが claude が動いていない | `ccs restore <slug>` |
+| `not-registered` | 立てたが登録されなかった（trust やログインで止まっている疑い） | `ccs attach <slug>` で確かめる |
+| `fail` | それ以外 | `message` を読む |
+
+**成功したときの形は変わらない**（`error` は足さない）。`message` は stderr に出る
+人間向けの文と同じもの ── 2 つ書くと必ずずれるので、片方から作っている。
+
 ---
 
 ## ListAgents
