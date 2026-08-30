@@ -390,3 +390,75 @@ hub_field() {
 	[ "$status" -eq 0 ]
 	[ "$(printf '%s' "$output" | jq -r '[.[] | select(.slug == "hub")] | length')" = '1' ]
 }
+
+# --- 生死判定を名前に依存させない（I4 / I1 の残り） ------------------------
+#
+# **hub は 1 本であることが前提の仕組み**（docs/hub.md）。名前で当てていると、
+# 改名した瞬間に `absent` と読み、`ccs hub up` が 2 本目を立てる。cwd
+# （`CCS_HUB_HOME`）は改名しても変わらないので、そちらで引き当てる。
+
+# **改名先は ASCII にする。** `make check` は `LC_ALL=C` を強制する
+# （Makefile の `BATS_ENV`）ので、非 ASCII の tmux セッション名は Linux で
+# 往復しない ── 名前を `list-sessions` で読み、`has-session -t` へ渡し直す
+# 経路がここにあるため。**手元（macOS）では通り、CI でだけ落ちる**ので、
+# 気づくのはマージ後になる。見たいのは「改名されたこと」であって
+# 「日本語であること」ではないので、題材のほうを寄せる。
+_rename_hub() {
+	ccs_tmux rename-session -t "=cc/hub" 'cc/renamed-hub'
+}
+
+@test "hub status: 改名しても absent にならない" {
+	run "$CCS_BIN" hub up
+	[ "$status" -eq 0 ]
+
+	_rename_hub
+
+	run "$CCS_BIN" hub status
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"healthy"* ]] || return 1
+}
+
+@test "hub up: 改名された hub があれば 2 本目を立てない" {
+	# **ここが本体。** 2 本立つと、どちらに指示が届くかが運任せになる。
+	run "$CCS_BIN" hub up
+	[ "$status" -eq 0 ]
+
+	_rename_hub
+
+	run "$CCS_BIN" hub up
+	[ "$status" -eq 0 ]
+	run ccs_tmux has-session -t '=cc/hub'
+	[ "$status" -ne 0 ]
+	ccs_tmux has-session -t '=cc/renamed-hub'
+	[ "$(ccs_registry_count)" -eq 1 ]
+}
+
+@test "hub status --json: 改名後は実体の tmux 名を返す" {
+	# **宛先として使える名前を出す。** 立てたときの名前を出しても届かない。
+	run "$CCS_BIN" hub up
+	[ "$status" -eq 0 ]
+
+	_rename_hub
+
+	run "$CCS_BIN" hub status --json
+	[ "$status" -eq 0 ]
+	[ "$(hub_json "$output" | jq -r '.tmux')" = 'cc/renamed-hub' ]
+	[ "$(hub_json "$output" | jq -r '.state')" = 'healthy' ]
+	[ "$(hub_json "$output" | jq -r '.sessionId')" != '' ]
+}
+
+@test "hub restart: 改名された hub を畳んでから立て直す" {
+	run "$CCS_BIN" hub up
+	[ "$status" -eq 0 ]
+
+	_rename_hub
+
+	run "$CCS_BIN" hub restart
+	[ "$status" -eq 0 ]
+	# **古い名前のペインが残っていない。**
+	run ccs_tmux has-session -t '=cc/renamed-hub'
+	[ "$status" -ne 0 ]
+	ccs_tmux has-session -t '=cc/hub'
+	[ "$(ccs_registry_count)" -eq 1 ]
+}
+
