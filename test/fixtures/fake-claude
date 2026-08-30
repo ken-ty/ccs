@@ -40,6 +40,8 @@
 #                                 書かない。ccs restore がこれを読む
 #   FAKE_CLAUDE_IGNORE_TERM      1 なら SIGTERM を無視して生き続ける。
 #                                 ccs adopt の「頼んだのに終わらなかった」の再現
+#   FAKE_CLAUDE_NO_STATUS        1 なら status キーごと書かない。**実測で
+#                                 アプリ由来のセッションがこの形**（空文字とは別）
 
 set -eu
 
@@ -58,6 +60,7 @@ FAKE_CLAUDE_VERSION='0.0.0-fake'
 : "${FAKE_CLAUDE_ECHO:=}"
 : "${FAKE_CLAUDE_TRANSCRIPT:=}"
 : "${FAKE_CLAUDE_IGNORE_TERM:=}"
+: "${FAKE_CLAUDE_NO_STATUS:=}"
 
 # ---------------------------------------------------------------------------
 # 共通
@@ -161,7 +164,14 @@ write_registry() {
 		else
 			printf '"bridgeSessionId":null,'
 		fi
-		printf '"status":"%s"}' "$(json_escape "$FAKE_CLAUDE_STATUS")"
+		# **status キーごと無い形も作れる。** 実測 2026-08-30、アプリ由来の
+		# セッションには status キーそのものが無かった。空文字とは別の状態で、
+		# `ccs agents` はここを `-` として出す。
+		if [ -n "$FAKE_CLAUDE_NO_STATUS" ]; then
+			printf '"kind2":"no-status"}'
+		else
+			printf '"status":"%s"}' "$(json_escape "$FAKE_CLAUDE_STATUS")"
+		fi
 	} >"$_tmp"
 
 	REGISTRY_FILE="${CCS_SESSIONS_DIR}/$$.json"

@@ -42,6 +42,7 @@ tmux・CLI を選んだ理由。
 | `ccs ls [--json]` | 立っているものを一覧する |
 | [`ccs ls -l [--json]`](board.md) | 盤面 ── 直近の依頼 / RSS / 最終更新も出す |
 | `ccs attach [<slug>]` | 乗り込む（slug を省くと番号で選ぶ） |
+| `ccs agents [-l] [--json]` | **このマシンの claude を俯瞰する**（管轄外は SLUG が `-`。`ccs ls` には混ぜない） |
 | `ccs adopt <target> [--pid <pid>]` | **ccs 管轄外のセッションを引き取る**（元を閉じ、同じ会話を `cc/<slug>` で開き直す） |
 | `ccs kill [--force] <slug>` | 畳む |
 | `ccs kill --self [--force]` | そのセッション自身を畳む（アプリのアーカイブでは残るため）。**ccs 管轄外のセッションからも使える** |
