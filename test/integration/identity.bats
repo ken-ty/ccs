@@ -65,8 +65,11 @@ _rename() {
 	# **立て直していない。** 同じ会話がそのまま返る。
 	[ "$(printf '%s' "$output" | jq -r '.created')" = 'false' ]
 	[ "$(printf '%s' "$output" | jq -r '.sessionId')" = "$_id" ]
-	# 宛先は相手が名乗るほう（打った綴りではない）。
-	[ "$(printf '%s' "$output" | jq -r '.slug')" = 'mine' ]
+	# **宛先は「いま届くほう」。** 打った綴りでも、レジストリに残っている
+	# 起動時の名前でもない ── レジストリの tmux 欄は改名に追随しないので、
+	# そこから返すと `ccs attach` できない slug を返すことになる。
+	[ "$(printf '%s' "$output" | jq -r '.slug')" = 'renamed' ]
+	[ "$(printf '%s' "$output" | jq -r '.tmux')" = 'cc/renamed' ]
 
 	# **2 本目の claude が居ない。**
 	[ "$(ccs_registry_count)" -eq 1 ]
