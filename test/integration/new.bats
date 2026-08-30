@@ -368,15 +368,21 @@ teardown() {
 	[ "$(printf '%s' "$output" | jq -r '.[0].labels.board')" = 'main' ]
 }
 
-@test "new --label: 中身を解釈しない（空白も = も日本語も運ぶ）" {
+@test "new --label: 中身を解釈しない（空白も引用符も = も運ぶ）" {
 	# **不透明な文字列として運ぶだけ。** 検査するのは key があることだけ。
+	#
+	# **題材は ASCII にする。** `make check` は `LC_ALL=C` を強制する
+	# （Makefile の `BATS_ENV`）ので、非 ASCII の値は Linux で往復しない ──
+	# 手元（macOS）では通り、**CI でだけ落ちる**（I4 の改名先と同じ環境要因）。
+	# 見たいのは「解釈せずに運ぶこと」であって「日本語であること」ではない。
 	mkdir -p "${CCS_TEST_TMP}/work/mine"
 	"$CCS_BIN" new "${CCS_TEST_TMP}/work/mine" \
-		--label 'note=a b "c" = d' --label 'ja=日本語' >/dev/null
+		--label 'note=a b "c" = d' --label 'sym=#{}$(x)`y`' >/dev/null
 
 	run --separate-stderr "$CCS_BIN" ls --json
 	[ "$(printf '%s' "$output" | jq -r '.[0].labels.note')" = 'a b "c" = d' ]
-	[ "$(printf '%s' "$output" | jq -r '.[0].labels.ja')" = '日本語' ]
+	# **tmux の format も shell の展開も起きない。**
+	[ "$(printf '%s' "$output" | jq -r '.[0].labels.sym')" = '#{}$(x)`y`' ]
 }
 
 @test "new --label: 2 回目は上書きし、他の key は消さない" {
