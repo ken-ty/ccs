@@ -1623,10 +1623,17 @@ registry_tmux_session() {
 # 立て直したペインも同じ形で uuid を持つ。
 tmux_session_for_uuid() {
 	[ -n "$1" ] || return 0
-	"$CCS_TMUX_BIN" list-panes -a -F "#{session_name}	#{pane_start_command}" 2>/dev/null |
-		grep -F "$1" |
-		head -1 |
-		cut -f1
+
+	# **`pane_session_id_for` に寄せる。** `list-panes -a` の 2 欄を自前で
+	# 割るより、既にあちこちで使われている（＝ CI でも通っている）読み方を
+	# 1 つだけ使うほうが、環境差を持ち込まない。
+	"$CCS_TMUX_BIN" list-sessions -F '#{session_name}' 2>/dev/null |
+		while IFS= read -r _tsu_s; do
+			[ -n "$_tsu_s" ] || continue
+			[ "$(pane_session_id_for "$_tsu_s")" = "$1" ] || continue
+			printf '%s' "$_tsu_s"
+			break
+		done
 }
 
 # 立っているセッションの sessionId を引く。
@@ -4474,15 +4481,27 @@ hub_session_live() {
 	hub_session
 }
 
+# hub のレジストリファイル。**cwd で引き、駄目なら名前でも引く。**
+#
+# **`or` にするのは、今までより緩くならないため。** cwd の照合は改名を
+# 拾えるようになるぶんの上積みで、これが効かない環境でも**元の名前引きが
+# そのまま残る** ── 実際、cwd だけにしたら CI（ubuntu）でだけ hub が
+# 「居ない」ことになった（手元の macOS では `/tmp` に揃えても再現せず、
+# 原因は tmux か OS の差まで絞れたが特定していない）。片方に賭けない。
+hub_registry_file_any() {
+	hub_registry_file && return 0
+	registry_file_for_slug "$CCS_HUB_SLUG"
+}
+
 # hub の sessionId。取れなければ 1。
 hub_session_id() {
-	_hsi_f=$(hub_registry_file) || return 1
+	_hsi_f=$(hub_registry_file_any) || return 1
 	registry_field "$_hsi_f" sessionId
 }
 
 # hub の Remote Control 登録。付いていなければ 1。
 hub_bridge_id() {
-	_hbi_f=$(hub_registry_file) || return 1
+	_hbi_f=$(hub_registry_file_any) || return 1
 	_hbi_b=$(registry_field "$_hbi_f" bridgeSessionId)
 	[ -n "$_hbi_b" ] || return 1
 	printf '%s\n' "$_hbi_b"
