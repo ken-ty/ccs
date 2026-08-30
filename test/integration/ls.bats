@@ -276,12 +276,14 @@ _tool_result() {
 
 @test "ls --json: 既定のキーを増やさない" {
 	# ここが増えると「既定は軽い」という約束が崩れる。
+	# **`labels` は C2 で足した**（tmux のユーザオプションを 1 回で引くので、
+	# 行ごとにプロセスが増えることはない ── 約束は破っていない）。
 	_new myrepo >/dev/null
 
 	run "$CCS_BIN" ls --json
 	[ "$status" -eq 0 ]
 	_keys=$(echo "$output" | jq -r '.[0] | keys_unsorted | join(",")')
-	[ "$_keys" = 'slug,status,sessionId,path,tmux' ]
+	[ "$_keys" = 'slug,status,sessionId,path,tmux,labels' ]
 }
 
 @test "ls -l: 直近の依頼・RSS・最終更新の列を出す" {
@@ -418,7 +420,7 @@ _tool_result() {
 	[ "$status" -eq 0 ]
 	echo "$output" | jq -e . >/dev/null
 	_keys=$(echo "$output" | jq -r '.[0] | keys_unsorted | join(",")')
-	[ "$_keys" = 'slug,status,sessionId,path,tmux,pid,rssMb,updatedAt,age,request' ]
+	[ "$_keys" = 'slug,status,sessionId,path,tmux,labels,pid,rssMb,updatedAt,age,request' ]
 	[ "$(echo "$output" | jq -r '.[0].request')" = 'いらい' ]
 	[ "$(echo "$output" | jq -r '.[0].updatedAt')" -gt 0 ]
 }
