@@ -38,6 +38,8 @@
 #                                 した cwd>/<uuid>.jsonl）を書く。**本物は最初の
 #                                 やり取りが起きてから書く**（実測）ので既定では
 #                                 書かない。ccs restore がこれを読む
+#   FAKE_CLAUDE_IGNORE_TERM      1 なら SIGTERM を無視して生き続ける。
+#                                 ccs adopt の「頼んだのに終わらなかった」の再現
 
 set -eu
 
@@ -55,6 +57,7 @@ FAKE_CLAUDE_VERSION='0.0.0-fake'
 : "${FAKE_CLAUDE_BRIDGE_DELAY:=0}"
 : "${FAKE_CLAUDE_ECHO:=}"
 : "${FAKE_CLAUDE_TRANSCRIPT:=}"
+: "${FAKE_CLAUDE_IGNORE_TERM:=}"
 
 # ---------------------------------------------------------------------------
 # 共通
@@ -255,7 +258,13 @@ cmd_interactive() {
 	# 落ちていた（restore の 2 件、2026-08-23）。
 	trap 'cleanup' EXIT
 	trap 'cleanup; exit 129' HUP
-	trap 'cleanup; exit 143' TERM
+	if [ -n "$FAKE_CLAUDE_IGNORE_TERM" ]; then
+		# **頼まれても終わらない。** `ccs adopt` は元が終わるのを待って
+		# から立てるので、「頼んだのに終わらなかった」を作るのに要る。
+		trap '' TERM
+	else
+		trap 'cleanup; exit 143' TERM
+	fi
 	trap 'cleanup; exit 130' INT
 
 	# ペインに出す文字列。認証切れの画面を作るのに使う。

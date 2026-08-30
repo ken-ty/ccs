@@ -105,6 +105,7 @@ plist / timer に焼き込むので、設定ファイルや env を変えただ�
 | キー | 既定 | 意味 |
 | --- | --- | --- |
 | `CCS_NEW_TIMEOUT` | `30` | 起動してからレジストリに載るまで待つ秒数 |
+| `CCS_ADOPT_TIMEOUT` | `20` | `ccs adopt` が、元のセッションが終わるのを待つ秒数。待ちきれなくても**何もしない**（元は生きたまま）ので長めでよい |
 | `CCS_HUB_RC_TIMEOUT` | `45` | Remote Control の登録が付くまで待つ秒数 |
 | `CCS_HUB_BACKOFF_WINDOW` | `600` | 再起動の暴走を見る窓（秒） |
 | `CCS_HUB_BACKOFF_MAX` | `3` | その窓で許す再起動の回数 |

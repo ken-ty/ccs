@@ -57,6 +57,7 @@ ccs new --tmp [-- <初期プロンプト>]      # 使い捨ての作業枠（"tm
 ccs ls [--json]                          # cc/ 接頭辞のセッションだけを整形して出す
 ccs ls -l [--json]                       # 盤面（直近の依頼 / RSS / 最終更新）も出す
 ccs attach [<slug>]                      # 人間が乗り込む（slug を省くと番号で選ぶ）
+ccs adopt <target> [--pid <pid>]         # ccs 管轄外のセッションを引き取る
 ccs kill <slug>                          # ペインごと畳む
 ccs kill --self                          # そのセッション自身を畳む（中から打つ。ccs 管轄外からも）
 ccs gc                                   # 死んだペイン・空の一時ディレクトリ・不要な worktree を掃除
