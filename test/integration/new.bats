@@ -435,3 +435,105 @@ teardown() {
 	[ "$(printf '%s' "$output" | jq -r '.[] | select(.slug=="a") | .labels.task')" = 'T-1' ]
 	[ "$(printf '%s' "$output" | jq -c '.[] | select(.slug=="b") | .labels')" = '{}' ]
 }
+
+# --- 起動前に行を作る / 長い仕様を渡す（C4） -------------------------------
+#
+# **どちらもハブ側の都合。** 会話の id を先に決められれば、起動を待たずに
+# その行を作れる。初期プロンプトは数 KB の複数行になるので、**呼ぶ側の argv に
+# 載せない**手立てが要る（design.md §9）。
+
+@test "new --session-id: 指定した uuid で立つ" {
+	mkdir -p "${CCS_TEST_TMP}/work/mine"
+	local _u='11111111-2222-4333-8444-555555555555'
+
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/mine" --session-id "$_u"
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.sessionId')" = "$_u" ]
+	[[ "$(printf '%s' "$output" | jq -r '.transcript')" == *"${_u}.jsonl" ]] || return 1
+}
+
+@test "new --session-id: 大文字でも受ける（小文字に寄せる）" {
+	mkdir -p "${CCS_TEST_TMP}/work/mine"
+
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/mine" \
+		--session-id '11111111-2222-4333-8444-AAAAAAAAAAAA'
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.sessionId')" = '11111111-2222-4333-8444-aaaaaaaaaaaa' ]
+}
+
+@test "new --session-id: uuid でなければ使い方の誤り" {
+	run --separate-stderr "$CCS_BIN" new --tmp --session-id nope
+	[ "$status" -eq 2 ]
+	[ "$(printf '%s' "$output" | jq -r '.error.code')" = 'usage' ]
+
+	run --separate-stderr "$CCS_BIN" new --tmp --session-id
+	[ "$status" -eq 2 ]
+
+	# 桁が足りないものも弾く。
+	run --separate-stderr "$CCS_BIN" new --tmp --session-id '1111-2222-3333'
+	[ "$status" -eq 2 ]
+}
+
+@test "new --session-id: 使われている uuid では立てない" {
+	# **同じ会話を 2 本の claude が握ることになる**（ccs adopt の門と同じ理由）。
+	mkdir -p "${CCS_TEST_TMP}/work/a" "${CCS_TEST_TMP}/work/b"
+	local _u='11111111-2222-4333-8444-666666666666'
+	"$CCS_BIN" new "${CCS_TEST_TMP}/work/a" --session-id "$_u" >/dev/null
+
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/b" --session-id "$_u"
+	[ "$status" -eq 1 ]
+	[ "$(printf '%s' "$output" | jq -r '.error.code')" = 'session-id-in-use' ]
+	run ccs_tmux has-session -t '=cc/b'
+	[ "$status" -ne 0 ]
+}
+
+@test "new --prompt-file: 中身をそのまま初期プロンプトにする" {
+	# **claude に何が渡ったかで見る。** スタブが引数をログに書く。
+	mkdir -p "${CCS_TEST_TMP}/work/mine"
+	local _f="${CCS_TEST_TMP}/spec.md"
+	printf '# spec\n\n- one\n- two\n' >"$_f"
+	local _log="${CCS_TEST_TMP}/args.log"
+
+	FAKE_CLAUDE_LOG="$_log" run --separate-stderr \
+		"$CCS_BIN" new "${CCS_TEST_TMP}/work/mine" --prompt-file "$_f"
+	[ "$status" -eq 0 ]
+	[[ "$(cat "$_log")" == *"- one"* ]] || return 1
+	[[ "$(cat "$_log")" == *"- two"* ]] || return 1
+}
+
+@test "new --prompt-file: 数 KB の複数行でも壊れない" {
+	# **argv に載せないための機能**なので、ここが本体。
+	mkdir -p "${CCS_TEST_TMP}/work/mine"
+	local _f="${CCS_TEST_TMP}/spec.md"
+	local _i=1
+	: >"$_f"
+	while [ "$_i" -le 200 ]; do
+		printf 'line %d with spaces and "quotes" and $(x) and `y`\n' "$_i" >>"$_f"
+		_i=$((_i + 1))
+	done
+	[ "$(wc -c <"$_f")" -gt 8000 ]
+	local _log="${CCS_TEST_TMP}/args.log"
+
+	FAKE_CLAUDE_LOG="$_log" run --separate-stderr \
+		"$CCS_BIN" new "${CCS_TEST_TMP}/work/mine" --prompt-file "$_f"
+	[ "$status" -eq 0 ]
+	[[ "$(cat "$_log")" == *"line 200 with spaces"* ]] || return 1
+	# **展開されていない。**
+	[[ "$(cat "$_log")" == *'$(x)'* ]] || return 1
+}
+
+@test "new --prompt-file: -- と一緒には使えない" {
+	mkdir -p "${CCS_TEST_TMP}/work/mine"
+	printf 'x\n' >"${CCS_TEST_TMP}/spec.md"
+
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/mine" \
+		--prompt-file "${CCS_TEST_TMP}/spec.md" -- 'inline'
+	[ "$status" -eq 2 ]
+	[ "$(printf '%s' "$output" | jq -r '.error.code')" = 'usage' ]
+}
+
+@test "new --prompt-file: 読めなければ code:prompt-file" {
+	run --separate-stderr "$CCS_BIN" new --tmp --prompt-file "${CCS_TEST_TMP}/nope"
+	[ "$status" -eq 1 ]
+	[ "$(printf '%s' "$output" | jq -r '.error.code')" = 'prompt-file' ]
+}

@@ -537,6 +537,9 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
   ccs new --tmp [-- <初期プロンプト>]     使い捨ての作業枠に立てる
   ccs new … --label k=v                   紐付けの目印を付ける（反復可。
                                           ccs は中身を解釈しない）
+  ccs new … --session-id <uuid>           会話の id を外から決める
+  ccs new … --prompt-file <path>          初期プロンプトをファイルから読む
+                                          （数 KB の複数行を argv に載せない）
   ccs ls [--json]                         ccs のセッションを一覧する
   ccs ls -l [--json]                      盤面（直近の依頼 / RSS / 最終更新）も出す
   ccs agents [-l] [--json]                このマシンの claude を俯瞰する
@@ -1448,6 +1451,17 @@ shq() {
 # 本物は --session-id を尊重する（docs/design.md §2.4）。先に決めておくと、
 # 起動直後にレジストリを名前で探し回らずに済み、transcript の場所も
 # 起動前に確定する。
+# 8-4-4-4-12 の 16 進か。
+#
+# **`case` で見る。** 検査 1 つのために `grep` を起こさない（`ccs new` は
+# ハブが繰り返し叩く入口なので、増やした分がそのまま毎回の費用になる）。
+is_uuid() {
+	case $1 in
+	[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) return 0 ;;
+	esac
+	return 1
+}
+
 new_uuid() {
 	if have uuidgen; then
 		uuidgen | tr '[:upper:]' '[:lower:]'
@@ -1723,6 +1737,8 @@ cmd_new() {
 
 	_target=''
 	_prompt=''
+	_prompt_file=''
+	_want_uuid=''
 	_labels=''
 	_want_scratch=''
 
@@ -1734,6 +1750,24 @@ cmd_new() {
 			break
 			;;
 		--tmp) _want_scratch=1 ;;
+		--session-id)
+			shift
+			[ $# -gt 0 ] || die "$EX_USAGE" 'new: --session-id に uuid がありません'
+			# **綴りは揃えてから見る。** claude が書くのは小文字なので、
+			# 大文字で渡されたものを弾くより寄せたほうが親切。
+			_want_uuid=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+			is_uuid "$_want_uuid" ||
+				die "$EX_USAGE" "new: --session-id は uuid（8-4-4-4-12 の 16 進）です: $1"
+			;;
+		--prompt-file)
+			shift
+			[ $# -gt 0 ] || die "$EX_USAGE" 'new: --prompt-file にパスがありません'
+			[ -f "$1" ] && [ -r "$1" ] || {
+				error_is 'prompt-file' "初期プロンプトのファイルを読めません: $1"
+				die "$EX_FAIL" "new: 初期プロンプトのファイルを読めません: $1"
+			}
+			_prompt_file=$1
+			;;
 		--label)
 			shift
 			[ $# -gt 0 ] || die "$EX_USAGE" 'new: --label に k=v がありません'
@@ -1774,6 +1808,14 @@ cmd_new() {
 	_slug=$CCS_RESOLVED_SLUG
 	_path=$CCS_RESOLVED_PATH
 	_session="${CCS_PREFIX}${_slug}"
+
+	# **初期プロンプトの出どころは 1 つ。** 両方あると、どちらが効いたのかを
+	# 打った側が確かめられない。
+	if [ -n "$_prompt_file" ]; then
+		[ -z "$_prompt" ] ||
+			die "$EX_USAGE" 'new: --prompt-file と -- <初期プロンプト> は一緒に使えません'
+		_prompt=$(cat "$_prompt_file")
+	fi
 
 	# **同じ作業ツリーに 2 本目を立てない**（ADR-0002 決定 3、I1）。
 	#
@@ -1840,7 +1882,19 @@ cmd_new() {
 
 	ensure_trust "$_path" "$_slug"
 
-	_uuid=$(new_uuid)
+	# **外から uuid を指定できる**（C4）。起動を待たずに、ハブ側が先にその
+	# 会話の行を作れる。
+	if [ -n "$_want_uuid" ]; then
+		# **使われている uuid で新しく立てない。** 同じ会話を 2 本の claude が
+		# 握ることになる（`ccs adopt` の門と同じ理由。design.md §11.2）。
+		if _dup=$(registry_file_for "$_want_uuid") && registry_is_live "$_dup"; then
+			error_is 'session-id-in-use' "その sessionId は既に使われています: ${_want_uuid}"
+			die "$EX_FAIL" "new: その sessionId は既に使われています: ${_want_uuid}"
+		fi
+		_uuid=$_want_uuid
+	else
+		_uuid=$(new_uuid)
+	fi
 	_transcript=$(transcript_path "$_path" "$_uuid")
 
 	# claude が終了してもペインを残す（design.md §4.3）。残しておけば
