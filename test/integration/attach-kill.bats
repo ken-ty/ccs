@@ -322,7 +322,7 @@ _pick() {
 	run --separate-stderr "$CCS_BIN" new 'x01@topic'
 	[ "$status" -eq 0 ]
 
-	run "$CCS_BIN" kill 'x01@topic'
+	run "$CCS_BIN" kill 'x01--topic'
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"worktree は残しています"* ]] || return 1
 	[[ "$output" == *"ccs gc"* ]] || return 1
@@ -337,7 +337,7 @@ _pick() {
 	local _p
 	_p=$(echo "$output" | jq -r '.path')
 
-	run "$CCS_BIN" kill 'x01@topic'
+	run "$CCS_BIN" kill 'x01--topic'
 	[ "$status" -eq 0 ]
 	[ -d "$_p" ]
 	run git -C "$_repo" branch --list topic
@@ -468,7 +468,7 @@ _run_self() {
 	local _p
 	_p=$(echo "$output" | jq -r '.path')
 
-	_run_self 'x01@topic'
+	_run_self 'x01--topic'
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"worktree は残しています"* ]] || return 1
 	[ -d "$_p" ]

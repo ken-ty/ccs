@@ -37,8 +37,8 @@ teardown() {
 	run --separate-stderr "$CCS_BIN" new 'x01@topic'
 	[ "$status" -eq 0 ]
 
-	[ "$(echo "$output" | jq -r '.slug')" = 'x01@topic' ]
-	[ "$(echo "$output" | jq -r '.tmux')" = 'cc/x01@topic' ]
+	[ "$(echo "$output" | jq -r '.slug')" = 'x01--topic' ]
+	[ "$(echo "$output" | jq -r '.tmux')" = 'cc/x01--topic' ]
 	[ "$(echo "$output" | jq -r '.created')" = 'true' ]
 
 	local _p
@@ -72,7 +72,7 @@ teardown() {
 
 	run "$CCS_BIN" ls --json
 	[ "$(echo "$output" | jq -r 'length')" = '2' ]
-	[ "$(echo "$output" | jq -r '[.[].slug] | sort | join(",")')" = 'x01@one,x01@two' ]
+	[ "$(echo "$output" | jq -r '[.[].slug] | sort | join(",")')" = 'x01--one,x01--two' ]
 }
 
 @test "worktree: 素の指定と worktree の指定は別セッションになる" {
@@ -219,7 +219,7 @@ teardown() {
 	[ "$status" -eq 0 ]
 	local _p
 	_p=$(echo "$output" | jq -r '.path')
-	"$CCS_BIN" kill --force 'x01@topic'
+	"$CCS_BIN" kill --force 'x01--topic'
 	# trust を消して、実パス経由でもう一度立てる
 	jq 'del(.projects)' "$CCS_TRUST_FILE" >"${CCS_TRUST_FILE}.new"
 	mv "${CCS_TRUST_FILE}.new" "$CCS_TRUST_FILE"
@@ -242,7 +242,7 @@ teardown() {
 	[[ "$stderr" == *"まだ信頼されていません"* ]] || return 1
 }
 
-@test "worktree: 実パスで立てても <repo>@<branch> のセッションになる" {
+@test "worktree: 実パスで立てても <repo>--<branch> のセッションになる" {
 	# 打ち方が違っても同じ slug に落ちること ＝ 2 本目が立たないこと。
 	run --separate-stderr "$CCS_BIN" new 'x01@topic'
 	[ "$status" -eq 0 ]
@@ -252,12 +252,12 @@ teardown() {
 	# 同じ作業ツリーを実パスで頼む → 既存を返す（新規に立てない）
 	run --separate-stderr "$CCS_BIN" new "$_p"
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | jq -r '.slug')" = 'x01@topic' ]
+	[ "$(echo "$output" | jq -r '.slug')" = 'x01--topic' ]
 	[ "$(echo "$output" | jq -r '.created')" = 'false' ]
 
 	# tmux に 1 本しか立っていないこと
 	run "$CCS_BIN" ls
-	[ "$(echo "$output" | grep -c 'x01@topic')" -eq 1 ]
+	[ "$(echo "$output" | grep -c 'x01--topic')" -eq 1 ]
 }
 
 # --- リポジトリ配下に置く（ADR-0003 決定 1・2・5、W2） -------------------------
@@ -293,7 +293,7 @@ teardown() {
 
 @test "worktree: exclude は 2 度書かない（冪等）" {
 	"$CCS_BIN" new 'x01@topic' >/dev/null 2>&1
-	"$CCS_BIN" kill --force 'x01@topic' >/dev/null 2>&1
+	"$CCS_BIN" kill --force 'x01--topic' >/dev/null 2>&1
 	"$CCS_BIN" new 'x01@other' >/dev/null 2>&1
 
 	run grep -cxF '/.worktrees/' "${CCS_TEST_REPO}/.git/info/exclude"
@@ -328,7 +328,7 @@ teardown() {
 	# `branch_slug` は / を - に潰すので、feat/foo と feat-foo は
 	# **共存できるのに同じディレクトリに落ちる**（git は禁じない）。
 	"$CCS_BIN" new 'x01@feat-foo' >/dev/null 2>&1
-	"$CCS_BIN" kill --force 'x01@feat-foo' >/dev/null 2>&1
+	"$CCS_BIN" kill --force 'x01--feat-foo' >/dev/null 2>&1
 
 	run "$CCS_BIN" new 'x01@feat/foo'
 	[ "$status" -ne 0 ]
@@ -356,8 +356,50 @@ teardown() {
 
 	run --separate-stderr env -C "$_p" "$CCS_BIN" new '.@sibling'
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | jq -r '.slug')" = 'x01@sibling' ]
+	[ "$(echo "$output" | jq -r '.slug')" = 'x01--sibling' ]
 	# 本体の .worktrees に並ぶこと（worktree の中に生えないこと）
 	[ "$(echo "$output" | jq -r '.path')" = "$(cd "$CCS_TEST_REPO" && pwd -P)/.worktrees/sibling" ]
 	[ ! -d "${_p}/.worktrees/sibling" ]
+}
+
+# --- slug に @ を残さない（N1） --------------------------------------------
+#
+# **組み込みの `SendMessage` にとって `@` は `name@team` のチーム区切り。**
+# `ccs@ls-board` は「チーム `ls-board` の `ccs`」と解釈され、宛先として弾かれる
+# （`to must be a bare teammate name`）。**送る側からは見えているのに届かない**
+# ので、worktree のセッションだけハブから指示を受け取れなかった。
+#
+# 実測 2026-08-31（`ListAgents` の 37 行）: **ref を持たないのは `@` を含む
+# 1 行だけ**で、空白・日本語・`#`・`/`・`[` `]` を含む名前はすべて通っていた。
+# 効いているのは文字集合ではなく `@` そのもの。
+
+@test "worktree: 立てたセッションの名前に @ が入らない" {
+	run --separate-stderr "$CCS_BIN" new 'x01@topic'
+	[ "$status" -eq 0 ]
+	[[ "$(printf '%s' "$output" | jq -r '.slug')" != *"@"* ]] || return 1
+	[[ "$(printf '%s' "$output" | jq -r '.tmux')" != *"@"* ]] || return 1
+
+	# **claude に渡した名前にも入っていない。** tmux 名だけ直しても、
+	# 宛先として使われるのはこちら。
+	ccs_tmux list-panes -t '=cc/x01--topic' -F '#{pane_start_command}' |
+		grep -q -- "-n 'x01--topic'"
+}
+
+@test "worktree: 打ち方は <repo>@<branch> のまま" {
+	# **変えたのは組み立てる slug だけ。** 入力の綴りは SendMessage を
+	# 通らないので、変える理由が無い。
+	run --separate-stderr "$CCS_BIN" resolve 'x01@topic'
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | cut -f1)" = 'x01--topic' ]
+}
+
+@test "worktree: ブランチ名に @ があっても slug には残らない" {
+	# **入力構文では表現できない**（`<target>` は最後の `@` で割るので
+	# `x01@feat@v2` は repo 部が `x01@feat` になる）。実在するブランチを
+	# 実パスで指して確かめる ── そちらは git に訊いて枝の名前を得る経路。
+	git -C "$CCS_TEST_REPO" worktree add -q ".worktrees/at" -b 'feat@v2'
+
+	run --separate-stderr "$CCS_BIN" resolve "${CCS_TEST_REPO}/.worktrees/at"
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | cut -f1)" = 'x01--feat-v2' ]
 }

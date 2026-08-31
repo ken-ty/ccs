@@ -87,11 +87,20 @@ teardown() {
 	[ "$_slug" = 'a-b-c-d' ]
 }
 
-@test "slug: 英数字と - _ @ は残す" {
+@test "slug: 英数字と - _ は残す" {
+	mkdir -p "${CCS_TEST_TMP}/w/my_repo-2"
+	run "$CCS_BIN" resolve "${CCS_TEST_TMP}/w/my_repo-2"
+	[ "$status" -eq 0 ]
+	[ "$(echo "$output" | cut -f1)" = 'my_repo-2' ]
+}
+
+@test "slug: @ は落とす（宛先として使えなくなるため）" {
+	# **`SendMessage` にとって `@` は `name@team` のチーム区切り。**
+	# 残すと「送る側からは見えているのに届かない」名前ができる（N1）。
 	mkdir -p "${CCS_TEST_TMP}/w/my_repo-2@main"
 	run "$CCS_BIN" resolve "${CCS_TEST_TMP}/w/my_repo-2@main"
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | cut -f1)" = 'my_repo-2@main' ]
+	[ "$(echo "$output" | cut -f1)" = 'my_repo-2-main' ]
 }
 
 # --- ghq のリポジトリ名 ----------------------------------------------------

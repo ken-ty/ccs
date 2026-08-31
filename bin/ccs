@@ -682,8 +682,24 @@ CCS_RESOLVED_WORKTREE_BRANCH=''
 # `session:window` の区切りなので、後から -t で狙えなくなる。
 # 受け付けられることと安全であることは別。
 sanitize_slug() {
-	printf '%s' "$1" | sed 's/[^A-Za-z0-9_@-]/-/g'
+	printf '%s' "$1" | sed 's/[^A-Za-z0-9_-]/-/g'
 }
+
+# worktree の slug で本体と枝を区切る綴り（N1）。
+#
+# **`@` は使えない。** 組み込みの `SendMessage` にとって `@` は
+# **`name@team` のチーム区切り**なので、`ccs@ls-board` は「チーム `ls-board`
+# の `ccs`」と解釈され、宛先として弾かれる（`to must be a bare teammate
+# name`）。**送る側からは見えているのに届かない**ので、worktree のセッション
+# だけハブから指示を受け取れなかった。
+#
+# 実測 2026-08-31（`ListAgents` の 37 行）: **ref を持たないのは `@` を含む
+# 1 行だけ**で、空白・日本語・`#`・`/`・`[` `]` を含む名前はすべて通っていた
+# ── 効いているのは文字集合ではなく `@` そのもの。
+#
+# **`sanitize_slug` からも `@` を落とす。** 区切りを変えるだけでは足りない
+# ── `foo@bar` という名前のディレクトリを指されたら、同じ壊れ方をする。
+CCS_WORKTREE_SEP='--'
 
 json_str() {
 	printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
@@ -766,18 +782,19 @@ slug_for_path() {
 	_path=$1
 	_base=$(basename "$_path")
 
-	# **linked worktree は `<repo>@<branch>` と名乗る**（ADR-0003 決定 3）。
+	# **linked worktree は `<repo>--<branch>` と名乗る**（ADR-0003 決定 3）。
 	#
 	# これが無いと、同じディレクトリが打ち方で 2 つの slug に割れる ──
 	# `ccs new <worktree の実パス>` は末尾要素を、`ccs new <repo>@<branch>` は
-	# `<repo>@<branch>` を返し、**1 つの作業ツリーに 2 本の claude が立つ**。
+	# 組み立てたほうを返し、**1 つの作業ツリーに 2 本の claude が立つ**。
 	# 冪等性 (S5、design.md §4.3) の穴。
 	#
 	# 本体の slug を出す再帰はコマンド置換（＝サブシェル）なので、
 	# CCS_WT_* を踏まない。本体は linked ではないので 1 段で止まる。
 	if path_is_linked_worktree "$_path"; then
 		_wt_repo_slug=$(slug_for_path "$CCS_WT_MAIN")
-		printf '%s@%s\n' "$_wt_repo_slug" "$(branch_slug "$CCS_WT_BRANCH")"
+		printf '%s%s%s\n' "$_wt_repo_slug" "$CCS_WORKTREE_SEP" \
+			"$(branch_slug "$CCS_WT_BRANCH")"
 		return 0
 	fi
 
@@ -864,7 +881,8 @@ resolve_as_repo() {
 # 分けるしかない（design.md §9.1）。
 #
 # 置き場所は **リポジトリ配下の `<repo>/.worktrees/<branch-slug>`**
-# （ADR-0003 決定 1）。slug は `<repo-slug>@<branch-slug>`（design.md §4.2）。
+# （ADR-0003 決定 1）。slug は `<repo-slug>--<branch-slug>`（design.md §4.2）。
+# **打ち方は `<repo>@<branch>` のまま**で、変わるのは組み立てる slug だけ。
 # ---------------------------------------------------------------------------
 
 # ブランチ名を slug に落とす。`feat/foo` → `feat-foo`。
@@ -1003,7 +1021,7 @@ resolve_as_worktree() {
 	CCS_RESOLVED_WORKTREE_REPO=$_repo_path
 	CCS_RESOLVED_WORKTREE_BRANCH=$_branch
 	CCS_RESOLVED_PATH=$(worktree_path_for "$_repo_path" "$_branch")
-	CCS_RESOLVED_SLUG="${_repo_slug}@$(branch_slug "$_branch")"
+	CCS_RESOLVED_SLUG="${_repo_slug}${CCS_WORKTREE_SEP}$(branch_slug "$_branch")"
 }
 
 # 解決済みの worktree を実在させる。冪等。
@@ -3882,7 +3900,7 @@ restore_candidates() {
 			_repo_slug=$(slug_for_path "$_rp")
 			for _br_dir in "${_rp}/${CCS_WORKTREE_DIR}"/*; do
 				[ -d "$_br_dir" ] || continue
-				_slug="${_repo_slug}@$(basename "$_br_dir")"
+				_slug="${_repo_slug}${CCS_WORKTREE_SEP}$(basename "$_br_dir")"
 				tmux_session_exists "${CCS_PREFIX}${_slug}" && continue
 				_u=$(restore_latest_in "$(transcript_dir_for "$_br_dir")") || continue
 				restore_is_fresh "$(transcript_path "$_br_dir" "$_u")" || continue
@@ -4718,7 +4736,7 @@ validate_config() {
 	[ -n "$CCS_HUB_SLUG" ] ||
 		die "$EX_USAGE" 'CCS_HUB_SLUG が空です'
 	[ "$CCS_HUB_SLUG" = "$(sanitize_slug "$CCS_HUB_SLUG")" ] ||
-		die "$EX_USAGE" "CCS_HUB_SLUG に tmux で使えない文字が入っています（使えるのは A-Z a-z 0-9 _ @ -）: ${CCS_HUB_SLUG}"
+		die "$EX_USAGE" "CCS_HUB_SLUG に使えない文字が入っています（使えるのは A-Z a-z 0-9 _ -）: ${CCS_HUB_SLUG}"
 	[ "$CCS_HUB_SLUG" != 'tmp' ] ||
 		die "$EX_USAGE" 'CCS_HUB_SLUG に tmp は使えません（使い捨て作業枠の予約語です）'
 

@@ -68,7 +68,7 @@ ghq 配下しか舐めないため。名指しなら戻せる。
 
 ```console
 $ ccs restore x01              # リポジトリ
-$ ccs restore x01@topic        # worktree
+$ ccs restore x01--topic      # worktree（slug は `--` 区切り）
 $ ccs restore tmp-3            # 作業枠（番号まで要る）
 $ ccs restore /some/path       # ghq の外
 ```

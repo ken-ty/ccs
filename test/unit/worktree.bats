@@ -23,13 +23,13 @@ teardown() {
 
 # --- slug --------------------------------------------------------------------
 
-@test "worktree: slug は <repo>@<branch>" {
+@test "worktree: slug は <repo>--<branch>（打ち方は <repo>@<branch>）" {
 	mkdir -p "${CCS_TEST_TMP}/ghq/github.com/o/x01"
 	ccs_stub_ghq "${CCS_TEST_TMP}/ghq/github.com/o/x01"
 
 	run "$CCS_BIN" resolve 'x01@topic'
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | cut -f1)" = 'x01@topic' ]
+	[ "$(echo "$output" | cut -f1)" = 'x01--topic' ]
 }
 
 @test "worktree: ブランチの / は - に潰す" {
@@ -38,7 +38,7 @@ teardown() {
 
 	run "$CCS_BIN" resolve 'x01@feat/login'
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | cut -f1)" = 'x01@feat-login' ]
+	[ "$(echo "$output" | cut -f1)" = 'x01--feat-login' ]
 	# パス側も潰れていること。潰さないと feat と feat/login が同居できない。
 	[[ "$(echo "$output" | cut -f2)" == */feat-login ]] || return 1
 }
@@ -101,11 +101,15 @@ teardown() {
 
 # --- 曖昧さ ------------------------------------------------------------------
 
-@test "worktree: @ を含む実在ディレクトリはパスとして扱う" {
+@test "worktree: @ を含む実在ディレクトリはパスとして扱い、slug からは @ を落とす" {
+	# **slug に `@` を残さない**（N1）。組み込みの SendMessage にとって `@` は
+	# `name@team` のチーム区切りなので、`@` を含む名前は宛先として弾かれる。
+	# 区切りを変えるだけでは足りない ── こういうディレクトリを指されたら
+	# 同じ壊れ方をするので、`sanitize_slug` の側で落とす。
 	mkdir -p "${CCS_TEST_TMP}/work/foo@2"
 	run "$CCS_BIN" resolve "${CCS_TEST_TMP}/work/foo@2"
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | cut -f1)" = 'foo@2' ]
+	[ "$(echo "$output" | cut -f1)" = 'foo-2' ]
 	[ "$(echo "$output" | cut -f2)" = "$(cd "${CCS_TEST_TMP}/work/foo@2" && pwd -P)" ]
 }
 
@@ -140,7 +144,7 @@ teardown() {
 
 	run --separate-stderr "$CCS_BIN" resolve "${_repo}/.worktrees/topic@other"
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | cut -f1)" = 'x01@other' ]
+	[ "$(echo "$output" | cut -f1)" = 'x01--other' ]
 	# **入れ子にならない。** 本体の .worktrees に落ちること。
 	[ "$(echo "$output" | cut -f2)" = "$(cd "$_repo" && pwd -P)/.worktrees/other" ]
 	# 黙って読み替えない
@@ -152,7 +156,7 @@ teardown() {
 # 置き場所ではなく git に訊く。**パスもまた名前**なので、同一性の根拠にしない。
 # ここは `ccs resolve` だけを見る（実体の生成は integration 側）。
 
-@test "worktree: 実パスで指しても <repo>@<branch> と名乗る" {
+@test "worktree: 実パスで指しても <repo>--<branch> と名乗る" {
 	local _repo="${CCS_TEST_TMP}/ghq/github.com/o/x01"
 	ccs_make_git_repo "$_repo"
 	ccs_stub_ghq "$_repo"
@@ -163,7 +167,7 @@ teardown() {
 	# 1 つの作業ツリーを 2 本の claude が触っていた。
 	run "$CCS_BIN" resolve "${CCS_TEST_TMP}/elsewhere/wt"
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | cut -f1)" = 'x01@topic' ]
+	[ "$(echo "$output" | cut -f1)" = 'x01--topic' ]
 }
 
 @test "worktree: 本体は素の slug のまま（@ を付けない）" {
@@ -185,7 +189,7 @@ teardown() {
 
 	run "$CCS_BIN" resolve "${CCS_TEST_TMP}/elsewhere/wt"
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | cut -f1)" = 'x01@feat-login' ]
+	[ "$(echo "$output" | cut -f1)" = 'x01--feat-login' ]
 }
 
 @test "worktree: 分離 HEAD は素性として扱わない（末尾要素に戻る）" {
@@ -212,7 +216,7 @@ teardown() {
 	# 混ぜると $output の 1 行目が案内文になる。
 	run --separate-stderr "$CCS_BIN" resolve "${CCS_TEST_TMP}/elsewhere/wt@another"
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | cut -f1)" = 'x01@another' ]
+	[ "$(echo "$output" | cut -f1)" = 'x01--another' ]
 	[ "$(echo "$output" | cut -f2)" = "$(cd "$_repo" && pwd -P)/.worktrees/another" ]
 }
 
