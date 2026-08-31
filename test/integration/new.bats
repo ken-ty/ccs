@@ -550,3 +550,60 @@ teardown() {
 	[ "$status" -eq 1 ]
 	[ "$(printf '%s' "$output" | jq -r '.error.code')" = 'prompt-file' ]
 }
+
+# --- 作業枠に「成果物は cwd に置く」と伝える（P0） -------------------------
+#
+# **穴はここだった。** ハーネスは一時ファイルを `/tmp` 配下の scratchpad に
+# 置くよう指示するので、**「一時的な作業」と言われたエージェントはそちらを
+# 選ぶ**。`~/.cc-scratch` は OS が消さないのに、そこに立てたセッションの
+# 成果物が数日で消える（#63 の実例）。
+#
+# **`CLAUDE.md` を枠に置く案は採らなかった。** 枠が「空でない」に化けて、
+# 自動承認（I2c）も `ccs gc` の掃除（I3a）も止まる。ファイルを置かずに
+# 伝えるほうが、どの不変条件も壊さない。
+
+@test "new --tmp: 作業枠のセッションに注意書きを渡す" {
+	local _log="${CCS_TEST_TMP}/args.log"
+	FAKE_CLAUDE_LOG="$_log" run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 0 ]
+	[[ "$(cat "$_log")" == *"--append-system-prompt"* ]] || return 1
+	[[ "$(cat "$_log")" == *"cwd"* ]] || return 1
+}
+
+@test "new --tmp: 注意書きを渡してもディレクトリは空のまま" {
+	# **ここが CLAUDE.md 案との差。** ファイルを置かないので、
+	# 自動承認も gc の掃除もそのまま効く。
+	local _p
+	run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 0 ]
+	_p=$(printf '%s' "$output" | jq -r '.path')
+	[[ "$stderr" == *"信頼済みにしました"* ]] || return 1
+	# 印だけがある状態。
+	[ "$(ls -A "$_p" | tr '\n' ' ')" = ".ccs.json " ]
+}
+
+@test "new <repo>: 作業枠でなければ注意書きは渡さない" {
+	# **枠だけの話。** リポジトリの cwd は消えないので、伝える理由が無い。
+	mkdir -p "${CCS_TEST_TMP}/work/mine"
+	local _log="${CCS_TEST_TMP}/args.log"
+	FAKE_CLAUDE_LOG="$_log" run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/mine"
+	[ "$status" -eq 0 ]
+	[[ "$(cat "$_log")" != *"--append-system-prompt"* ]] || return 1
+}
+
+@test "new --tmp: CCS_SCRATCH_NOTE を空にすれば渡さない" {
+	export CCS_SCRATCH_NOTE=''
+	local _log="${CCS_TEST_TMP}/args.log"
+	FAKE_CLAUDE_LOG="$_log" run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 0 ]
+	[[ "$(cat "$_log")" != *"--append-system-prompt"* ]] || return 1
+}
+
+@test "new --tmp: 注意書きは初期プロンプトを潰さない" {
+	# **別の口で渡す。** -- <初期プロンプト> と両立する。
+	local _log="${CCS_TEST_TMP}/args.log"
+	FAKE_CLAUDE_LOG="$_log" run --separate-stderr "$CCS_BIN" new --tmp -- 'hello'
+	[ "$status" -eq 0 ]
+	[[ "$(cat "$_log")" == *"--append-system-prompt"* ]] || return 1
+	[[ "$(cat "$_log")" == *"hello"* ]] || return 1
+}

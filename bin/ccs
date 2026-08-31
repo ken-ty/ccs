@@ -100,6 +100,7 @@ CCS_SESSIONS_DIR
 CCS_TRUST_FILE
 CCS_SCRATCH_ROOT
 CCS_SCRATCH_SLOTS
+CCS_SCRATCH_NOTE
 CCS_PROJECTS_DIR
 CCS_NEW_TIMEOUT
 CCS_ADOPT_TIMEOUT
@@ -212,6 +213,22 @@ load_config
 : "${CCS_PS_BIN:=ps}"
 : "${CCS_SESSIONS_DIR:=${HOME}/.claude/sessions}"
 : "${CCS_TRUST_FILE:=${HOME}/.claude.json}"
+# 使い捨て作業枠のセッションに渡す注意書き（P0）。空にすると渡さない。
+#
+# **穴はここだった。** ハーネスは一時ファイルを `/tmp` 配下の scratchpad に
+# 置くよう指示するので、**「一時的な作業」と言われたエージェントはそちらを
+# 選ぶ**。`~/.cc-scratch` は OS が消さないのに、そこに立てたセッションの
+# 成果物が数日で消える（[#63](https://github.com/ken-ty/ccs/issues/63) の実例）。
+#
+# **`CLAUDE.md` を枠に置く案は採らなかった**（ADR-0004 決定 1 の見直し）──
+# 枠が「空でない」に化けて、自動承認（I2c）も `ccs gc` の掃除（I3a）も
+# 止まる。**ファイルを置かずに伝える**ほうが、どの不変条件も壊さない。
+# **`:=` ではなく `=`。** `:=` は「未設定」と「空」の両方を既定値で置き換える
+# ので、**明示的に空にしても既定の文面が戻ってくる**（実測で踏んだ）。空を
+# 「渡さない」の意味に使うキーでは、代入は「未設定のときだけ」でなければ
+# ならない。
+: "${CCS_SCRATCH_NOTE=この作業ディレクトリは ccs が発行した使い捨ての作業枠です。残したい成果物は必ずこの作業ディレクトリ（cwd）の中に置いてください。システム側の一時ディレクトリ（/tmp 配下の scratchpad）は数日で自動的に消えます。}"
+
 : "${CCS_SCRATCH_ROOT:=${HOME}/.cc-scratch}"
 
 : "${CCS_PROJECTS_DIR:=${HOME}/.claude/projects}"
@@ -609,6 +626,7 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
     CCS_REMOTE_CONTROL Remote Control auto/on/off [既定: auto]
     CCS_PREFIX         tmux 名の接頭辞       [既定: cc/]
     CCS_SCRATCH_SLOTS  同時に立てられる作業枠の本数 [既定: 20]
+    CCS_SCRATCH_NOTE   作業枠のセッションに渡す注意書き（空で無効）
 
   いま効いている値と出どころは `ccs config` で見られる。
   一覧と意味は docs/configuration.md、hub の運用は docs/hub.md。
@@ -2116,6 +2134,12 @@ cmd_new() {
 	# claude が終了してもペインを残す（design.md §4.3）。残しておけば
 	# あとから同じ場所で `claude --resume <uuid>` を流し込める。
 	_cmd="$(shq "$CCS_CLAUDE_BIN") -n $(shq "$_slug") --session-id $(shq "$_uuid")"
+
+	# **作業枠だけに注意書きを渡す**（P0）。ここに立てたセッションは、
+	# 何も言わなければ成果物を `/tmp` 側へ置く。
+	if [ -n "$CCS_RESOLVED_SCRATCH" ] && [ -n "$CCS_SCRATCH_NOTE" ]; then
+		_cmd="${_cmd} --append-system-prompt $(shq "$CCS_SCRATCH_NOTE")"
+	fi
 	[ -n "$_prompt" ] && _cmd="${_cmd} $(shq "$_prompt")"
 	_cmd="${_cmd}; exec $(shq "${SHELL:-/bin/sh}")"
 

@@ -242,7 +242,7 @@ cmd_interactive() {
 			esac
 			;;
 		# 値を取るが中身は見ないもの。本物に渡している間は落ちてはいけない。
-		--permission-mode | --model | --effort | --agent | --add-dir | --settings)
+		--permission-mode | --model | --effort | --agent | --add-dir | --settings | --append-system-prompt)
 			shift 2 || shift
 			;;
 		--*)
