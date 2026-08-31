@@ -728,6 +728,10 @@ _wipe_slots() {
 	local _dir="${CCS_SCRATCH_ROOT}/aaaa1111"
 	local _u='11111111-2222-4333-8444-777777777777'
 	mkdir -p "$_dir"
+	# **印が要る**（I3b）── 印の無いディレクトリは、そもそも ccs の枠として
+	# 数えない。ここで見たいのは「ccs の枠だが生きている」ほう。
+	printf '{"schema":1,"workspaceId":"aaaa1111","kind":"scratch"}\n' \
+		>"${_dir}/.ccs.json"
 	local _abs
 	_abs=$(cd "$_dir" && pwd -P)
 
@@ -763,4 +767,79 @@ _wipe_slots() {
 	run --separate-stderr "$CCS_BIN" restore --json
 	[ "$status" -eq 0 ]
 	[ "$(printf '%s' "$output" | jq '[.ready[] | select(.path == "'"$_abs"'")] | length')" -eq 0 ]
+}
+
+# --- 痕跡の照合を厳しくする（I3b） -----------------------------------------
+#
+# **ghq 配下には印を置けない**（ADR-0002 決定 5 ── `.ccs.json` は `git status`
+# に出て、コミットされ得て、clean 判定を壊す）。だから**印ベースには置き換え
+# られず**、名前が付いていたことの痕跡を読むしかない。
+#
+# **「`custom-title` を含む」では足りない。** それだと `ccs` 以外が `-n` を
+# 付けて起動したセッションも通る。`customTitle` の値が **`ccs` がそのパスに
+# 対して計算する slug と一致するか**まで見る。
+
+_seed_titled() { # <repo> <customTitle> <uuid>
+	local _abs _dir
+	_abs=$(cd "$1" && pwd -P)
+	_dir="$(_transcript_dir "$_abs")"
+	mkdir -p "$_dir"
+	printf '{"type":"custom-title","customTitle":"%s","sessionId":"%s"}\n' "$2" "$3" \
+		>"${_dir}/${3}.jsonl"
+	printf '{"type":"user","cwd":"%s","sessionId":"%s"}\n' "$_abs" "$3" \
+		>>"${_dir}/${3}.jsonl"
+}
+
+@test "restore: customTitle が slug と一致すれば列挙する" {
+	local repo="${CCS_TEST_TMP}/ghq/github.com/o/x01"
+	ccs_make_git_repo "$repo"
+	ccs_stub_ghq "$repo"
+	_seed_titled "$repo" 'x01' '11111111-1111-4111-8111-111111111111'
+
+	run --separate-stderr "$CCS_BIN" restore --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq '[.ready[] | select(.slug == "x01")] | length')" -eq 1 ]
+}
+
+@test "restore: customTitle が slug と違えば列挙しない" {
+	# **ここが厳しくしたところ。** 以前は「custom-title を含む」だけを見て
+	# いたので、`ccs` 以外が付けた名前でも通っていた。
+	local repo="${CCS_TEST_TMP}/ghq/github.com/o/x01"
+	ccs_make_git_repo "$repo"
+	ccs_stub_ghq "$repo"
+	_seed_titled "$repo" '手で付けた名前' '11111111-1111-4111-8111-222222222222'
+
+	run --separate-stderr "$CCS_BIN" restore --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq '.ready | length')" -eq 0 ]
+}
+
+@test "restore: 作業枠は、ディレクトリが在れば印まで見る" {
+	# **scratch root の直下にあるだけでは ccs のものとは言えない。**
+	# 人が手で作ったディレクトリで会話していれば、そこも候補に出てしまう。
+	local _dir="${CCS_SCRATCH_ROOT}/handmade"
+	local _u='11111111-1111-4111-8111-333333333333'
+	mkdir -p "$_dir"
+	local _abs
+	_abs=$(cd "$_dir" && pwd -P)
+	mkdir -p "$(_transcript_dir "$_abs")"
+	printf '{"type":"user","cwd":"%s"}\n' "$_abs" \
+		>"$(_transcript_dir "$_abs")/${_u}.jsonl"
+
+	run --separate-stderr "$CCS_BIN" restore --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq '[.ready[] | select(.path == "'"$_abs"'")] | length')" -eq 0 ]
+}
+
+@test "restore: 作業枠が消えていれば印は問わない" {
+	# **印はディレクトリと一緒に消える。** そこを疑うと ccs gc のあとに
+	# 戻せなくなる（I2b でわざわざ拾えるようにしたところ）。
+	local _u
+	_u=$(_new_tmp)
+	_wipe_session "$(_ts 1)"
+	rm -rf "$(_slot_path 1)"
+
+	run --separate-stderr "$CCS_BIN" restore --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq '[.ready[] | select(.sessionId == "'"$_u"'")] | length')" -eq 1 ]
 }
