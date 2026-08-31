@@ -3282,10 +3282,25 @@ orphan_slots() {
 			continue
 		fi
 
-		if dir_is_empty "$_slot"; then
-			printf 'empty\t%s\n' "$_slot"
+		# **素性で分ける**（I3a、[ADR-0002] 決定 7）。「空かどうか」だけで
+		# 見ていた頃は、**人が手で作った空ディレクトリまで消していた** ──
+		# `ccs` が発行したものではないので、そこに何が置かれるかを `ccs` は
+		# 知らない。印が無いものは「素性の分からないディレクトリ」として
+		# 報告するだけにする。
+		#
+		# **印を失っても安全側に倒れる**（決定 7）── 消えたら「`ccs` の
+		# ものではない」と見えるだけで、勝手に消されることも、勝手に
+		# 信頼されることも無い。
+		if ! mark_is_valid "$_slot"; then
+			printf 'unknown\t%s\n' "$_slot"
+		elif dir_is_empty "$_slot"; then
+			printf 'issued-empty\t%s\n' "$_slot"
 		else
-			printf 'used\t%s\n' "$_slot"
+			# **報告には素性を添える**（決定 7）。いつ・どの名前で発行された
+			# 枠なのかが分かれば、中を見る前に見当が付く。
+			printf 'issued-used\t%s\t%s\t%s\n' "$_slot" \
+				"$(mark_field "$_slot" issuedAt 2>/dev/null)" \
+				"$(mark_field "$_slot" issuedSlug 2>/dev/null)"
 		fi
 	done
 }
@@ -3570,8 +3585,9 @@ cmd_gc() {
 
 	# 2, 3. 使われていない作業枠
 	_slots=$(orphan_slots)
-	_empty_slots=$(printf '%s\n' "$_slots" | sed -n 's/^empty\t//p')
-	_used_slots=$(printf '%s\n' "$_slots" | sed -n 's/^used\t//p')
+	_empty_slots=$(printf '%s\n' "$_slots" | sed -n 's/^issued-empty\t//p')
+	_used_slots=$(printf '%s\n' "$_slots" | sed -n 's/^issued-used\t//p')
+	_unknown_slots=$(printf '%s\n' "$_slots" | sed -n 's/^unknown\t//p')
 
 	# A〜D. worktree
 	#
@@ -3591,6 +3607,7 @@ cmd_gc() {
 
 	_reported=''
 	[ -n "$_used_slots" ] && _reported=1
+	[ -n "$_unknown_slots" ] && _reported=1
 	[ -n "$_wt_keep" ] && _reported=1
 	[ -n "$_wt_dirty" ] && _reported=1
 
@@ -3636,7 +3653,21 @@ cmd_gc() {
 	# そこにあるのは利用者のファイル。見て判断するのは人。
 	if [ -n "$_used_slots" ]; then
 		printf '中身が残っている作業枠（ccs は消しません。中を見て判断してください）:\n'
-		printf '%s\n' "$_used_slots" | while IFS= read -r _p; do
+		printf '%s\n' "$_used_slots" |
+			while IFS="$(printf '\t')" read -r _p _at _slug; do
+				[ -n "$_p" ] || continue
+				printf '  %-24s %s  %s\n' "$(tilde_path "$_p")" \
+					"${_at:--}" "${_slug:--}"
+			done
+		printf '\n'
+	fi
+
+	# **素性の分からないディレクトリは触らない**（I3a、ADR-0002 決定 7）。
+	# `ccs` が発行したものではないので、消してよいかを `ccs` は判断できない。
+	# レガシー枠（`{1..8}`）もここに来る ── 遡って印は打たない（決定 8）。
+	if [ -n "$_unknown_slots" ]; then
+		printf '素性の分からないディレクトリ（ccs は触りません）:\n'
+		printf '%s\n' "$_unknown_slots" | while IFS= read -r _p; do
 			[ -n "$_p" ] || continue
 			printf '  %s\n' "$(tilde_path "$_p")"
 		done
