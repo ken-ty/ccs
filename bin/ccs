@@ -1883,6 +1883,32 @@ session_is_live() {
 	registry_file_for_session "$1" >/dev/null 2>&1
 }
 
+# その作業ディレクトリで claude が生きているか。
+#
+# **名前を一切見ない。** `session_is_live` は tmux 名を起点にするので、
+# **名前の付け方が変わると「居ない」ことになる** ── 実際、N1 で worktree の
+# slug を `@` から `--` に変えたとき、**生きている worktree セッションが
+# `ccs restore` の候補に並んだ**（2026-08-31 実測）。`--yes` を打てば同じ
+# 会話に 2 本目が立つところだった。
+#
+# **管轄外の claude も数える。** そこで誰かが作業しているなら、ccs が
+# 立てたものかどうかに関係なく、上から立て直してよい場所ではない
+# （`gc_live_cwds` と同じ判断）。
+path_has_live_session() {
+	_phl_want=$1
+	[ -n "$_phl_want" ] || return 1
+
+	for _phl_f in "$CCS_SESSIONS_DIR"/*.json; do
+		[ -e "$_phl_f" ] || continue
+		registry_is_live "$_phl_f" || continue
+		_phl_cwd=$(registry_field "$_phl_f" cwd)
+		[ -n "$_phl_cwd" ] || continue
+		_phl_cwd=$(abs_dir "$_phl_cwd" 2>/dev/null || printf '%s' "$_phl_cwd")
+		[ "$_phl_cwd" = "$_phl_want" ] && return 0
+	done
+	return 1
+}
+
 # 立っているセッションの cwd を引く。取れなければ空。
 live_cwd_for() {
 	_f=$(registry_file_for_slug "$1") || return 1
@@ -4501,8 +4527,13 @@ cmd_restore() {
 	_sorted=$(printf '%s\n' "$_rows" |
 		while IFS="$(printf '\t')" read -r _slug _path _uuid; do
 			[ -n "$_slug" ] || continue
-			# 生きているものは触らない（冪等性）。**名前では引かない**（I1）。
-			if session_is_live "$_slug"; then
+			# 生きているものは触らない（冪等性）。
+			#
+			# **場所で見る。** 名前で引くと、名前の付け方が変わった瞬間に
+			# 「居ない」ことになり、**生きている会話に 2 本目を立てる**
+			# （N1 で実際に踏んだ）。名前のほうも残しておくのは、ペインは
+			# 在るがレジストリに cwd が無い場合の保険。
+			if path_has_live_session "$_path" || session_is_live "$_slug"; then
 				printf 'alive\t%s\t%s\t%s\n' "$_slug" "$_path" "$_uuid"
 				continue
 			fi

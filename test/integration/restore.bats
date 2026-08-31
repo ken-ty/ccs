@@ -713,3 +713,54 @@ _wipe_slots() {
 	ccs_tmux has-session -t '=cc/renamed'
 	[ "$(ccs_registry_count)" -eq 1 ]
 }
+
+# --- 生死は場所で見る（2026-08-31） ----------------------------------------
+#
+# **名前で引くと、名前の付け方が変わった瞬間に「居ない」ことになる。**
+# N1 で worktree の slug を `@` から `--` に変えたとき、**生きている worktree
+# セッションが `ccs restore` の候補に並んだ**（実測）── レジストリの `tmux` 欄も
+# tmux セッション名も古い綴りのままなので、名前を起点にした照合が 2 つとも
+# 外れる。`--yes` を打てば同じ会話に 2 本目が立つところだった。
+
+@test "restore: その場所で claude が生きていれば立て直しに行かない" {
+	# **名前は一切合わせない。** レジストリの tmux 欄も、tmux セッション名も、
+	# ccs が組み立てる slug と食い違う状態を作る ── これが N1 で起きたこと。
+	local _dir="${CCS_SCRATCH_ROOT}/aaaa1111"
+	local _u='11111111-2222-4333-8444-777777777777'
+	mkdir -p "$_dir"
+	local _abs
+	_abs=$(cd "$_dir" && pwd -P)
+
+	# 会話ログ（候補になる条件）。
+	mkdir -p "$(_transcript_dir "$_abs")"
+	printf '{"type":"user"}\n' >"$(_transcript_dir "$_abs")/${_u}.jsonl"
+
+	# その場所で生きている claude（名前は無関係なものにしておく）。
+	printf '{"pid":%d,"sessionId":"%s","cwd":"%s","tmux":"cc/まったく別の名前"}\n' \
+		"$$" "$_u" "$_abs" >"${CCS_SESSIONS_DIR}/20001.json"
+
+	run --separate-stderr "$CCS_BIN" restore --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq '[.ready[] | select(.path == "'"$_abs"'")] | length')" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq '[.alive[] | select(.path == "'"$_abs"'")] | length')" -eq 1 ]
+}
+
+@test "restore: 管轄外の claude が居る場所も立て直しに行かない" {
+	# **そこで誰かが作業しているなら、ccs が立てたものかどうかに関係なく
+	# 上から立て直してよい場所ではない**（gc_live_cwds と同じ判断）。
+	local _dir="${CCS_SCRATCH_ROOT}/bbbb2222"
+	local _u='11111111-2222-4333-8444-888888888888'
+	mkdir -p "$_dir"
+	local _abs
+	_abs=$(cd "$_dir" && pwd -P)
+	mkdir -p "$(_transcript_dir "$_abs")"
+	printf '{"type":"user"}\n' >"$(_transcript_dir "$_abs")/${_u}.jsonl"
+
+	# tmux 欄が無い = 管轄外（アプリや VS Code から開いたもの）。
+	printf '{"pid":%d,"sessionId":"%s","cwd":"%s"}\n' \
+		"$$" "$_u" "$_abs" >"${CCS_SESSIONS_DIR}/20002.json"
+
+	run --separate-stderr "$CCS_BIN" restore --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq '[.ready[] | select(.path == "'"$_abs"'")] | length')" -eq 0 ]
+}
