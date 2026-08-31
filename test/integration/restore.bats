@@ -30,10 +30,21 @@ teardown() {
 }
 
 # 作業枠に 1 本立てて、その sessionId を返す。
+# 作業枠に 1 本立てて、その sessionId を返す。
+#
+# **slug は返り値では運べない**（この関数はコマンド置換ごしに呼ぶので、
+# 変数への代入はサブシェルに閉じる）。発行順にファイルへ積んで `_ts` で引く
+# ── 枠の id が一意になった（I2b）ので、`$(_ts 1)` と決め打てなくなった。
 _new_tmp() {
 	run --separate-stderr "$CCS_BIN" new --tmp
 	[ "$status" -eq 0 ]
+	printf '%s' "$output" | jq -r '.slug' >>"${CCS_TEST_TMP}/tmp-slugs"
 	printf '%s' "$output" | jq -r '.sessionId'
+}
+
+# 発行した順に <n> 本目の slug（1 始まり）。
+_ts() {
+	sed -n "${1:-1}p" "${CCS_TEST_TMP}/tmp-slugs"
 }
 
 # 会話ログの置き場所（ccs と同じ規則で前向きに組み立てる）。
@@ -44,7 +55,8 @@ _transcript_dir() {
 
 # 作業枠の絶対パス（/tmp → /private/tmp の正規化を通す）。
 _slot_path() {
-	printf '%s/%s' "$(cd "$CCS_SCRATCH_ROOT" && pwd -P)" "$1"
+	printf '%s/%s' "$(cd "$CCS_SCRATCH_ROOT" && pwd -P)" \
+		"$(_ts "${1:-1}" | sed 's/^tmp-//')"
 }
 
 # 再起動を模す。tmux セッションごと消す。
@@ -72,7 +84,7 @@ _wipe_session() {
 
 	run "$CCS_BIN" restore
 	[ "$status" -eq 0 ]
-	[[ "$output" != *"tmp-1"* ]] || return 1
+	[[ "$output" != *"$(_ts 1)"* ]] || return 1
 }
 
 # --- 消えた作業枠を戻す ----------------------------------------------------
@@ -80,33 +92,33 @@ _wipe_session() {
 @test "restore: tmux ごと消えた作業枠を、同じ会話で立て直す" {
 	local id
 	id=$(_new_tmp)
-	_wipe_session tmp-1
+	_wipe_session $(_ts 1)
 
 	run "$CCS_BIN" restore --yes
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"戻しました"* ]] || return 1
 
-	ccs_tmux has-session -t '=cc/tmp-1'
+	ccs_tmux has-session -t "=cc/$(_ts 1)"
 
 	# **同じ sessionId で戻っていること。** ここが本体。
 	run --separate-stderr "$CCS_BIN" ls --json
 	[ "$status" -eq 0 ]
 	[ "$(printf '%s' "$output" | jq -r '.[0].sessionId')" = "$id" ]
-	[ "$(printf '%s' "$output" | jq -r '.[0].slug')" = 'tmp-1' ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].slug')" = "$(_ts 1)" ]
 }
 
 @test "restore: 既定では立てない（dry-run）" {
 	# 戻すと claude が動き出す。確認なしで N 本動き出す設計は割に合わない
 	# （ccs gc と同じ作法）。
 	_new_tmp >/dev/null
-	_wipe_session tmp-1
+	_wipe_session $(_ts 1)
 
 	run "$CCS_BIN" restore
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"tmp-1"* ]] || return 1
+	[[ "$output" == *"$(_ts 1)"* ]] || return 1
 	[[ "$output" == *"ccs restore --yes"* ]] || return 1
 
-	run ccs_tmux has-session -t '=cc/tmp-1'
+	run ccs_tmux has-session -t "=cc/$(_ts 1)"
 	[ "$status" -ne 0 ]
 }
 
@@ -115,8 +127,10 @@ _wipe_session() {
 	# 会話ログのほうは残っているので、そこに戻す。
 	local id
 	id=$(_new_tmp)
-	_wipe_session tmp-1
-	rmdir "$(_slot_path 1)"
+	_wipe_session "$(_ts 1)"
+	# **印ごと消す**（I2b）。`ccs gc` は印を先に消してから rmdir するので、
+	# 「gc で消えた」を再現するならこちらも中身ごと。
+	rm -rf "$(_slot_path 1)"
 
 	run "$CCS_BIN" restore --yes
 	[ "$status" -eq 0 ]
@@ -130,7 +144,7 @@ _wipe_session() {
 	# 戻す会話には既に名前が付いていて、アプリの一覧に出ているのはその名前。
 	# ここで slug を被せると、探している名前のほうが消える。
 	_new_tmp >/dev/null
-	_wipe_session tmp-1
+	_wipe_session $(_ts 1)
 
 	local log="${CCS_TEST_TMP}/claude-args.txt"
 	FAKE_CLAUDE_LOG="$log" run "$CCS_BIN" restore --yes
@@ -138,7 +152,7 @@ _wipe_session() {
 
 	# tmux サーバは既に起動しているので、FAKE_CLAUDE_LOG はペイン側には
 	# 届かない。ccs が組み立てたコマンド文字列を tmux から直接見る。
-	run ccs_tmux list-panes -t '=cc/tmp-1' -F '#{pane_start_command}'
+	run ccs_tmux list-panes -t "=cc/$(_ts 1)" -F '#{pane_start_command}'
 	[[ "$output" == *"--resume"* ]] || return 1
 	[[ "$output" != *" -n "* ]] || return 1
 }
@@ -148,7 +162,7 @@ _wipe_session() {
 @test "restore: ペインが残っているだけのセッションも立て直す" {
 	local id
 	id=$(_new_tmp)
-	ccs_kill_claude_of tmp-1
+	ccs_kill_claude_of $(_ts 1)
 
 	run --separate-stderr "$CCS_BIN" ls --json
 	[ "$(printf '%s' "$output" | jq -r '.[0].status')" = 'stopped' ]
@@ -166,9 +180,9 @@ _wipe_session() {
 	# 二度目の復帰路が消える（ccs ls の stopped 行が - になる）。
 	local id
 	id=$(_new_tmp)
-	_wipe_session tmp-1
+	_wipe_session $(_ts 1)
 	"$CCS_BIN" restore --yes >/dev/null
-	ccs_kill_claude_of tmp-1
+	ccs_kill_claude_of $(_ts 1)
 
 	run --separate-stderr "$CCS_BIN" ls --json
 	[ "$(printf '%s' "$output" | jq -r '.[0].status')" = 'stopped' ]
@@ -180,9 +194,9 @@ _wipe_session() {
 @test "restore: slug を名指しできる" {
 	local id
 	id=$(_new_tmp)
-	_wipe_session tmp-1
+	_wipe_session $(_ts 1)
 
-	run "$CCS_BIN" restore tmp-1 --yes
+	run "$CCS_BIN" restore $(_ts 1) --yes
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"$id"* ]] || return 1
 }
@@ -190,13 +204,13 @@ _wipe_session() {
 @test "restore: --list はその場所の会話を並べる" {
 	local id
 	id=$(_new_tmp)
-	_wipe_session tmp-1
+	_wipe_session $(_ts 1)
 
 	# 同じ枠に古い会話を 1 つ置く。
 	printf '{"type":"user","cwd":"%s","sessionId":"old"}\n' "$(_slot_path 1)" \
 		>"$(_transcript_dir "$(_slot_path 1)")/00000000-0000-4000-8000-000000000000.jsonl"
 
-	run "$CCS_BIN" restore tmp-1 --list
+	run "$CCS_BIN" restore $(_ts 1) --list
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"$id"* ]] || return 1
 	[[ "$output" == *"00000000-0000-4000-8000-000000000000"* ]] || return 1
@@ -204,13 +218,13 @@ _wipe_session() {
 
 @test "restore: --session-id で古い会話を選べる" {
 	_new_tmp >/dev/null
-	_wipe_session tmp-1
+	_wipe_session $(_ts 1)
 
 	local old='00000000-0000-4000-8000-000000000000'
 	printf '{"type":"user","cwd":"%s","sessionId":"%s"}\n' "$(_slot_path 1)" "$old" \
 		>"$(_transcript_dir "$(_slot_path 1)")/${old}.jsonl"
 
-	run "$CCS_BIN" restore tmp-1 --session-id "$old" --yes
+	run "$CCS_BIN" restore $(_ts 1) --session-id "$old" --yes
 	[ "$status" -eq 0 ]
 
 	run --separate-stderr "$CCS_BIN" ls --json
@@ -221,7 +235,7 @@ _wipe_session() {
 	local id
 	id=$(_new_tmp)
 
-	run "$CCS_BIN" restore tmp-1 --yes
+	run "$CCS_BIN" restore $(_ts 1) --yes
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"生きている"* ]] || return 1
 
@@ -233,7 +247,7 @@ _wipe_session() {
 
 @test "restore: 会話ログが無ければ理由を出して戻さない" {
 	_new_tmp >/dev/null
-	_wipe_session tmp-1
+	_wipe_session $(_ts 1)
 	rm -f "$(_transcript_dir "$(_slot_path 1)")"/*.jsonl
 
 	run "$CCS_BIN" restore
@@ -245,7 +259,7 @@ _wipe_session() {
 	# エンコード規則の答え合わせ。規則が変わったとき、黙って別の会話を
 	# 戻すのではなく、その 1 本を飛ばす。
 	_new_tmp >/dev/null
-	_wipe_session tmp-1
+	_wipe_session $(_ts 1)
 
 	local f
 	f=$(ls "$(_transcript_dir "$(_slot_path 1)")"/*.jsonl | head -1)
@@ -261,7 +275,7 @@ _wipe_session() {
 
 @test "restore: 古い会話は既定では拾わない" {
 	_new_tmp >/dev/null
-	_wipe_session tmp-1
+	_wipe_session $(_ts 1)
 	touch -t 202001010000 "$(_transcript_dir "$(_slot_path 1)")"/*.jsonl
 
 	run "$CCS_BIN" restore
@@ -271,22 +285,22 @@ _wipe_session() {
 
 @test "restore: --all なら古い会話も拾う" {
 	_new_tmp >/dev/null
-	_wipe_session tmp-1
+	_wipe_session $(_ts 1)
 	touch -t 202001010000 "$(_transcript_dir "$(_slot_path 1)")"/*.jsonl
 
 	run "$CCS_BIN" restore --all
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"tmp-1"* ]] || return 1
+	[[ "$output" == *"$(_ts 1)"* ]] || return 1
 }
 
 @test "restore: 名指しなら古くても戻す" {
 	_new_tmp >/dev/null
-	_wipe_session tmp-1
+	_wipe_session $(_ts 1)
 	touch -t 202001010000 "$(_transcript_dir "$(_slot_path 1)")"/*.jsonl
 
-	run "$CCS_BIN" restore tmp-1
+	run "$CCS_BIN" restore $(_ts 1)
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"tmp-1"* ]] || return 1
+	[[ "$output" == *"$(_ts 1)"* ]] || return 1
 }
 
 # --- hub ------------------------------------------------------------------
@@ -384,7 +398,7 @@ _wipe_session() {
 	# 自動起動から 5 分おきに走るので、ここで戻すと人が畳んだものが生き返る。
 	export CCS_HUB_HOME="${CCS_TEST_TMP}/hub"
 	_new_tmp >/dev/null
-	_wipe_session tmp-1
+	_wipe_session $(_ts 1)
 
 	run "$CCS_BIN" hub up
 	[ "$status" -eq 0 ]
@@ -431,7 +445,7 @@ _wipe_slots() {
 		_new_tmp >/dev/null
 	done
 	for ((i = 1; i <= $1; i++)); do
-		_wipe_session "tmp-${i}"
+		_wipe_session "$(_ts "$i")"
 	done
 }
 
@@ -450,14 +464,14 @@ _wipe_slots() {
 
 	run "$CCS_BIN" restore --last
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"tmp-1"* ]] || return 1
-	[[ "$output" == *"tmp-2"* ]] || return 1
-	[[ "$output" != *"tmp-3"* ]] || return 1
+	[[ "$output" == *"$(_ts 1)"* ]] || return 1
+	[[ "$output" == *"$(_ts 2)"* ]] || return 1
+	[[ "$output" != *"$(_ts 3)"* ]] || return 1
 
 	# 素の restore は 3 本とも出す（絞っているのは --last だけ）。
 	run "$CCS_BIN" restore
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"tmp-3"* ]] || return 1
+	[[ "$output" == *"$(_ts 3)"* ]] || return 1
 }
 
 @test "restore --last: 起動より後に書かれたものは「前回」ではない" {
@@ -472,8 +486,8 @@ _wipe_slots() {
 
 	run "$CCS_BIN" restore --last
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"tmp-1"* ]] || return 1
-	[[ "$output" != *"tmp-2"* ]] || return 1
+	[[ "$output" == *"$(_ts 1)"* ]] || return 1
+	[[ "$output" != *"$(_ts 2)"* ]] || return 1
 }
 
 @test "restore --last: 塊が無ければその旨を出す" {
@@ -500,11 +514,11 @@ _wipe_slots() {
 	# 既定は 5 分なので届かない。
 	run "$CCS_BIN" restore --last
 	[ "$status" -eq 0 ]
-	[[ "$output" != *"tmp-2"* ]] || return 1
+	[[ "$output" != *"$(_ts 2)"* ]] || return 1
 
 	CCS_RESTORE_LAST_WINDOW=1200 run "$CCS_BIN" restore --last
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"tmp-2"* ]] || return 1
+	[[ "$output" == *"$(_ts 2)"* ]] || return 1
 }
 
 @test "restore --last: 7 日の線を越えていても拾う" {
@@ -518,11 +532,11 @@ _wipe_slots() {
 
 	run "$CCS_BIN" restore
 	[ "$status" -eq 0 ]
-	[[ "$output" != *"tmp-1"* ]] || return 1
+	[[ "$output" != *"$(_ts 1)"* ]] || return 1
 
 	run "$CCS_BIN" restore --last
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"tmp-1"* ]] || return 1
+	[[ "$output" == *"$(_ts 1)"* ]] || return 1
 }
 
 @test "restore --last --yes: 組だけを立て直す" {
@@ -537,8 +551,8 @@ _wipe_slots() {
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"戻しました"* ]] || return 1
 
-	ccs_tmux has-session -t '=cc/tmp-1'
-	run ccs_tmux has-session -t '=cc/tmp-2'
+	ccs_tmux has-session -t "=cc/$(_ts 1)"
+	run ccs_tmux has-session -t "=cc/$(_ts 2)"
 	[ "$status" -ne 0 ]
 }
 
@@ -556,7 +570,7 @@ _wipe_slots() {
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"ccs restore --last --yes"* ]] || return 1
 
-	run ccs_tmux has-session -t '=cc/tmp-1'
+	run ccs_tmux has-session -t "=cc/$(_ts 1)"
 	[ "$status" -ne 0 ]
 }
 
@@ -573,13 +587,13 @@ _wipe_slots() {
 
 	run "$CCS_BIN" restore --since 2h
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"tmp-1"* ]] || return 1
-	[[ "$output" != *"tmp-2"* ]] || return 1
+	[[ "$output" == *"$(_ts 1)"* ]] || return 1
+	[[ "$output" != *"$(_ts 2)"* ]] || return 1
 
 	run "$CCS_BIN" restore --since 6h
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"tmp-2"* ]] || return 1
-	[[ "$output" != *"tmp-3"* ]] || return 1
+	[[ "$output" == *"$(_ts 2)"* ]] || return 1
+	[[ "$output" != *"$(_ts 3)"* ]] || return 1
 	[[ "$output" == *"ccs restore --since 6h --yes"* ]] || return 1
 }
 
@@ -605,32 +619,32 @@ _wipe_slots() {
 @test "restore --json: 予告は applied:false と 3 つの配列" {
 	local _uuid
 	_uuid=$(_new_tmp)
-	_wipe_session tmp-1
+	_wipe_session $(_ts 1)
 
 	run --separate-stderr "$CCS_BIN" restore --json
 	[ "$status" -eq 0 ]
 	[ "$(printf '%s' "$output" | jq -r '.applied')" = 'false' ]
-	[ "$(printf '%s' "$output" | jq -r '.ready[0].slug')" = 'tmp-1' ]
+	[ "$(printf '%s' "$output" | jq -r '.ready[0].slug')" = "$(_ts 1)" ]
 	[ "$(printf '%s' "$output" | jq -r '.ready[0].sessionId')" = "$_uuid" ]
-	[ "$(printf '%s' "$output" | jq -r '.ready[0].tmux')" = 'cc/tmp-1' ]
+	[ "$(printf '%s' "$output" | jq -r '.ready[0].tmux')" = "cc/$(_ts 1)" ]
 	# **予告なので立てていない。**
-	run ccs_tmux has-session -t '=cc/tmp-1'
+	run ccs_tmux has-session -t "=cc/$(_ts 1)"
 	[ "$status" -ne 0 ]
 }
 
 @test "restore --json --yes: applied:true と restored" {
 	local _uuid
 	_uuid=$(_new_tmp)
-	_wipe_session tmp-1
+	_wipe_session $(_ts 1)
 
 	run --separate-stderr "$CCS_BIN" restore --json --yes
 	[ "$status" -eq 0 ]
 	[ "$(printf '%s' "$output" | jq -r '.applied')" = 'true' ]
-	[ "$(printf '%s' "$output" | jq -r '.restored[0].slug')" = 'tmp-1' ]
+	[ "$(printf '%s' "$output" | jq -r '.restored[0].slug')" = "$(_ts 1)" ]
 	# **同じ会話で戻っている。**
 	[ "$(printf '%s' "$output" | jq -r '.restored[0].sessionId')" = "$_uuid" ]
 	[ "$(printf '%s' "$output" | jq '.failed | length')" -eq 0 ]
-	ccs_tmux has-session -t '=cc/tmp-1'
+	ccs_tmux has-session -t "=cc/$(_ts 1)"
 }
 
 @test "restore --json: 戻すものが無くてもキーの形は変わらない" {
@@ -653,9 +667,9 @@ _wipe_slots() {
 @test "restore --json: 生きているものは alive に入る" {
 	_new_tmp >/dev/null
 
-	run --separate-stderr "$CCS_BIN" restore tmp-1 --json
+	run --separate-stderr "$CCS_BIN" restore $(_ts 1) --json
 	[ "$status" -eq 0 ]
-	[ "$(printf '%s' "$output" | jq -r '.alive[0].slug')" = 'tmp-1' ]
+	[ "$(printf '%s' "$output" | jq -r '.alive[0].slug')" = "$(_ts 1)" ]
 	[ "$(printf '%s' "$output" | jq '.ready | length')" -eq 0 ]
 }
 
@@ -663,7 +677,7 @@ _wipe_slots() {
 	# **混ぜるとハブ側でパースできなくなる**（design.md の出力の約束）。
 	local _uuid
 	_uuid=$(_new_tmp)
-	_wipe_session tmp-1
+	_wipe_session $(_ts 1)
 
 	run --separate-stderr "$CCS_BIN" restore --json
 	[ "$status" -eq 0 ]
@@ -675,11 +689,11 @@ _wipe_slots() {
 @test "restore --list --json: 会話ログを並べる" {
 	local _uuid
 	_uuid=$(_new_tmp)
-	_wipe_session tmp-1
+	_wipe_session $(_ts 1)
 
-	run --separate-stderr "$CCS_BIN" restore tmp-1 --list --json
+	run --separate-stderr "$CCS_BIN" restore $(_ts 1) --list --json
 	[ "$status" -eq 0 ]
-	[ "$(printf '%s' "$output" | jq -r '.[0].slug')" = 'tmp-1' ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].slug')" = "$(_ts 1)" ]
 	[ "$(printf '%s' "$output" | jq -r '.[0].conversations[0].sessionId')" = "$_uuid" ]
 }
 
@@ -689,7 +703,7 @@ _wipe_slots() {
 	# 巻き添えになる）。
 	local _uuid
 	_uuid=$(_new_tmp)
-	ccs_tmux rename-session -t '=cc/tmp-1' 'cc/renamed'
+	ccs_tmux rename-session -t "=cc/$(_ts 1)" 'cc/renamed'
 
 	run --separate-stderr "$CCS_BIN" restore --json
 	[ "$status" -eq 0 ]

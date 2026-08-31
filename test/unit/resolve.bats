@@ -193,45 +193,55 @@ ${CCS_TEST_TMP}/ghq/github.com/bob/dup"
 
 # --- 使い捨て作業枠 --------------------------------------------------------
 
-@test "tmp: 最初の枠を確保して tmp-1 になる" {
+@test "tmp: 一意な id で発行する" {
+	# **枠番号の使い回しをやめた**（I2b）。番号で回していた頃は「枠が埋まる」
+	# 状態そのものが歯止めだったが、それは同じ場所を使い回していた副作用。
 	run "$CCS_BIN" resolve tmp
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | cut -f1)" = 'tmp-1' ]
-	[ "$(echo "$output" | cut -f2)" = "$(cd "${CCS_SCRATCH_ROOT}/1" && pwd -P)" ]
-	[ -d "${CCS_SCRATCH_ROOT}/1" ]
+	[[ "$(echo "$output" | cut -f1)" == tmp-* ]] || return 1
+	[[ "$(echo "$output" | cut -f2)" == "${CCS_SCRATCH_ROOT}/"* ]] || return 1
 }
 
-@test "tmp: 空の枠は使い回す" {
-	# 毎回新しいディレクトリを作ると trust ダイアログが毎回出る（design.md §4.4）。
+@test "tmp: 打つたびに違う id になる" {
 	run "$CCS_BIN" resolve tmp
-	[ "$(echo "$output" | cut -f1)" = 'tmp-1' ]
+	local _a=$output
 	run "$CCS_BIN" resolve tmp
-	[ "$(echo "$output" | cut -f1)" = 'tmp-1' ]
+	[ "$(echo "$_a" | cut -f1)" != "$(echo "$output" | cut -f1)" ]
 }
 
-@test "tmp: 使用中の枠は飛ばして次を取る" {
-	mkdir -p "${CCS_SCRATCH_ROOT}/1"
-	touch "${CCS_SCRATCH_ROOT}/1/inprogress.txt"
-
+@test "tmp: resolve は実体を作らない（副作用を持たせない）" {
+	# **様子を見るたびにディレクトリが増える道具にしない**（worktree と同じ）。
+	# 作って印を刻むのは ccs new のほう。
 	run "$CCS_BIN" resolve tmp
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | cut -f1)" = 'tmp-2' ]
+	[ ! -e "$(echo "$output" | cut -f2)" ]
+	[ -z "$(ls -A "$CCS_SCRATCH_ROOT" 2>/dev/null)" ]
 }
 
-@test "tmp: 隠しファイルだけでも使用中とみなす" {
-	# .git だけ残った枠を空と見なすと、前の作業の痕跡が次に漏れる。
-	mkdir -p "${CCS_SCRATCH_ROOT}/1/.git"
-
-	run "$CCS_BIN" resolve tmp
-	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | cut -f1)" = 'tmp-2' ]
-}
-
-@test "tmp: 全部埋まっていれば 1 で、片付け方を示す" {
+@test "tmp: 上限は「同時に生きている本数」で見る" {
+	# **数えるのは枠ではなくセッション**（#81 の読み替え）。ディレクトリが
+	# 残っているだけでは埋まらない ── そこに claude が居ないなら資源は
+	# 食っていない。
 	export CCS_SCRATCH_SLOTS=2
-	for i in 1 2; do
+	for i in a b c; do
 		mkdir -p "${CCS_SCRATCH_ROOT}/${i}"
 		touch "${CCS_SCRATCH_ROOT}/${i}/busy"
+	done
+
+	run "$CCS_BIN" resolve tmp
+	[ "$status" -eq 0 ]
+}
+
+@test "tmp: 生きている枠が上限に達したら 1 で、片付け方を示す" {
+	export CCS_SCRATCH_SLOTS=2
+	local _i=1
+	for i in a b; do
+		mkdir -p "${CCS_SCRATCH_ROOT}/${i}"
+		# レジストリに生きた項目を置く（自分自身の pid を使う）。
+		printf '{"pid":%d,"sessionId":"u%d","cwd":"%s","tmux":"cc/tmp-%s"}\n' \
+			"$$" "$_i" "$(cd "${CCS_SCRATCH_ROOT}/${i}" && pwd -P)" "$i" \
+			>"${CCS_SESSIONS_DIR}/1000${_i}.json"
+		_i=$((_i + 1))
 	done
 
 	run "$CCS_BIN" resolve tmp
@@ -240,12 +250,12 @@ ${CCS_TEST_TMP}/ghq/github.com/bob/dup"
 	[[ "$output" == *"CCS_SCRATCH_SLOTS"* ]] || return 1
 }
 
-@test "--tmp: tmp と同じ枠を取る" {
+@test "--tmp: tmp と同じものを発行する" {
 	# 正式な綴りはオプションのほう。リポジトリ名の名前空間に置かないため。
 	run "$CCS_BIN" resolve --tmp
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | cut -f1)" = 'tmp-1' ]
-	[ "$(echo "$output" | cut -f2)" = "$(cd "${CCS_SCRATCH_ROOT}/1" && pwd -P)" ]
+	[[ "$(echo "$output" | cut -f1)" == tmp-* ]] || return 1
+	[[ "$(echo "$output" | cut -f2)" == "${CCS_SCRATCH_ROOT}/"* ]] || return 1
 }
 
 @test "--tmp: <target> との同時指定は 2 で落ちる" {
@@ -257,7 +267,7 @@ ${CCS_TEST_TMP}/ghq/github.com/bob/dup"
 @test "--tmp: --json と併用できる" {
 	run bash -c "'$CCS_BIN' resolve --tmp --json | jq -r '.slug'"
 	[ "$status" -eq 0 ]
-	[ "$output" = 'tmp-1' ]
+	[[ "$output" == tmp-* ]] || return 1
 }
 
 @test "--tmp: 同名のリポジトリがあっても枠を取る" {
@@ -267,7 +277,7 @@ ${CCS_TEST_TMP}/ghq/github.com/bob/dup"
 
 	run "$CCS_BIN" resolve --tmp
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | cut -f1)" = 'tmp-1' ]
+	[[ "$(echo "$output" | cut -f1)" == tmp-* ]] || return 1
 }
 
 @test "tmp: 同名のリポジトリがあれば選ばずに落ちる" {
@@ -290,19 +300,22 @@ ${CCS_TEST_TMP}/ghq/github.com/bob/dup"
 
 	run "$CCS_BIN" resolve tmp
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | cut -f1)" = 'tmp-1' ]
+	[[ "$(echo "$output" | cut -f1)" == tmp-* ]] || return 1
 }
 
-@test "tmp: 枠の本数は CCS_SCRATCH_SLOTS で変えられる" {
-	export CCS_SCRATCH_SLOTS=3
-	for i in 1 2; do
-		mkdir -p "${CCS_SCRATCH_ROOT}/${i}"
-		touch "${CCS_SCRATCH_ROOT}/${i}/busy"
-	done
+@test "tmp: 同時に立てられる本数は CCS_SCRATCH_SLOTS で変えられる" {
+	export CCS_SCRATCH_SLOTS=1
+	mkdir -p "${CCS_SCRATCH_ROOT}/a"
+	printf '{"pid":%d,"sessionId":"u","cwd":"%s","tmux":"cc/tmp-a"}\n' \
+		"$$" "$(cd "${CCS_SCRATCH_ROOT}/a" && pwd -P)" \
+		>"${CCS_SESSIONS_DIR}/10001.json"
 
 	run "$CCS_BIN" resolve tmp
+	[ "$status" -eq 1 ]
+
+	export CCS_SCRATCH_SLOTS=2
+	run "$CCS_BIN" resolve tmp
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | cut -f1)" = 'tmp-3' ]
 }
 
 # --- 出力の形 --------------------------------------------------------------

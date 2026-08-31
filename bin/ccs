@@ -244,7 +244,17 @@ load_config
 #
 # **この固定枠そのものをやめる決定が出ている**（ADR-0001）。有限性は枠数
 # ではなく確実な後片付けで担保し、セッションごとに一意なディレクトリを配る。
-: "${CCS_SCRATCH_SLOTS:=8}"
+# 同時に立てられる使い捨て作業枠の本数（#81）。
+#
+# **「空き枠の本数」ではなく「同時に生きている本数」。** 枠番号で回していた
+# 頃は前者だったが、一意なディレクトリを発行するようになって「埋まる」状態
+# そのものが無くなった（I2b）。歯止めは残すが、意味を読み替えている。
+#
+# **20 は「いまローカルで無理なく捌ける数」であって、上限という仕組みへの
+# 信任ではない**（#81）。上限が要るのは、セッションがローカルの資源を
+# 取り合っているから ── 取り合わない場所で動かせるようになれば、この上限
+# そのものが要らなくなる可能性がある。
+: "${CCS_SCRATCH_SLOTS:=20}"
 
 # `ccs restore` が黙って拾う会話ログの古さの上限（日）。0 なら無制限。
 #
@@ -598,7 +608,7 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
     CCS_HUB_AUTOSTART  自動起動 on/login/off [既定: on]
     CCS_REMOTE_CONTROL Remote Control auto/on/off [既定: auto]
     CCS_PREFIX         tmux 名の接頭辞       [既定: cc/]
-    CCS_SCRATCH_SLOTS  使い捨て作業枠の本数  [既定: 8]
+    CCS_SCRATCH_SLOTS  同時に立てられる作業枠の本数 [既定: 20]
 
   いま効いている値と出どころは `ccs config` で見られる。
   一覧と意味は docs/configuration.md、hub の運用は docs/hub.md。
@@ -673,6 +683,9 @@ require_deps() {
 
 CCS_RESOLVED_PATH=''
 CCS_RESOLVED_SLUG=''
+# 使い捨て作業枠として解決したか（I2b）。**打ち方では判定しない** ──
+# `--tmp` でも予約語の `tmp` でも同じ場所に落ちるので、解決した側が立てる。
+CCS_RESOLVED_SCRATCH=''
 CCS_RESOLVED_WORKTREE_REPO=''
 CCS_RESOLVED_WORKTREE_BRANCH=''
 
@@ -1151,6 +1164,30 @@ mark_is_valid() {
 	is_uint "$(mark_field "$1" schema 2>/dev/null)"
 }
 
+# 印を書く。**`jq` に組み立てさせる** ── host 名にも slug にも `"` は入りうる。
+mark_write() {
+	_mw_dir=${1%/}
+	_mw_slug=$2
+	_mw_session=$3
+
+	# shellcheck disable=SC2016  # $... は jq の変数。展開させない
+	"$CCS_JQ_BIN" -n \
+		--argjson schema 1 \
+		--arg workspaceId "$(basename "$_mw_dir")" \
+		--arg issuedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+		--arg ccs "$(ccs_version_short)" \
+		--arg host "$(uname -n)" \
+		--arg by "${CLAUDE_CODE_SESSION_ID:-}" \
+		--arg issuedSlug "$_mw_slug" \
+		--arg issuedSessionId "$_mw_session" \
+		'{schema: $schema, workspaceId: $workspaceId, kind: "scratch",
+		  issuedAt: $issuedAt,
+		  issuedBy: {ccs: $ccs, host: $host,
+		             sessionId: (if $by == "" then null else $by end)},
+		  issuedSlug: $issuedSlug, issuedSessionId: $issuedSessionId}' \
+		>"$(mark_path "$_mw_dir")"
+}
+
 # ---------------------------------------------------------------------------
 
 dir_is_empty() {
@@ -1181,43 +1218,78 @@ dir_is_empty() {
 # セッションの有無まで見るのは、`ccs new tmp` が「新しい使い捨て」を求める
 # 指示だから。まだ何も書いていない作業中のセッションは中身が空なので、
 # ディレクトリだけを見ると、動いているセッションを掴んで返してしまう。
+# 使い捨て作業枠を 1 つ発行する（I2b、[ADR-0001] 決定 1、[ADR-0002] 決定 1）。
+#
+# **枠番号の総当たりをやめ、毎回一意なディレクトリを出す。** 番号で回して
+# いた頃は「枠が埋まる」状態そのものが歯止めだったが、それは**同じ場所を
+# 使い回していた副作用**であって、目的ではなかった。
+#
+# **上限は残す。意味を読み替える**（[#81] で決定）── 「空き枠の本数」から
+# 「**同時に生きている作業枠の本数**」へ。並列を増やしたいのは本当だが、
+# 無自覚に増えるのは別の話なので、歯止めそのものは残す。
+#
+# **ここでは作らない。** `ccs resolve --tmp` に副作用を持たせると、様子を
+# 見るたびにディレクトリが増える（worktree を `cmd_new` まで遅らせたのと
+# 同じ理由）。作って印を刻むのは `ensure_scratch`。
 resolve_as_scratch() {
-	mkdir -p "$CCS_SCRATCH_ROOT" ||
-		die "$EX_FAIL" "作業枠を作れません: ${CCS_SCRATCH_ROOT}"
+	_live=$(scratch_live_count)
+	if [ "$_live" -ge "$CCS_SCRATCH_SLOTS" ]; then
+		error_is 'scratch-full' "使い捨ての作業枠は同時に ${CCS_SCRATCH_SLOTS} 本までです（いま ${_live} 本）"
+		warn "ccs: 使い捨ての作業枠は同時に ${CCS_SCRATCH_SLOTS} 本までです（いま ${_live} 本）"
+		warn ''
+		warn '  使い終わったものを片付ける: ccs gc'
+		warn '  個別に畳む:                 ccs kill tmp-<id>'
+		warn ''
+		warn '本数を増やすなら CCS_SCRATCH_SLOTS。ただし同時に走る本数に上限が'
+		warn 'あること自体が、使い捨てセッションを増やしすぎないための歯止めです。'
+		exit "$EX_FAIL"
+	fi
 
-	_i=1
-	while [ "$_i" -le "$CCS_SCRATCH_SLOTS" ]; do
-		_slot="${CCS_SCRATCH_ROOT}/${_i}"
-
-		# **占有は 2 つの and ではなく or で見る。** tmux の名前は改名で
-		# 変わりうるので、それだけに頼ると稼働中の枠を横取りする（I1）。
-		# cwd の照合を足すぶん、今までより**厳しい側**にしか倒れない。
-		_slot_abs=$(abs_dir "$_slot" 2>/dev/null || printf '%s' "$_slot")
-		if tmux_session_exists "${CCS_PREFIX}tmp-${_i}" ||
-			live_ccs_registry_at "$_slot_abs" >/dev/null; then
-			_i=$((_i + 1))
-			continue
-		fi
-
-		if [ ! -e "$_slot" ] || dir_is_empty "$_slot"; then
-			mkdir -p "$_slot" || die "$EX_FAIL" "作業枠を作れません: ${_slot}"
-			CCS_RESOLVED_PATH=$(abs_dir "$_slot")
-			CCS_RESOLVED_SLUG="tmp-${_i}"
+	# **まだ誰も使っていない id を出す。** 衝突は事実上起きないが、
+	# 起きたときに黙って既存の枠を返すほうが害が大きい。
+	_try=0
+	while [ "$_try" -lt 10 ]; do
+		_wid=$(new_workspace_id)
+		[ -n "$_wid" ] || die "$EX_FAIL" '作業枠の id を発行できません'
+		if [ ! -e "${CCS_SCRATCH_ROOT}/${_wid}" ]; then
+			CCS_RESOLVED_PATH="${CCS_SCRATCH_ROOT}/${_wid}"
+			CCS_RESOLVED_SLUG="tmp-${_wid}"
+			CCS_RESOLVED_SCRATCH=1
 			return 0
 		fi
-
-		_i=$((_i + 1))
+		_try=$((_try + 1))
 	done
+	die "$EX_FAIL" '作業枠の id を発行できません（衝突が続きました）'
+}
 
-	error_is 'scratch-full' "使い捨ての作業枠が全部埋まっています（${CCS_SCRATCH_ROOT} に ${CCS_SCRATCH_SLOTS} 本）"
-	warn "ccs: 使い捨ての作業枠が全部埋まっています（${CCS_SCRATCH_ROOT} に ${CCS_SCRATCH_SLOTS} 本）"
-	warn ''
-	warn '  使い終わったものを片付ける: ccs gc'
-	warn '  個別に畳む:                 ccs kill tmp-<番号>'
-	warn ''
-	warn '枠を増やすなら CCS_SCRATCH_SLOTS。ただし枠が有限であること自体が'
-	warn '使い捨てセッションを増やしすぎないための歯止めです。'
-	exit "$EX_FAIL"
+# いま生きている使い捨て作業枠の本数。
+#
+# **数えるのは「枠」ではなく「セッション」**（[#81] の読み替え）。レジストリを
+# 舐めて、cwd が scratch root の直下にある生きた claude を数える ── 管轄外の
+# ものも数える。そこで動いている以上、資源は同じように食っている。
+scratch_live_count() {
+	_slc_root=$(abs_dir "$CCS_SCRATCH_ROOT" 2>/dev/null) || _slc_root=$CCS_SCRATCH_ROOT
+	_slc_n=0
+	for _slc_f in "$CCS_SESSIONS_DIR"/*.json; do
+		[ -e "$_slc_f" ] || continue
+		registry_is_live "$_slc_f" || continue
+		_slc_cwd=$(registry_field "$_slc_f" cwd)
+		[ -n "$_slc_cwd" ] || continue
+		_slc_cwd=$(abs_dir "$_slc_cwd" 2>/dev/null || printf '%s' "$_slc_cwd")
+		[ "$(dirname "$_slc_cwd")" = "$_slc_root" ] || continue
+		_slc_n=$((_slc_n + 1))
+	done
+	printf '%s' "$_slc_n"
+}
+
+# 発行した作業枠の実体を作り、印を刻む（I2b）。
+#
+# **順番は mkdir → 印 → trust → 起動**（[ADR-0002] 決定 4）。順番で辻褄を
+# 合わせる案は ADR で捨てている。
+ensure_scratch() {
+	mkdir -p "$1" || die "$EX_FAIL" "作業枠を作れません: $1"
+	mark_write "$1" "$2" "$3" ||
+		die "$EX_FAIL" "作業枠に印を書けません: $(mark_path "$1")"
 }
 
 # 予約語 `tmp` が ghq のリポジトリ名と衝突していないか。
@@ -1540,6 +1612,14 @@ is_uuid() {
 	[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) return 0 ;;
 	esac
 	return 1
+}
+
+# 使い捨て作業枠の `workspaceId` を 1 つ発行する（I2b）。
+#
+# **短い 16 進 8 桁。** ディレクトリ名にも slug にもそのまま乗るので、
+# 人が打てる長さであることが要る（`ccs attach tmp-3f9a2c1b`）。
+new_workspace_id() {
+	printf '%s' "$(new_uuid)" | cut -c1-8
 }
 
 new_uuid() {
@@ -1960,8 +2040,6 @@ cmd_new() {
 			"$CCS_RESOLVED_WORKTREE_BRANCH" "$_path"
 	fi
 
-	ensure_trust "$_path" "$_slug"
-
 	# **外から uuid を指定できる**（C4）。起動を待たずに、ハブ側が先にその
 	# 会話の行を作れる。
 	if [ -n "$_want_uuid" ]; then
@@ -1975,6 +2053,21 @@ cmd_new() {
 	else
 		_uuid=$(new_uuid)
 	fi
+
+	# **作業枠の実体はここで初めて作る**（I2b）。解決に副作用を持たせない
+	# ため（worktree と同じ理由）── `ccs resolve --tmp` を打つたびに
+	# ディレクトリが増えるのは、様子を見る道具として成り立たない。
+	#
+	# **順番は mkdir → 印 → trust → 起動**（ADR-0002 決定 4）。印には
+	# 発行時の uuid を書くので、uuid はここまでに決まっている必要がある。
+	if [ -n "$CCS_RESOLVED_SCRATCH" ]; then
+		ensure_scratch "$_path" "$_slug" "$_uuid"
+		_path=$(abs_dir "$_path")
+		_session="${CCS_PREFIX}${_slug}"
+	fi
+
+	ensure_trust "$_path" "$_slug"
+
 	_transcript=$(transcript_path "$_path" "$_uuid")
 
 	# claude が終了してもペインを残す（design.md §4.3）。残しておけば
@@ -3132,21 +3225,25 @@ pane_or_registry_cwd() {
 orphan_slots() {
 	[ -d "$CCS_SCRATCH_ROOT" ] || return 0
 
-	_i=1
-	while [ "$_i" -le "$CCS_SCRATCH_SLOTS" ]; do
-		_slot="${CCS_SCRATCH_ROOT}/${_i}"
+	# **枠番号で回さず、置き場所を舐める**（I2b）。発行が一意な id に
+	# なったので、番号の総当たりでは新しい枠に当たらない。**古い `1`〜`8`
+	# もそのまま拾える** ── ディレクトリ名を id として読むだけなので。
+	for _slot in "$CCS_SCRATCH_ROOT"/*; do
+		[ -d "$_slot" ] || continue
+
 		# **占有の判定は `resolve_as_scratch` と同じ or**（I1）。片方だけ
-		# 直すと、`ccs new --tmp` が使わない枠を `ccs gc` が消しに行く。
+		# 直すと、使われている枠を `ccs gc` が消しに行く。
 		_slot_abs=$(abs_dir "$_slot" 2>/dev/null || printf '%s' "$_slot")
-		if [ -d "$_slot" ] && ! tmux_session_exists "${CCS_PREFIX}tmp-${_i}" &&
-			! live_ccs_registry_at "$_slot_abs" >/dev/null; then
-			if dir_is_empty "$_slot"; then
-				printf 'empty\t%s\n' "$_slot"
-			else
-				printf 'used\t%s\n' "$_slot"
-			fi
+		if tmux_session_exists "${CCS_PREFIX}tmp-$(basename "$_slot")" ||
+			live_ccs_registry_at "$_slot_abs" >/dev/null; then
+			continue
 		fi
-		_i=$((_i + 1))
+
+		if dir_is_empty "$_slot"; then
+			printf 'empty\t%s\n' "$_slot"
+		else
+			printf 'used\t%s\n' "$_slot"
+		fi
 	done
 }
 
@@ -3867,18 +3964,38 @@ restore_candidates() {
 	# **ディレクトリが空でも候補にする。** 枠に何も書かない会話は珍しくない
 	# （外の道具だけを触るセッション）。空かどうかは会話が残っているかと関係が
 	# 無いので、見るのは会話ログのほう。
-	_i=1
-	while [ "$_i" -le "$CCS_SCRATCH_SLOTS" ]; do
-		_slug="tmp-${_i}"
-		if ! tmux_session_exists "${CCS_PREFIX}${_slug}"; then
-			_p=$(restore_abs_under "$CCS_SCRATCH_ROOT" "$_i")
-			if _u=$(restore_latest_in "$(transcript_dir_for "$_p")"); then
-				if restore_is_fresh "$(transcript_path "$_p" "$_u")"; then
-					printf '%s\t%s\t%s\n' "$_slug" "$_p" "$_u"
-				fi
+	# **枠そのものではなく、会話ログの置き場所を舐める**（I2b）。
+	#
+	# 発行が一意な id になったので、番号の総当たりでは新しい枠に当たらない。
+	# かといって枠のディレクトリを glob すると、**`ccs gc` が消したあとの枠を
+	# 拾えなくなる** ── 番号で回していた頃は「消えていても番号は分かる」ので
+	# 戻せたが、id は消えたら誰も知らない。
+	#
+	# **会話ログの置き場所なら残っている。** 名前は cwd の英数字以外を `-` に
+	# 潰したものなので、枠の置き場所からは**前向きに組み立てられる**
+	# （`transcript_dir_for` と同じ規則。逆は引けない）。id は英数字なので、
+	# 接頭辞を剥がせばそのまま取れる ── 古い `1`〜`8` も同じ形で拾える。
+	_enc_root=$(printf '%s' "$(restore_abs_under "$CCS_SCRATCH_ROOT" '')" |
+		sed 's|/$||' | sed 's/[^A-Za-z0-9]/-/g')
+	for _sd in "$CCS_PROJECTS_DIR/${_enc_root}-"*; do
+		[ -d "$_sd" ] || continue
+		_id=$(basename "$_sd")
+		_id=${_id#"${_enc_root}-"}
+		# 枠の直下だけ。下位ディレクトリの会話ログは別のものになる。
+		case $_id in
+		*-*) continue ;;
+		esac
+		[ -n "$_id" ] || continue
+
+		_slug="tmp-${_id}"
+		tmux_session_exists "${CCS_PREFIX}${_slug}" && continue
+
+		_p=$(restore_abs_under "$CCS_SCRATCH_ROOT" "$_id")
+		if _u=$(restore_latest_in "$(transcript_dir_for "$_p")"); then
+			if restore_is_fresh "$(transcript_path "$_p" "$_u")"; then
+				printf '%s\t%s\t%s\n' "$_slug" "$_p" "$_u"
 			fi
 		fi
-		_i=$((_i + 1))
 	done
 
 	# 3. tmux セッションごと消えた worktree セッション。
@@ -3933,15 +4050,19 @@ restore_candidates() {
 restore_resolve_one() {
 	case $1 in
 	tmp | --tmp)
-		die "$EX_USAGE" "restore: tmp は新しい枠を取る綴りです。戻す枠は番号まで指定してください: ccs restore tmp-1"
+		die "$EX_USAGE" "restore: tmp は新しい枠を取る綴りです。戻す枠は id まで指定してください: ccs restore tmp-<id>"
 		;;
 	tmp-*)
-		# **枠は `resolve_target` に通さない。** あちらは「空いている枠を取る」
-		# ので、名指しした番号とは違う枠を返す。
+		# **枠は `resolve_target` に通さない。** あちらは**新しい枠を発行する**
+		# ので、名指ししたものとは違う場所を返す。
+		#
+		# **id の形は見ない**（I2b）。番号だった頃は `is_uint` で弾けたが、
+		# 発行が一意な id になったので「ディレクトリ名として使えること」しか
+		# 言えない。実在するかは、このあとの検査（`restore_reject_reason`）が
+		# 見るので、ここで先回りしない。
 		_n=${1#tmp-}
-		if ! is_uint "$_n" || [ "$_n" -lt 1 ]; then
-			die "$EX_USAGE" "restore: 作業枠は tmp-<番号> の形で指定してください: $1"
-		fi
+		[ -n "$_n" ] ||
+			die "$EX_USAGE" "restore: 作業枠は tmp-<id> の形で指定してください: $1"
 		CCS_RESOLVED_SLUG=$1
 		CCS_RESOLVED_PATH=$(restore_abs_under "$CCS_SCRATCH_ROOT" "$_n")
 		;;

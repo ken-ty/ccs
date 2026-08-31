@@ -25,14 +25,17 @@ teardown() {
 }
 
 @test "restore: tmp は枠を取る綴りなので受け付けない" {
-	# `tmp` は「空いている枠を取る」指示。戻す先は番号まで要る。
+	# `tmp` は「新しい枠を発行する」指示。戻す先は id まで要る。
 	run "$CCS_BIN" restore tmp
 	[ "$status" -eq 2 ]
-	[[ "$stderr$output" == *"tmp-1"* ]] || return 1
+	[[ "$stderr$output" == *"tmp-<id>"* ]] || return 1
 }
 
-@test "restore: tmp-<番号> でない枠の綴りは断る" {
-	run "$CCS_BIN" restore tmp-abc
+@test "restore: id の無い tmp- は断る" {
+	# **id の形そのものは見ない**（I2b）。番号だった頃は数字かどうかで
+	# 弾けたが、発行が一意な id になったので「空でないこと」しか言えない。
+	# 実在するかは、このあとの検査が見る。
+	run "$CCS_BIN" restore tmp-
 	[ "$status" -eq 2 ]
 }
 
