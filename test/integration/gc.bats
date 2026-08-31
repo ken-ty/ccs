@@ -114,13 +114,16 @@ _new() {
 	[ "$status" -ne 0 ]
 }
 
-@test "gc --yes: 空の枠を消す" {
-	mkdir -p "${CCS_SCRATCH_ROOT}/1" "${CCS_SCRATCH_ROOT}/2"
+@test "gc --yes: 発行した枠が空なら消す" {
+	# **消すのは印のあるものだけ**（I3a、ADR-0002 決定 7）。印の無い
+	# ディレクトリは素性が分からないので触らない。
+	_slot_mark "${CCS_SCRATCH_ROOT}/aaaa1111"
+	_slot_mark "${CCS_SCRATCH_ROOT}/bbbb2222"
 
 	run "$CCS_BIN" gc --yes
 	[ "$status" -eq 0 ]
-	[ ! -d "${CCS_SCRATCH_ROOT}/1" ]
-	[ ! -d "${CCS_SCRATCH_ROOT}/2" ]
+	[ ! -d "${CCS_SCRATCH_ROOT}/aaaa1111" ]
+	[ ! -d "${CCS_SCRATCH_ROOT}/bbbb2222" ]
 }
 
 @test "gc --yes: 使用中の枠は触らない" {
@@ -150,10 +153,10 @@ _new() {
 	[ "$(cat "${CCS_SCRATCH_ROOT}/1/notes.md")" = 'たいせつな作業' ]
 }
 
-@test "gc: 中身のある枠は報告する" {
-	# 消さないが、枠を塞いでいることは伝える。
-	mkdir -p "${CCS_SCRATCH_ROOT}/1"
-	touch "${CCS_SCRATCH_ROOT}/1/leftover"
+@test "gc: 発行した枠に中身があれば報告する" {
+	# 消さないが、残っていることは伝える。
+	_slot_mark "${CCS_SCRATCH_ROOT}/aaaa1111"
+	touch "${CCS_SCRATCH_ROOT}/aaaa1111/leftover"
 
 	run "$CCS_BIN" gc
 	[ "$status" -eq 0 ]
@@ -684,4 +687,79 @@ _wt_commit2() {
 	# **ブランチも消える。** 上流に merge 済みなので git branch -d が通る。
 	run git -C "$CCS_TEST_REPO" rev-parse --verify sq
 	[ "$status" -ne 0 ]
+}
+
+# --- 作業枠を素性で 4 つに分ける（I3a、ADR-0002 決定 7） --------------------
+#
+# 「空かどうか」だけで見ていた頃は、**人が手で作った空ディレクトリまで消して
+# いた** ── `ccs` が発行したものではないので、そこに何が置かれるかを `ccs` は
+# 知らない。**印を失っても安全側に倒れる**（決定 7）── 消えたら「`ccs` の
+# ものではない」と見えるだけで、勝手に消されることも、勝手に信頼されることも
+# 無い。
+
+_slot_mark() { # <dir> [workspaceId] [kind]
+	local _d=$1
+	mkdir -p "$_d"
+	printf '{"schema":1,"workspaceId":"%s","kind":"%s","issuedAt":"2026-08-31T00:00:00Z","issuedSlug":"tmp-%s"}\n' \
+		"${2:-$(basename "$_d")}" "${3:-scratch}" "$(basename "$_d")" >"${_d}/.ccs.json"
+}
+
+@test "gc: 印だけの枠は消す対象" {
+	_slot_mark "${CCS_SCRATCH_ROOT}/aaaa1111"
+
+	run --separate-stderr "$CCS_BIN" gc
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"空のまま残った作業枠"* ]] || return 1
+	[[ "$output" == *"aaaa1111"* ]] || return 1
+}
+
+@test "gc: 印と中身がある枠は報告だけで、素性を添える" {
+	# **報告に issuedAt / issuedSlug を添える**（決定 7）。中を見る前に
+	# 見当が付く。
+	_slot_mark "${CCS_SCRATCH_ROOT}/aaaa1111"
+	printf 'work\n' >"${CCS_SCRATCH_ROOT}/aaaa1111/note.txt"
+
+	run --separate-stderr "$CCS_BIN" gc
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"中身が残っている作業枠"* ]] || return 1
+	[[ "$output" == *"2026-08-31T00:00:00Z"* ]] || return 1
+	[[ "$output" == *"tmp-aaaa1111"* ]] || return 1
+}
+
+@test "gc --yes: 印の無い空ディレクトリは消さない" {
+	# **ここが本体。** 以前は「空なら消す」だったので、人が手で作った
+	# 空ディレクトリを消していた。
+	mkdir -p "${CCS_SCRATCH_ROOT}/handmade"
+
+	run --separate-stderr "$CCS_BIN" gc --yes
+	[ "$status" -eq 0 ]
+	[ -d "${CCS_SCRATCH_ROOT}/handmade" ]
+}
+
+@test "gc: 印の無いディレクトリは素性不明として報告する" {
+	mkdir -p "${CCS_SCRATCH_ROOT}/handmade"
+
+	run --separate-stderr "$CCS_BIN" gc
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"素性の分からないディレクトリ"* ]] || return 1
+	[[ "$output" == *"handmade"* ]] || return 1
+	[[ "$output" != *"空のまま残った作業枠"* ]] || return 1
+}
+
+@test "gc: 壊れた印も素性不明として扱う" {
+	# **印を失っても安全側に倒れる**（決定 7）。
+	_slot_mark "${CCS_SCRATCH_ROOT}/aaaa1111" 'someone-else'
+
+	run --separate-stderr "$CCS_BIN" gc --yes
+	[ "$status" -eq 0 ]
+	[ -d "${CCS_SCRATCH_ROOT}/aaaa1111" ]
+	[[ "$output" == *"素性の分からないディレクトリ"* ]] || return 1
+}
+
+@test "gc: kind が違う印も素性不明として扱う" {
+	_slot_mark "${CCS_SCRATCH_ROOT}/aaaa1111" 'aaaa1111' 'something-else'
+
+	run --separate-stderr "$CCS_BIN" gc --yes
+	[ "$status" -eq 0 ]
+	[ -d "${CCS_SCRATCH_ROOT}/aaaa1111" ]
 }
