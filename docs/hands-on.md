@@ -367,7 +367,7 @@ ccs new --tmp
 **期待される出力**（stderr に 1 行、stdout に JSON）:
 
 ```
-ccs: 空の使い捨て作業枠なので信頼済みにしました: /Users/apple/.cc-scratch/1
+ccs: ccs が発行した作業枠なので信頼済みにしました: /Users/apple/.cc-scratch/3f9a2c1b
 {"slug":"tmp-1","sessionId":"…","path":"/Users/apple/.cc-scratch/1",…,"created":true}
 ```
 

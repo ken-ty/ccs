@@ -335,3 +335,65 @@ _mark() { # <dir> [workspaceId] [kind] [schema]
 	[ -f "${CCS_SCRATCH_ROOT}/aaaa1111/note.txt" ]
 	[ -f "${CCS_SCRATCH_ROOT}/aaaa1111/.ccs.json" ]
 }
+
+# --- 印が無ければ自動承認しない（I2c） -------------------------------------
+#
+# **守っていたのは「空であること」ではない。** ADR-0001 が守ろうとしたのは
+# 「`ccs` が作ったもので、まだ誰も何も置いていない」ことで、「空」はそれを
+# 外から確かめるための代理指標だった。印が入った以上、代理指標を直接の条件に
+# 置き換える（ADR-0002 決定 4）。
+#
+# **判定は今までより厳しくなる。** 安全側への変化なので受け入れる。
+
+@test "trust: 印の無い空ディレクトリは自動承認しない" {
+	# **ccs が発行したものではないので、そこに何が置かれるかを ccs は知らない。**
+	mkdir -p "${CCS_SCRATCH_ROOT}/handmade"
+
+	run --separate-stderr "$CCS_BIN" new "${CCS_SCRATCH_ROOT}/handmade"
+	[ "$status" -eq 0 ]
+	[[ "$stderr" != *"信頼済みにしました"* ]] || return 1
+	[[ "$stderr" == *"まだ信頼されていません"* ]] || return 1
+}
+
+@test "trust: 印があれば自動承認する" {
+	_mark "${CCS_SCRATCH_ROOT}/aaaa1111"
+
+	run --separate-stderr "$CCS_BIN" new "${CCS_SCRATCH_ROOT}/aaaa1111"
+	[ "$status" -eq 0 ]
+	[[ "$stderr" == *"信頼済みにしました"* ]] || return 1
+}
+
+@test "trust: kind が違う印では自動承認しない" {
+	_mark "${CCS_SCRATCH_ROOT}/aaaa1111" 'aaaa1111' 'something-else'
+
+	run --separate-stderr "$CCS_BIN" new "${CCS_SCRATCH_ROOT}/aaaa1111"
+	[ "$status" -eq 0 ]
+	[[ "$stderr" != *"信頼済みにしました"* ]] || return 1
+}
+
+@test "trust: workspaceId がディレクトリ名と違えば自動承認しない" {
+	# **素性は「そこと結びついていること」で決まる。** 印ごとコピーされた
+	# ディレクトリが、元のものを名乗れてはいけない。
+	_mark "${CCS_SCRATCH_ROOT}/aaaa1111" 'someone-else'
+
+	run --separate-stderr "$CCS_BIN" new "${CCS_SCRATCH_ROOT}/aaaa1111"
+	[ "$status" -eq 0 ]
+	[[ "$stderr" != *"信頼済みにしました"* ]] || return 1
+}
+
+@test "trust: 印のほかに中身があれば自動承認しない" {
+	_mark "${CCS_SCRATCH_ROOT}/aaaa1111"
+	printf 'code\n' >"${CCS_SCRATCH_ROOT}/aaaa1111/main.py"
+
+	run --separate-stderr "$CCS_BIN" new "${CCS_SCRATCH_ROOT}/aaaa1111"
+	[ "$status" -eq 0 ]
+	[[ "$stderr" != *"信頼済みにしました"* ]] || return 1
+}
+
+@test "trust: 枠の外の空ディレクトリは今までどおり承認しない" {
+	mkdir -p "${CCS_TEST_TMP}/elsewhere"
+
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/elsewhere"
+	[ "$status" -eq 0 ]
+	[[ "$stderr" != *"信頼済みにしました"* ]] || return 1
+}

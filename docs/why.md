@@ -112,7 +112,7 @@ UUID・作業ディレクトリ・セッション名を毎回自分で決める�
 
 ```console
 $ ccs new --tmp
-ccs: 空の使い捨て作業枠なので信頼済みにしました: /Users/apple/.cc-scratch/8
+ccs: ccs が発行した作業枠なので信頼済みにしました: /Users/apple/.cc-scratch/2e60932e
 {"slug":"tmp-8","sessionId":"2e60932e-…","path":"/Users/apple/.cc-scratch/8",
  "tmux":"cc/tmp-8","transcript":"…/2e60932e-….jsonl","created":true,"running":true}
 ```
