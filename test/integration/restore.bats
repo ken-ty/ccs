@@ -316,14 +316,14 @@ _wipe_session() {
 	[ "$status" -eq 0 ]
 	id=$(printf '%s' "$output" | jq -r '.sessionId')
 
-	_wipe_session 'x01@topic'
+	_wipe_session 'x01--topic'
 
 	run "$CCS_BIN" restore --yes
 	[ "$status" -eq 0 ]
-	[[ "$output" == *'x01@topic'* ]] || return 1
+	[[ "$output" == *'x01--topic'* ]] || return 1
 
 	run --separate-stderr "$CCS_BIN" ls --json
-	[ "$(printf '%s' "$output" | jq -r '.[0].slug')" = 'x01@topic' ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].slug')" = 'x01--topic' ]
 	[ "$(printf '%s' "$output" | jq -r '.[0].sessionId')" = "$id" ]
 }
 
