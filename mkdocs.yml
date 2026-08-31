@@ -83,3 +83,4 @@ nav:
       - 'ADR-0001: 使い捨て作業枠の同一性': adr/0001-scratch-workspace-identity.md
       - 'ADR-0002: セッションの同一性': adr/0002-session-identity.md
       - 'ADR-0003: worktree の置き場所': adr/0003-worktree-under-repo.md
+      - 'ADR-0004: 作業枠の成果物の昇格': adr/0004-scratch-promotion.md
