@@ -127,11 +127,13 @@ _new() {
 	run --separate-stderr "$CCS_BIN" new tmp
 	[ "$status" -eq 0 ]
 	_path=$(echo "$output" | jq -r '.path')
+	local _slug
+	_slug=$(echo "$output" | jq -r '.slug')
 
 	run "$CCS_BIN" gc --yes
 	[ "$status" -eq 0 ]
 	[ -d "$_path" ]
-	ccs_tmux has-session -t '=cc/tmp-1'
+	ccs_tmux has-session -t "=cc/${_slug}"
 }
 
 # --- 中身のある枠は消さない ------------------------------------------------
@@ -228,18 +230,20 @@ _new() {
 	export CCS_SCRATCH_SLOTS=1
 	run --separate-stderr "$CCS_BIN" new tmp
 	[ "$status" -eq 0 ]
+	local _slug
+	_slug=$(echo "$output" | jq -r '.slug')
 
-	# 枠が 1 本しかないので、次は取れない
+	# 同時に 1 本までなので、次は取れない
 	run --separate-stderr "$CCS_BIN" new tmp
 	[ "$status" -eq 1 ]
 
-	ccs_kill_claude_of tmp-1
+	ccs_kill_claude_of "$_slug"
 	run "$CCS_BIN" gc --yes
 	[ "$status" -eq 0 ]
 
 	run --separate-stderr "$CCS_BIN" new tmp
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | jq -r '.slug')" = 'tmp-1' ]
+	[[ "$(echo "$output" | jq -r '.slug')" == tmp-* ]] || return 1
 }
 
 # --- worktree（W3、ADR-0003 決定 7）----------------------------------------

@@ -117,12 +117,13 @@ teardown() {
 	# 動いているセッションを掴んで返してしまう。
 	run --separate-stderr "$CCS_BIN" new tmp
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | jq -r '.slug')" = 'tmp-1' ]
+	local _first_slug
+	_first_slug=$(echo "$output" | jq -r '.slug')
 	_first=$(echo "$output" | jq -r '.sessionId')
 
 	run --separate-stderr "$CCS_BIN" new tmp
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | jq -r '.slug')" = 'tmp-2' ]
+	[ "$(echo "$output" | jq -r '.slug')" != "$_first_slug" ]
 	[ "$(echo "$output" | jq -r '.created')" = 'true' ]
 	[ "$(echo "$output" | jq -r '.sessionId')" != "$_first" ]
 }

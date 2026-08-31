@@ -35,20 +35,19 @@ _rename() {
 	ccs_tmux rename-session -t "=${CCS_PREFIX:-cc/}$1" "${CCS_PREFIX:-cc/}$2"
 }
 
-@test "new --tmp: 改名された枠を横取りしない" {
+@test "new --tmp: 改名された枠は本数に数える" {
+	# **枠は使い回さない**（I2b）ので、横取りではなく「本数の数え上げ」に
+	# 効く。名前が変わっても cwd は変わらないので、生きている 1 本と数える。
+	export CCS_SCRATCH_SLOTS=1
 	run --separate-stderr "$CCS_BIN" new --tmp
 	[ "$status" -eq 0 ]
-	local _first=$output
-	[ "$(printf '%s' "$_first" | jq -r '.slug')" = 'tmp-1' ]
+	local _slug
+	_slug=$(printf '%s' "$output" | jq -r '.slug')
 
-	_rename tmp-1 'わかりやすい名前'
+	_rename "$_slug" 'わかりやすい名前'
 
 	run --separate-stderr "$CCS_BIN" new --tmp
-	[ "$status" -eq 0 ]
-	# **枠 1 は使われている。** 名前が変わっても cwd は変わらない。
-	[ "$(printf '%s' "$output" | jq -r '.slug')" = 'tmp-2' ]
-	[ "$(printf '%s' "$output" | jq -r '.sessionId')" \
-		!= "$(printf '%s' "$_first" | jq -r '.sessionId')" ]
+	[ "$status" -eq 1 ]
 }
 
 @test "new <path>: 改名されていても 2 本目を立てない" {
@@ -78,15 +77,19 @@ _rename() {
 @test "gc --yes: 改名された枠を空きとして消さない" {
 	# **ここは実際に消える経路。** 空の枠は報告ではなく削除の対象なので、
 	# 名前で当てていると**稼働中のセッションの足元のディレクトリを消す**。
-	"$CCS_BIN" new --tmp >/dev/null
-	[ -d "${CCS_SCRATCH_ROOT}/1" ]
+	run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 0 ]
+	local _slug _path
+	_slug=$(printf '%s' "$output" | jq -r '.slug')
+	_path=$(printf '%s' "$output" | jq -r '.path')
+	[ -d "$_path" ]
 
-	_rename tmp-1 'renamed'
+	_rename "$_slug" 'renamed'
 
 	run --separate-stderr "$CCS_BIN" gc --yes
 	[ "$status" -eq 0 ]
-	[ -d "${CCS_SCRATCH_ROOT}/1" ]
-	[[ "$output" != *"${CCS_SCRATCH_ROOT}/1"* ]] || return 1
+	[ -d "$_path" ]
+	[[ "$output" != *"$_path"* ]] || return 1
 
 	# **セッション自体も畳まれていない。** 「止まったペイン」の判定も
 	# 名前で当てているので、生きている相手を止まったと読むと畳みに行く。
@@ -94,10 +97,10 @@ _rename() {
 	[ "$(ccs_registry_count)" -eq 1 ]
 }
 
-@test "new --tmp: 枠が空いていれば今までどおり 1 番から使う" {
+@test "new --tmp: 本数に空きがあれば発行できる" {
 	run --separate-stderr "$CCS_BIN" new --tmp
 	[ "$status" -eq 0 ]
-	[ "$(printf '%s' "$output" | jq -r '.slug')" = 'tmp-1' ]
+	[[ "$(printf '%s' "$output" | jq -r '.slug')" == tmp-* ]] || return 1
 }
 
 @test "new <path>: 管轄外のセッションが居ても断らない" {
@@ -141,7 +144,7 @@ _rename() {
 	local _id
 	_id=$(printf '%s' "$output" | jq -r '.sessionId')
 
-	_rename tmp-1 'renamed'
+	_rename "$(printf '%s' "$output" | jq -r '.slug')" 'renamed'
 
 	run --separate-stderr "$CCS_BIN" ls --json
 	[ "$status" -eq 0 ]
@@ -149,13 +152,14 @@ _rename() {
 	[ "$(printf '%s' "$output" | jq -r '.[0].status')" != 'stopped' ]
 	# **sessionId も cwd も、レジストリから引けている。**
 	[ "$(printf '%s' "$output" | jq -r '.[0].sessionId')" = "$_id" ]
-	[ "$(printf '%s' "$output" | jq -r '.[0].path')" = "$(cd "${CCS_SCRATCH_ROOT}/1" && pwd -P)" ]
+	[[ "$(printf '%s' "$output" | jq -r '.[0].path')" == "$(cd "$CCS_SCRATCH_ROOT" && pwd -P)/"* ]] || return 1
 }
 
 @test "ls -l: 改名されても pid が埋まる" {
 	# **pid が `-` だと RSS の列も落ちる。** 盤面としての情報量が減る。
-	"$CCS_BIN" new --tmp >/dev/null
-	_rename tmp-1 'renamed'
+	run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 0 ]
+	_rename "$(printf '%s' "$output" | jq -r '.slug')" 'renamed'
 
 	run --separate-stderr "$CCS_BIN" ls -l --json
 	[ "$status" -eq 0 ]
@@ -165,8 +169,9 @@ _rename() {
 @test "agents: 改名されたセッションを二重に出さない" {
 	# **管轄下として 1 行だけ。** レジストリの tmux 欄は `cc/` のままなので
 	# 管轄外の行には落ちない ── ここが崩れると同じ会話が 2 行に見える。
-	"$CCS_BIN" new --tmp >/dev/null
-	_rename tmp-1 'renamed'
+	run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 0 ]
+	_rename "$(printf '%s' "$output" | jq -r '.slug')" 'renamed'
 
 	run --separate-stderr "$CCS_BIN" agents --json
 	[ "$status" -eq 0 ]

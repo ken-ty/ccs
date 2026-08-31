@@ -298,16 +298,24 @@ _pick() {
 	[ "$(echo "$_out2" | jq -r '.sessionId')" != "$_first" ]
 }
 
-@test "kill tmp-N で作業枠が空く" {
+@test "kill tmp-<id> で作業枠の本数が空く" {
+	# **枠は使い回さない**（I2b）ので、畳んで空くのは「同時に立てられる
+	# 本数」のほう。id は毎回変わる。
+	export CCS_SCRATCH_SLOTS=1
 	run --separate-stderr "$CCS_BIN" new tmp
-	[ "$(echo "$output" | jq -r '.slug')" = 'tmp-1' ]
+	[ "$status" -eq 0 ]
+	local _slug
+	_slug=$(echo "$output" | jq -r '.slug')
 
-	run "$CCS_BIN" kill tmp-1
+	run --separate-stderr "$CCS_BIN" new tmp
+	[ "$status" -eq 1 ]
+
+	run "$CCS_BIN" kill "$_slug"
 	[ "$status" -eq 0 ]
 
 	run --separate-stderr "$CCS_BIN" new tmp
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | jq -r '.slug')" = 'tmp-1' ]
+	[ "$(echo "$output" | jq -r '.slug')" != "$_slug" ]
 }
 
 # --- kill は worktree を消さない（W3、ADR-0003 決定 7）----------------------

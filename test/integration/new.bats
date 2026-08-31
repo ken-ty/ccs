@@ -162,26 +162,39 @@ teardown() {
 
 # --- 使い捨て枠 -------------------------------------------------------------
 
-@test "new tmp: 作業枠に立てて slug は tmp-1" {
+@test "new tmp: 作業枠に立てて slug は tmp-<id>" {
 	run --separate-stderr "$CCS_BIN" new tmp
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | jq -r '.slug')" = 'tmp-1' ]
-	ccs_tmux has-session -t '=cc/tmp-1'
+	local _slug
+	_slug=$(echo "$output" | jq -r '.slug')
+	[[ "$_slug" == tmp-* ]] || return 1
+	ccs_tmux has-session -t "=cc/${_slug}"
+
+	# **印が刻まれている**（I2b）。ディレクトリを見れば素性が分かる。
+	local _p
+	_p=$(echo "$output" | jq -r '.path')
+	[ "$(jq -r '.kind' "${_p}/.ccs.json")" = 'scratch' ]
+	[ "$(jq -r '.workspaceId' "${_p}/.ccs.json")" = "$(basename "$_p")" ]
+	[ "$(jq -r '.issuedSlug' "${_p}/.ccs.json")" = "$_slug" ]
+	[ "$(jq -r '.issuedSessionId' "${_p}/.ccs.json")" = "$(echo "$output" | jq -r '.sessionId')" ]
 }
 
 @test "new --tmp: 予約語と同じ結果になる" {
 	run --separate-stderr "$CCS_BIN" new --tmp
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | jq -r '.slug')" = 'tmp-1' ]
-	ccs_tmux has-session -t '=cc/tmp-1'
+	local _slug
+	_slug=$(echo "$output" | jq -r '.slug')
+	[[ "$_slug" == tmp-* ]] || return 1
+	ccs_tmux has-session -t "=cc/${_slug}"
 }
 
 @test "new --tmp: 初期プロンプトを渡せる" {
 	# `--tmp` と `--` の並びを取り違えていないか。
 	run --separate-stderr "$CCS_BIN" new --tmp -- 'hello'
 	[ "$status" -eq 0 ]
-	[ "$(echo "$output" | jq -r '.slug')" = 'tmp-1' ]
-	ccs_tmux list-panes -t '=cc/tmp-1' -F '#{pane_start_command}' | grep -q 'hello'
+	local _slug
+	_slug=$(echo "$output" | jq -r '.slug')
+	ccs_tmux list-panes -t "=cc/${_slug}" -F '#{pane_start_command}' | grep -q 'hello'
 }
 
 @test "new --tmp: <target> との同時指定は 2 で落ちる" {

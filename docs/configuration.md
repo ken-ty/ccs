@@ -40,7 +40,7 @@ $ CCS_HUB_SLUG=試作 ccs hub status   # この 1 回だけ別の hub を見る
 CCS_HUB_SLUG=orchestrator     # hub という名前のリポジトリを持っているので変えた
 CCS_HUB_HOME=~/work/hub       # 先頭の ~/ はホームに展開される
 CCS_HUB_AUTOSTART=login       # ログイン時だけ立てる
-CCS_SCRATCH_SLOTS=4           # 使い捨て枠は 4 本で足りる
+CCS_SCRATCH_SLOTS=4           # 同時に立てる使い捨て枠は 4 本で足りる
 ```
 
 - `KEY=VALUE` を 1 行に 1 つ。前後の空白は無視する
@@ -66,7 +66,7 @@ CCS_SCRATCH_SLOTS=4           # 使い捨て枠は 4 本で足りる
 | `CCS_REMOTE_CONTROL` | `auto` | Remote Control を使わない環境では `off`、全セッションに付けたいなら `on` |
 | `CCS_PREFIX` | `cc/` | 既に `cc/` を別の用途で使っているとき |
 | `CCS_SCRATCH_ROOT` | `~/.cc-scratch` | 使い捨て作業枠の置き場所 |
-| `CCS_SCRATCH_SLOTS` | `8` | 使い捨て枠の本数。**有限であること自体が歯止め** |
+| `CCS_SCRATCH_SLOTS` | `20` | **同時に立てられる**使い捨て枠の本数（[#81](https://github.com/ken-ty/ccs/issues/81)）。「空き枠の本数」ではなく「いま生きている本数」── 枠は発行のたびに一意なので、埋まる状態そのものが無い（I2b）。**20 は「いまローカルで無理なく捌ける数」であって、上限という仕組みへの信任ではない** |
 | `CCS_RESTORE_MAX_AGE` | `7` | `ccs restore` が黙って拾う会話ログの古さの上限（日）。`0` で無制限。**列挙にだけ効く**（名指しは古くても戻す） |
 | `CCS_RESTORE_LAST_WINDOW` | `300` | `ccs restore --last` が「一緒に落ちた組」とみなす幅（秒）。**停止は一瞬ではない**（実測で 13 本が 45 秒ばらけた）。広げると手で畳んだものを巻き込み、狭めると取りこぼす |
 | `CCS_RESTORE_BOOT_EPOCH` | （空） | 起動時刻（epoch 秒）。空なら OS に訊く（`kern.boottime` / `/proc/stat`）。**読めない環境のための逃げ道**であり、テストが再起動を模す差し替え点でもある |
