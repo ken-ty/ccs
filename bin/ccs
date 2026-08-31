@@ -3873,8 +3873,31 @@ restore_latest_in() {
 # あり、デスクトップから開いたセッションには無かった。**アプリ側の実装に
 # 依存した判定なので、外れたら「候補に出ない」side に倒れる** ── 黙って
 # 知らない会話を立てるのではなく、名指しを求める形で失敗する。
+# その会話ログが `ccs` の立てたセッションのものか（I3b）。
+#
+# **これは印ではなく「痕跡」。** ghq 配下とリポジトリの作業ツリーには印を
+# 置かないと決めている（[ADR-0002](docs/adr/0002-session-identity.md) 決定 5
+# ── `.ccs.json` は `git status` に出て、コミットされ得て、clean 判定を
+# 壊す）。だから**印ベースには置き換えられない**。名前が付いていたことの
+# 痕跡を読むしかない。
+#
+# `ccs new` は `claude -n <slug>` を渡すので、会話ログの 1 行目に
+# `{"type":"custom-title","customTitle":"<slug>"}` が来る。アプリや VS Code
+# から開いたセッションは名前が自動で決まるので、この行が先頭に来ない。
+#
+# **`custom-title` を含むかどうかでは足りない**（I3b で厳しくした）。それだと
+# **`ccs` 以外が `-n` を付けて起動したセッションも通る**。`customTitle` の値が
+# **`ccs` がそのパスに対して計算する slug と一致するか**まで見る ── slug は
+# 決定的に計算できるので、一致すれば `ccs` が立てたものとほぼ断定できる。
+#
+# **外れるときは「候補に出さない」側に倒れる。** リポジトリ名の曖昧さ解消で
+# slug が変わっていれば拾えなくなるが、それは名指しで戻せる。
 restore_started_by_ccs() {
-	head -c 8192 "$1" 2>/dev/null | head -1 | grep -q 'custom-title'
+	_rsc_title=$(head -c 8192 "$1" 2>/dev/null | head -1 |
+		"$CCS_JQ_BIN" -r 'select(.type == "custom-title") | .customTitle // empty' \
+			2>/dev/null) || return 1
+	[ -n "$_rsc_title" ] || return 1
+	[ "$_rsc_title" = "$2" ]
 }
 
 # 直近 CCS_RESTORE_MAX_AGE 日に触られた会話ログか。0 なら無制限。
@@ -4065,6 +4088,17 @@ restore_candidates() {
 		tmux_session_exists "${CCS_PREFIX}${_slug}" && continue
 
 		_p=$(restore_abs_under "$CCS_SCRATCH_ROOT" "$_id")
+
+		# **ディレクトリが在るなら、印まで見る**（I3b）。scratch root の
+		# 直下にあるだけでは `ccs` が発行したものとは言えない ── 人が手で
+		# 作ったディレクトリで会話していれば、そこも候補に出てしまう。
+		#
+		# **消えている場合は素性を問わない。** 印はディレクトリと一緒に
+		# 消えるので、そこを疑うと `ccs gc` のあとに戻せなくなる（I2b で
+		# わざわざ拾えるようにしたところ）。
+		if [ -d "$_p" ] && ! mark_is_valid "$_p"; then
+			continue
+		fi
 		if _u=$(restore_latest_in "$(transcript_dir_for "$_p")"); then
 			if restore_is_fresh "$(transcript_path "$_p" "$_u")"; then
 				printf '%s\t%s\t%s\n' "$_slug" "$_p" "$_u"
@@ -4111,9 +4145,11 @@ restore_candidates() {
 		_u=$(restore_latest_in "$(transcript_dir_for "$_rp")") || continue
 		_f=$(transcript_path "$_rp" "$_u")
 		restore_is_fresh "$_f" || continue
-		restore_started_by_ccs "$_f" || continue
 
+		# **slug を先に決める。** 痕跡の照合に使うので（I3b）。`ghq list` は
+		# 既に舐め終わっているので、ここでの追加の費用は無い。
 		_slug=$(slug_for_path "$_rp")
+		restore_started_by_ccs "$_f" "$_slug" || continue
 		[ "$_slug" = "$CCS_HUB_SLUG" ] && continue
 		tmux_session_exists "${CCS_PREFIX}${_slug}" && continue
 		printf '%s\t%s\t%s\n' "$_slug" "$_rp" "$_u"
