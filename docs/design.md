@@ -419,6 +419,20 @@ ccs gc                                    # 死んだペイン・空の一時デ
 > ADR の決定 8 は「今までどおり空なら `rmdir`」と書いており矛盾するので、
 > [#91](https://github.com/ken-ty/ccs/issues/91) に上げてある。
 
+> **追記（2026-08-31、[ADR-0004](adr/0004-scratch-promotion.md)）: 「tmp」が 2 つある。**
+>
+> | | パス | 寿命 |
+> | --- | --- | --- |
+> | **`ccs` の作業枠** | `~/.cc-scratch/<workspaceId>` | ホーム配下。**OS は消さない** |
+> | **ハーネスの scratchpad** | `/private/tmp/claude-…/…/scratchpad/` | `/tmp` 配下。**macOS が数日で消す** |
+>
+> Claude Code は一時ファイルを後者へ置くよう指示するので、**「一時的な作業」と言われた
+> エージェントはそちらを選ぶ**。**作業枠は消えないのに、そこに立てたセッションの成果物が
+> 消える**（実例は [#63](https://github.com/ken-ty/ccs/issues/63)）。
+>
+> **穴の本体はここ**で、昇格コマンドは事後の救済にすぎない。枠に `CLAUDE.md` を置いて
+> 「成果物は cwd に置く」と伝えるのが先（ADR-0004 決定 1、ROADMAP の P0）。
+
 ### 4.5 生死の扱い
 
 - **生きている** = `claude agents --json` に載っている = ソケットがある = `SendMessage` が届く
