@@ -107,6 +107,7 @@ CCS_ADOPT_TIMEOUT
 CCS_RESTORE_MAX_AGE
 CCS_RESTORE_LAST_WINDOW
 CCS_RESTORE_BOOT_EPOCH
+CCS_DISMISSED_FILE
 CCS_REMOTE_CONTROL
 CCS_HUB_SLUG
 CCS_HUB_HOME
@@ -204,6 +205,14 @@ config_mark_env_sources
 load_config
 
 # --- 既定値 ---------------------------------------------------------------
+
+# 「人がこれは死んだと決めた」会話の記録（R6、#97）。
+#
+# **これは索引ではない。** ADR-0002 決定 6 は「`ccs` は自前のレジストリを
+# 持たない」と決めているが、あれが禁じたのは**存在を二重に持つこと**
+# （ディレクトリと索引がずれる）。ここが持つのは**他のどこにも無い人の判断**で、
+# 会話ログにもレジストリにも印にも書かれていない。**ずれようがない。**
+: "${CCS_DISMISSED_FILE:=${XDG_CONFIG_HOME:-${HOME}/.config}/ccs/dismissed}"
 
 : "${CCS_CLAUDE_BIN:=claude}"
 : "${CCS_TMUX_BIN:=tmux}"
@@ -587,7 +596,8 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
                                           止まった／消えたセッションを同じ会話で
                                           立て直す（既定は見せるだけ）
   ccs restore --pick                      候補を番号で見せて、選んだものだけ戻す
-                                          （対話端末でだけ。判断材料も並べる）
+                                          （対話端末でだけ。判断材料も並べる。
+                                          選ばなかったものは次から出ない）
   ccs restore --last [--yes]              前回の停止まで生きていた組だけを戻す
   ccs restore --since <期間> [--yes]      その期間だけ遡って戻す（例: 6h）
   ccs restore <slug> --list               その場所に残っている会話を並べる
@@ -4454,6 +4464,77 @@ restore_json_conversations() {
 # stdout は「戻しました」の報告のために空けておく。
 #
 # 選ばれた行だけを stdout に出す。何も選ばなければ空。
+# ---------------------------------------------------------------------------
+# 「これは死んだ」の記録（R6、[#97](https://github.com/ken-ty/ccs/issues/97)）
+#
+# **`--pick` で選ばなかったものを覚える。** これが無いと、一度「終わった」と
+# 判断した会話が `CCS_RESTORE_MAX_AGE` のあいだ毎回候補に並び続ける。
+#
+# 形は `<uuid><TAB><path>` の 1 行 1 件。path を持つのは**掃除のため**で、
+# 会話ログが消えた行を書き込みのたびに落とす（放っておくと増え続ける）。
+#
+# **名指しには効かせない。** `ccs restore <slug>` は「これを戻す」という答え
+# そのものなので、記録があっても戻せる。
+#
+# **戻したら記録を消す。** 生き返ったものを「死んだ」と覚えたままにすると、
+# 次に死んだとき候補に出ない。
+# ---------------------------------------------------------------------------
+
+dismissed_has() {
+	[ -f "$CCS_DISMISSED_FILE" ] || return 1
+	grep -q "^${1}	" "$CCS_DISMISSED_FILE" 2>/dev/null
+}
+
+# 会話ログが残っている行だけを stdout に出す。
+dismissed_live_rows() {
+	[ -f "$CCS_DISMISSED_FILE" ] || return 0
+	while IFS="$(printf '\t')" read -r _dl_u _dl_p; do
+		[ -n "$_dl_u" ] || continue
+		[ -n "$_dl_p" ] || continue
+		[ -f "$(transcript_path "$_dl_p" "$_dl_u")" ] || continue
+		printf '%s\t%s\n' "$_dl_u" "$_dl_p"
+	done <"$CCS_DISMISSED_FILE"
+}
+
+# 書き戻す。**書くたびに掃除する** ── 消えた会話の行を残すと増え続ける。
+dismissed_write() {
+	mkdir -p "$(dirname "$CCS_DISMISSED_FILE")" 2>/dev/null || return 1
+	_dw_tmp="${CCS_DISMISSED_FILE}.$$"
+	printf '%s' "$1" >"$_dw_tmp" || return 1
+	mv "$_dw_tmp" "$CCS_DISMISSED_FILE"
+}
+
+dismissed_add() {
+	dismissed_has "$1" && return 0
+	# `$()` は末尾の改行を落とすので、繋ぐ前に足す。**忘れると行が
+	# 連結される**（1 行に 2 件入って、どちらも二度と一致しなくなる）。
+	_da_rows=$(dismissed_live_rows)
+	[ -z "$_da_rows" ] || _da_rows="${_da_rows}
+"
+	_da_rows="${_da_rows}${1}	${2}
+"
+	dismissed_write "$_da_rows" ||
+		warn "ccs: 判断を記録できませんでした: ${CCS_DISMISSED_FILE}"
+}
+
+dismissed_remove() {
+	[ -f "$CCS_DISMISSED_FILE" ] || return 0
+	dismissed_has "$1" || return 0
+	_dr_rows=$(dismissed_live_rows | grep -v "^${1}	" || true)
+	[ -z "$_dr_rows" ] || _dr_rows="${_dr_rows}
+"
+	dismissed_write "$_dr_rows" || true
+}
+
+# `<slug>\t<path>\t<uuid>` の行から、記録済みのものを落とす。
+dismissed_filter() {
+	printf '%s\n' "$1" | while IFS="$(printf '\t')" read -r _df_s _df_p _df_u; do
+		[ -n "$_df_s" ] || continue
+		dismissed_has "$_df_u" && continue
+		printf '%s\t%s\t%s\n' "$_df_s" "$_df_p" "$_df_u"
+	done
+}
+
 restore_pick() {
 	_rp_rows=$(printf '%s\n' "$1" | awk -F'\t' 'NF')
 	_rp_max=$(printf '%s\n' "$_rp_rows" | wc -l | tr -d ' ')
@@ -4474,13 +4555,19 @@ restore_pick() {
 		done
 	}
 
-	printf '\n番号（例: 1 3 / 1-3 / all / Enter で中止）: ' >&2
-	read -r _rp_in || return 0
-	[ -n "$_rp_in" ] || return 0
+	# **Enter は逃げ道のまま残す。** 見に来ただけの人が反射で Enter を打つのは
+	# 普通なので、そこに「全部死んだ」を割り当てない。全部いらないときは
+	# `none` と明示させる ── 記録は消しにくいので、明示のほうを高く付ける。
+	printf '\n番号（例: 1 3 / 1-3 / all / none / Enter で中止）: ' >&2
+	read -r _rp_in || return 1
+	[ -n "$_rp_in" ] || return 1
 
 	case $_rp_in in
 	all | ALL)
 		printf '%s\n' "$_rp_rows"
+		return 0
+		;;
+	none | NONE)
 		return 0
 		;;
 	esac
@@ -4629,6 +4716,10 @@ cmd_restore() {
 			CCS_RESTORE_MAX_AGE=0
 		fi
 		_rows=$(restore_candidates)
+
+		# **一度「終わった」と判断したものは並べない**（R6）。名指しの枝には
+		# 掛けない ── あちらは「これを戻す」という答えそのもの。
+		_rows=$(dismissed_filter "$_rows")
 	fi
 
 	# --- 「前回の停止まで生きていた組」に絞る ---
@@ -4789,9 +4880,30 @@ cmd_restore() {
 
 	# **選ばせる。** 選んだものが `_ready` になり、選ぶこと自体が承認になる。
 	if [ -n "$_pick" ]; then
-		_ready=$(restore_pick "$_ready")
+		# **中止（1）と入力の誤り（`die` の 2）を混ぜない。** 混ぜると、
+		# 打ち間違いが「中止しました」になって 0 で返り、機械から見て
+		# 成功と区別が付かなくなる。
+		_pick_rc=0
+		_picked=$(restore_pick "$_ready") || _pick_rc=$?
+		if [ "$_pick_rc" -eq 1 ]; then
+			printf '中止しました。何も記録していません。\n'
+			return 0
+		elif [ "$_pick_rc" -ne 0 ]; then
+			exit "$_pick_rc" # die が理由を出している
+		fi
+
+		# **選ばなかったものを「死んだ」として覚える**（R6）。これが無いと、
+		# 一度終わったと判断した会話が毎回並び続ける。
+		printf '%s\n' "$_ready" | while IFS="$(printf '\t')" read -r _pk_s _pk_p _pk_u; do
+			[ -n "$_pk_s" ] || continue
+			printf '%s\n' "$_picked" | grep -q "	${_pk_u}\$" && continue
+			dismissed_add "$_pk_u" "$_pk_p"
+		done
+
+		_ready=$_picked
 		if [ -z "$_ready" ]; then
-			printf '何も選ばれませんでした。\n'
+			printf '選ばれなかったものは、次からは候補に出ません。\n'
+			printf '  もう一度出す: ccs restore <slug>\n'
 			return 0
 		fi
 		_apply=1
@@ -4850,6 +4962,14 @@ cmd_restore() {
 			while IFS="$(printf '\t')" read -r _slug _uuid; do
 				[ -n "$_slug" ] || continue
 				printf '戻しました: %s%s（%s）\n' "$CCS_PREFIX" "$_slug" "$_uuid"
+			done
+
+		# **戻したら「死んだ」の記録を消す**（R6）。生き返ったものを覚えた
+		# ままにすると、次に死んだとき候補に出ない。
+		printf '%s\n' "$_waited" | sed -n 's/^ok\t//p' |
+			while IFS="$(printf '\t')" read -r _slug _uuid; do
+				[ -n "$_uuid" ] || continue
+				dismissed_remove "$_uuid"
 			done
 	fi
 

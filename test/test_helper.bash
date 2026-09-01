@@ -31,6 +31,9 @@ ccs_setup_sandbox() {
 	export CCS_TRUST_FILE="${CCS_TEST_TMP}/claude.json"
 	export CCS_SCRATCH_ROOT="${CCS_TEST_TMP}/scratch"
 	export CCS_PROJECTS_DIR="${CCS_TEST_TMP}/projects"
+	# **本物を書かせない。** 「これは死んだ」の記録は利用者の判断そのもので、
+	# テストが触ってよいものではない。
+	export CCS_DISMISSED_FILE="${CCS_TEST_TMP}/dismissed"
 	# **worktree の差し替え点は要らない**（ADR-0003 決定 6）。置き場所が
 	# リポジトリ配下 (`<repo>/.worktrees/`) になったので、テストが作る
 	# リポジトリはサンドボックスの中にあり、worktree もそこに落ちる。

@@ -70,6 +70,7 @@ CCS_SCRATCH_SLOTS=4           # 同時に立てる使い捨て枠は 4 本で足
 | `CCS_SCRATCH_NOTE` | （文面あり） | 使い捨て作業枠のセッションに渡す注意書き。`claude --append-system-prompt` で渡す。**空にすると渡さない**。既定は「成果物は cwd に置く。`/tmp` 側は数日で消える」旨（[#63](https://github.com/ken-ty/ccs/issues/63)） |
 | `CCS_RESTORE_MAX_AGE` | `7` | `ccs restore` が黙って拾う会話ログの古さの上限（日）。`0` で無制限。**列挙にだけ効く**（名指しは古くても戻す） |
 | `CCS_RESTORE_LAST_WINDOW` | `300` | `ccs restore --last` が「一緒に落ちた組」とみなす幅（秒）。**停止は一瞬ではない**（実測で 13 本が 45 秒ばらけた）。広げると手で畳んだものを巻き込み、狭めると取りこぼす |
+| `CCS_DISMISSED_FILE` | `~/.config/ccs/dismissed` | `ccs restore --pick` で**選ばれなかった**会話の記録。次から候補に出さないために使う。**消せばやり直せる** |
 | `CCS_RESTORE_BOOT_EPOCH` | （空） | 起動時刻（epoch 秒）。空なら OS に訊く（`kern.boottime` / `/proc/stat`）。**読めない環境のための逃げ道**であり、テストが再起動を模す差し替え点でもある |
 
 ### `hub` という名前のリポジトリを持っている場合
