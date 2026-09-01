@@ -66,6 +66,7 @@ ccs kill <slug>                          # ペインごと畳む
 ccs kill --self                          # そのセッション自身を畳む（中から打つ。ccs 管轄外からも）
 ccs gc                                   # 死んだペイン・空の一時ディレクトリ・不要な worktree を掃除
 ccs restore [--yes] [--json] [<slug>...] # 止まった／消えたセッションを同じ会話で立て直す
+ccs restore --pick                       # 候補を番号で見せて、選んだものだけ戻す
 ccs restore --last [--yes]               # 前回の停止まで生きていた組だけを戻す
 
 ccs hub up                               # ハブを立てる（生きていれば何もしない）
