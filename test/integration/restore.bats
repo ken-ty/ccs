@@ -917,7 +917,7 @@ _pick_restore() {
 
 	_pick_restore ''
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"何も選ばれませんでした"* ]] || return 1
+	[[ "$output" == *"中止しました"* ]] || return 1
 	run ccs_tmux has-session -t "=cc/$(_ts 1)"
 	[ "$status" -ne 0 ]
 }
@@ -967,4 +967,94 @@ _pick_restore() {
 
 	run --separate-stderr "$CCS_BIN" restore --pick --json
 	[ "$status" -eq 2 ]
+}
+
+# --- 「これは死んだ」を覚える（R6） ----------------------------------------
+#
+# **一度「終わった」と判断した会話が、7 日間ずっと候補に並び続ける**のを止める。
+# 判断は人からしか出てこない情報で、会話ログにもレジストリにも印にも無いので、
+# `ccs` が持つしかない（#97 で A を選択）。
+
+@test "restore --pick: 選ばなかったものは次から候補に出ない" {
+	_wipe_slots 2
+
+	_pick_restore 1
+	[ "$status" -eq 0 ]
+
+	# 選ばれなかった 1 本が記録される。
+	[ "$(wc -l <"$CCS_DISMISSED_FILE" | tr -d ' ')" -eq 1 ]
+
+	run --separate-stderr "$CCS_BIN" restore --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq '.ready | length')" -eq 0 ]
+}
+
+@test "restore --pick: 全部選べば何も記録しない" {
+	_wipe_slots 2
+
+	_pick_restore all
+	[ "$status" -eq 0 ]
+	[ ! -s "$CCS_DISMISSED_FILE" ] || [ "$(wc -l <"$CCS_DISMISSED_FILE" | tr -d ' ')" -eq 0 ]
+}
+
+@test "restore --pick: none なら全部が死んだ扱いになる" {
+	_wipe_slots 2
+
+	_pick_restore none
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"次からは候補に出ません"* ]] || return 1
+	[ "$(wc -l <"$CCS_DISMISSED_FILE" | tr -d ' ')" -eq 2 ]
+
+	run --separate-stderr "$CCS_BIN" restore --json
+	[ "$(printf '%s' "$output" | jq '.ready | length')" -eq 0 ]
+}
+
+@test "restore <slug>: 名指しなら記録があっても戻せる" {
+	# **名指しは「これを戻す」という答えそのもの。** 記録より強い。
+	_wipe_slots 1
+	_pick_restore none
+	[ "$(wc -l <"$CCS_DISMISSED_FILE" | tr -d ' ')" -eq 1 ]
+
+	run --separate-stderr "$CCS_BIN" restore "$(_ts 1)" --yes
+	[ "$status" -eq 0 ]
+	ccs_tmux has-session -t "=cc/$(_ts 1)"
+}
+
+@test "restore: 戻したら記録は消える" {
+	# **生き返ったものを「死んだ」と覚えたままにすると、次に死んだとき
+	# 候補に出ない。**
+	_wipe_slots 1
+	_pick_restore none
+	[ "$(wc -l <"$CCS_DISMISSED_FILE" | tr -d ' ')" -eq 1 ]
+
+	"$CCS_BIN" restore "$(_ts 1)" --yes >/dev/null
+	[ ! -s "$CCS_DISMISSED_FILE" ] || [ "$(wc -l <"$CCS_DISMISSED_FILE" | tr -d ' ')" -eq 0 ]
+}
+
+@test "restore: 会話ログが消えた記録は掃除される" {
+	# **放っておくと増え続ける。** 書き込みのたびに落とす。
+	mkdir -p "$(dirname "$CCS_DISMISSED_FILE")"
+	printf '%s\t%s\n' '11111111-1111-4111-8111-999999999999' '/nowhere' \
+		>"$CCS_DISMISSED_FILE"
+
+	_wipe_slots 1
+	_pick_restore none
+	[ "$status" -eq 0 ]
+
+	# 消えた会話の行は残らない。いま判断したぶんだけになる。
+	[ "$(wc -l <"$CCS_DISMISSED_FILE" | tr -d ' ')" -eq 1 ]
+	[[ "$(cat "$CCS_DISMISSED_FILE")" != *"999999999999"* ]] || return 1
+}
+
+@test "restore --pick: Enter は中止で、何も記録しない" {
+	# **反射で Enter を打った人の判断を、記録として固定しない。**
+	# 「全部いらない」は `none` と明示させる。
+	_wipe_slots 2
+
+	_pick_restore ''
+	[ "$status" -eq 0 ]
+	[ ! -f "$CCS_DISMISSED_FILE" ] || [ ! -s "$CCS_DISMISSED_FILE" ]
+
+	run --separate-stderr "$CCS_BIN" restore --json
+	[ "$(printf '%s' "$output" | jq '.ready | length')" -eq 2 ]
 }

@@ -98,6 +98,7 @@ tmux を起動し `claude` を立ち上げるツールなので、素朴に書�
 | `CCS_GIT_BIN` | `git` | **差し替えない**（worktree の生成は git の挙動そのもの。課金もネットワークも無い） |
 | `CCS_PS_BIN` | `ps` | **差し替えない**（`ccs ls -l` の RSS。課金もネットワークも無く、値そのものは検証しない） |
 | `CCS_CONFIG_FILE` | `~/.config/ccs/config` | 一時ファイルに逃がす。**本物を読ませない** |
+| `CCS_DISMISSED_FILE` | `~/.config/ccs/dismissed` | 一時ファイルに逃がす。**本物を書かせない**（利用者の判断そのもの） |
 | `CCS_HUB_HOME` | `~/.cc-hub` | 一時ディレクトリに逃がす |
 | `CCS_RESTORE_BOOT_EPOCH` | （空。OS に訊く） | **再起動を模す。** `ccs restore --last` の基準点なので、ここを固定しないと「前回の停止まで生きていた組」を作れない |
 
