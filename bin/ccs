@@ -586,6 +586,8 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
   ccs restore [--yes] [--json] [<slug>...]
                                           止まった／消えたセッションを同じ会話で
                                           立て直す（既定は見せるだけ）
+  ccs restore --pick                      候補を番号で見せて、選んだものだけ戻す
+                                          （対話端末でだけ。判断材料も並べる）
   ccs restore --last [--yes]              前回の停止まで生きていた組だけを戻す
   ccs restore --since <期間> [--yes]      その期間だけ遡って戻す（例: 6h）
   ccs restore <slug> --list               その場所に残っている会話を並べる
@@ -4437,12 +4439,85 @@ restore_json_conversations() {
 	printf ']'
 }
 
+# 候補を番号つきで見せて、戻すものを選ばせる（R5）。
+#
+# **終了判定は context ベース ── 人が見ないと決まらない。** `--last` は
+# 「一緒に落ちた組」を**時刻の塊でしか切れない**ので、「会話は終わっていないが
+# 1 日放置している」を取りこぼし、直前に畳んだものを巻き込む。判定を自動化
+# するのをやめて、人に選ばせる。
+#
+# **判断材料が無いと選べない。** slug と最終更新だけでは、どれがどれか
+# 分からない ── 会話のタイトルと**直近の依頼**（`ccs ls -l` の REQUEST と
+# 同じもの）まで出す。
+#
+# **一覧もプロンプトも stderr に出す**（`attach_pick_slug` と同じ理由）。
+# stdout は「戻しました」の報告のために空けておく。
+#
+# 選ばれた行だけを stdout に出す。何も選ばなければ空。
+restore_pick() {
+	_rp_rows=$(printf '%s\n' "$1" | awk -F'\t' 'NF')
+	_rp_max=$(printf '%s\n' "$_rp_rows" | wc -l | tr -d ' ')
+	_rp_w=$(printf '%s\n' "$_rp_rows" |
+		awk -F'\t' '{ if (length($1) > m) m = length($1) } END { print (m < 4 ? 4 : m) }')
+
+	printf '戻すものを選んでください:\n\n' >&2
+	printf '%s\n' "$_rp_rows" | {
+		_rp_i=0
+		while IFS="$(printf '\t')" read -r _slug _path _uuid; do
+			[ -n "$_slug" ] || continue
+			_rp_i=$((_rp_i + 1))
+			_rp_f=$(transcript_path "$_path" "$_uuid")
+			printf '  %2d) %-*s  %-16s  %s\n' "$_rp_i" "$_rp_w" "$_slug" \
+				"$(restore_mtime_of "$_rp_f")" "$(restore_title_of "$_rp_f" || printf '-')" >&2
+			_rp_req=$(last_request_of "$_rp_f")
+			[ -z "$_rp_req" ] || printf '      %*s  %s\n' "$_rp_w" '' "$_rp_req" >&2
+		done
+	}
+
+	printf '\n番号（例: 1 3 / 1-3 / all / Enter で中止）: ' >&2
+	read -r _rp_in || return 0
+	[ -n "$_rp_in" ] || return 0
+
+	case $_rp_in in
+	all | ALL)
+		printf '%s\n' "$_rp_rows"
+		return 0
+		;;
+	esac
+
+	# **番号を展開してから重複を落とす。** `1-3 2` のように重ねて打たれても、
+	# 同じ会話を 2 度立てに行かない。
+	_rp_sel=$(printf '%s\n' "$_rp_in" | awk -v max="$_rp_max" '
+		{
+			c = split($0, t, /[ ,]+/)
+			for (i = 1; i <= c; i++) {
+				if (t[i] == "") continue
+				if (t[i] ~ /^[0-9]+$/) { lo = t[i] + 0; hi = lo }
+				else if (t[i] ~ /^[0-9]+-[0-9]+$/) { split(t[i], a, "-"); lo = a[1] + 0; hi = a[2] + 0 }
+				else { print "?" t[i]; continue }
+				if (lo < 1 || hi > max || lo > hi) { print "?" t[i]; continue }
+				for (n = lo; n <= hi; n++) if (!seen[n]++) print n
+			}
+		}')
+
+	_rp_bad=$(printf '%s\n' "$_rp_sel" | sed -n 's/^?//p' | head -1)
+	if [ -n "$_rp_bad" ]; then
+		die "$EX_USAGE" "restore: 1〜${_rp_max} の番号で指定してください: ${_rp_bad}"
+	fi
+
+	printf '%s\n' "$_rp_sel" | while IFS= read -r _rp_n; do
+		[ -n "$_rp_n" ] || continue
+		printf '%s\n' "$_rp_rows" | sed -n "${_rp_n}p"
+	done
+}
+
 cmd_restore() {
 	require_deps
 
 	_apply=''
 	_all=''
 	_json=''
+	_pick=''
 	_list=''
 	_last=''
 	_since=''
@@ -4474,6 +4549,7 @@ cmd_restore() {
 		-y | --yes) _apply=1 ;;
 		--all) _all=1 ;;
 		--json) _json=1 ;;
+		--pick) _pick=1 ;;
 		--list) _list=1 ;;
 		--last) _last=1 ;;
 		--since) _want=since ;;
@@ -4482,6 +4558,15 @@ cmd_restore() {
 		*) _ntargets=$((_ntargets + 1)) ;;
 		esac
 	done
+	# **選ぶことと、全部戻すことは別。** 併記されたらどちらの意味か決まらない。
+	[ -z "$_pick" ] || [ -z "$_apply" ] ||
+		die "$EX_USAGE" 'restore: --pick と --yes は一緒に使えません（選ぶこと自体が承認です）'
+	[ -z "$_pick" ] || [ -z "$_json" ] ||
+		die "$EX_USAGE" 'restore: --pick と --json は一緒に使えません（対話で選ぶ経路と機械可読な経路は別です）'
+	# **非対話では固まらせない**（`attach` の番号選択と同じ形で断る）。
+	[ -z "$_pick" ] || [ -t 0 ] ||
+		die "$EX_USAGE" 'restore: --pick は対話端末でだけ使えます（機械から呼ぶときは --yes か --json）'
+
 	[ "$_want" != sid ] || die "$EX_USAGE" 'restore: --session-id に uuid がありません'
 	[ "$_want" != since ] || die "$EX_USAGE" 'restore: --since に期間がありません（例: ccs restore --since 6h）'
 
@@ -4659,7 +4744,7 @@ cmd_restore() {
 		return 0
 	fi
 
-	if [ -z "$_json" ] && [ -n "$_ready" ]; then
+	if [ -z "$_json" ] && [ -z "$_pick" ] && [ -n "$_ready" ]; then
 		printf '立て直せるセッション:\n'
 		printf '%s\n' "$_ready" | while IFS="$(printf '\t')" read -r _slug _path _uuid; do
 			[ -n "$_slug" ] || continue
@@ -4700,6 +4785,16 @@ cmd_restore() {
 			printf '}\n'
 		fi
 		return 0
+	fi
+
+	# **選ばせる。** 選んだものが `_ready` になり、選ぶこと自体が承認になる。
+	if [ -n "$_pick" ]; then
+		_ready=$(restore_pick "$_ready")
+		if [ -z "$_ready" ]; then
+			printf '何も選ばれませんでした。\n'
+			return 0
+		fi
+		_apply=1
 	fi
 
 	if [ -z "$_apply" ]; then

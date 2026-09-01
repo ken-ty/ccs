@@ -843,3 +843,128 @@ _seed_titled() { # <repo> <customTitle> <uuid>
 	[ "$status" -eq 0 ]
 	[ "$(printf '%s' "$output" | jq '[.ready[] | select(.sessionId == "'"$_u"'")] | length')" -eq 1 ]
 }
+
+# --- 候補を選んで戻す（R5） ------------------------------------------------
+#
+# **終了判定は context ベース ── 人が見ないと決まらない。** `--last` は
+# 「一緒に落ちた組」を時刻の塊でしか切れないので、「会話は終わっていないが
+# 1 日放置している」を取りこぼし、直前に畳んだものを巻き込む。判定を自動化
+# するのをやめて、人に選ばせる。
+#
+# **bats はパイプ越しに走るので `[ -t 0 ]` が偽**になる。`attach` の番号選択と
+# 同じく pty を用意して、本物の端末から選んだときの挙動を見る。
+
+_pick_restore() {
+	run "${CCS_REPO_ROOT}/test/fixtures/pty-run.py" "$1" -- \
+		env -u TMUX "$CCS_BIN" restore --pick
+}
+
+@test "restore --pick: 選んだものだけ戻す" {
+	# **並び順は発行順ではない**（候補は会話ログの置き場所から拾うので）。
+	# どれが 1 番になるかに依存させず、「1 本だけ戻り、それが報告されたもの」
+	# であることを見る。
+	_wipe_slots 2
+
+	_pick_restore 1
+	[ "$status" -eq 0 ]
+	[ "$(ccs_registry_count)" -eq 1 ]
+
+	local _restored
+	_restored=$(printf '%s\n' "$output" | sed -n 's/.*戻しました: cc\/\([^（]*\).*/\1/p' | tr -d ' ')
+	[ -n "$_restored" ]
+	ccs_tmux has-session -t "=cc/${_restored}"
+}
+
+@test "restore --pick: 番号を並べて複数戻す" {
+	_wipe_slots 2
+
+	_pick_restore '1 2'
+	[ "$status" -eq 0 ]
+	ccs_tmux has-session -t "=cc/$(_ts 1)"
+	ccs_tmux has-session -t "=cc/$(_ts 2)"
+}
+
+@test "restore --pick: 範囲でも指定できる" {
+	_wipe_slots 2
+
+	_pick_restore '1-2'
+	[ "$status" -eq 0 ]
+	ccs_tmux has-session -t "=cc/$(_ts 1)"
+	ccs_tmux has-session -t "=cc/$(_ts 2)"
+}
+
+@test "restore --pick: all なら全部戻す" {
+	_wipe_slots 2
+
+	_pick_restore all
+	[ "$status" -eq 0 ]
+	ccs_tmux has-session -t "=cc/$(_ts 1)"
+	ccs_tmux has-session -t "=cc/$(_ts 2)"
+}
+
+@test "restore --pick: 重ねて打っても 2 度立てない" {
+	# **同じ会話を 2 本の claude が握らない**（restore の冪等性）。
+	_wipe_slots 2
+
+	_pick_restore '1-2 1 2'
+	[ "$status" -eq 0 ]
+	[ "$(ccs_registry_count)" -eq 2 ]
+}
+
+@test "restore --pick: 何も選ばなければ何も戻さず 0 で終わる" {
+	# **中止は失敗ではない**（attach の番号選択と同じ）。
+	_wipe_slots 1
+
+	_pick_restore ''
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"何も選ばれませんでした"* ]] || return 1
+	run ccs_tmux has-session -t "=cc/$(_ts 1)"
+	[ "$status" -ne 0 ]
+}
+
+@test "restore --pick: 番号でないものを選んだら 2" {
+	_wipe_slots 1
+
+	_pick_restore nope
+	[ "$status" -eq 2 ]
+	[[ "$output" == *"番号で指定してください"* ]] || return 1
+}
+
+@test "restore --pick: 範囲の外を選んだら 2" {
+	_wipe_slots 1
+
+	_pick_restore 5
+	[ "$status" -eq 2 ]
+}
+
+@test "restore --pick: 判断材料を並べる" {
+	# **slug と最終更新だけでは選べない。** 会話のタイトルと直近の依頼まで出す。
+	local uuid
+	uuid=$(_new_tmp)
+	jq -cn --arg t 'ROADMAP の I1 を片付けて' \
+		'{type:"user",message:{role:"user",content:$t}}' \
+		>>"$(_transcript_dir "$(_slot_path 1)")/${uuid}.jsonl"
+	_wipe_session "$(_ts 1)"
+
+	_pick_restore ''
+	[[ "$output" == *"$(_ts 1)"* ]] || return 1
+	[[ "$output" == *"ROADMAP の I1 を片付けて"* ]] || return 1
+}
+
+@test "restore --pick: 非対話では固まらず断る" {
+	# **launchd やパイプ越しから呼ばれても止まらない。**
+	_wipe_slots 1
+
+	run --separate-stderr "$CCS_BIN" restore --pick
+	[ "$status" -eq 2 ]
+	[[ "$stderr" == *"対話端末でだけ"* ]] || return 1
+}
+
+@test "restore --pick: --yes / --json とは併用できない" {
+	run --separate-stderr "$CCS_BIN" restore --pick --yes
+	[ "$status" -eq 2 ]
+	[[ "$stderr" == *"一緒に使えません"* ]] || return 1
+
+	run --separate-stderr "$CCS_BIN" restore --pick --json
+	[ "$status" -eq 2 ]
+}
