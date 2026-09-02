@@ -43,7 +43,7 @@
 
 | # | 内容 | サイズ | 依存 |
 | --- | --- | --- | --- |
-| P1b | **昇格コマンドの実装**（[#63](https://github.com/ken-ty/ccs/issues/63)、[ADR-0004](docs/adr/0004-scratch-promotion.md)）。移す先は `~/ghq/local/<owner>/<name>`、`git init` まで `ccs` がやる、枠は空にして返す、セッションは `--resume` で立て直す（**cwd を跨げることは実測済み**）、**`gh repo create` はやらない**（打つコマンドを出すだけ）。**未決 1 が決まってから**（[#94](https://github.com/ken-ty/ccs/issues/94)） | M | #94 |
+| P1b | **昇格コマンドの実装**（[#63](https://github.com/ken-ty/ccs/issues/63)、[ADR-0004](docs/adr/0004-scratch-promotion.md)）。移す先は `~/ghq/local/<owner>/<name>`、`git init` まで `ccs` がやる、枠は空にして返す、セッションは `--resume` で立て直す（**cwd を跨げることは実測済み**）、**`gh repo create` はやらない**（打つコマンドを出すだけ）。**未決 1 は解けた**（#94。案 B。会話ログの cwd は `--resume` で更新されると実測、`restore_cwd_of` を最後の cwd を読む形に直した）。着手可（[#94](https://github.com/ken-ty/ccs/issues/94)） | M | #94 |
 | R3 | **再起動後の復帰が「戻しすぎる」件**（[#89](https://github.com/ken-ty/ccs/issues/89) の 2）。`ccs restore --yes` は「7 日以内に触った ccs 由来の会話」を全部立てるので、**再起動前に生きていた組だけ**が欲しいときは `--last` が要る。運用で使い分けるのか、既定を変えるのか、予告に併記するのかを決める。**人の判断待ち** | S | #89 |
 | R4 | **畳んだ作業枠が 7 日間ずっと候補に残る件**（[#89](https://github.com/ken-ty/ccs/issues/89) の 3）。I2b で「枠が `gc` で消えても会話は戻せる」ようにした結果でもあるので**意図どおり**だが、使い捨ての枠が候補に居座るのが妥当かは別の話。**人の判断待ち** | S | #89 |
 | H7 | **本物の claude で hub を 1 周する**の残り（docs/hub.md「まだ実測できていないこと」）。**アプリ側の見え方だけが残っている** — 名前が維持されるか / `offline` が積み上がらないか / `remoteControlAtStartup` との二重登録。launchd の経路は 2026-08-22 に実測済み。**`--resume` で RC が張り直されることは R1 の検証で確認した**（レジストリ上は同じ `bridgeSessionId` が戻る。アプリ側の見え方は未確認） | S | **人が手で回す**（本物の claude が要る。docs/hands-on.md をなぞる作業なので、ループの成果物にならない） |
