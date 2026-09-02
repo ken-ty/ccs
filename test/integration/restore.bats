@@ -1058,3 +1058,48 @@ _pick_restore() {
 	run --separate-stderr "$CCS_BIN" restore --json
 	[ "$(printf '%s' "$output" | jq '.ready | length')" -eq 2 ]
 }
+
+# --- 昇格した会話（#94 の案 B） --------------------------------------------
+
+@test "restore: cwd は最後のものを読む（昇格して移った会話を飛ばす）" {
+	# **`claude --resume` は cwd を跨げて、跨いだ先の cwd を会話ログに
+	# 書き足す**（2026-09-03 実測）。会話ログの置き場は元のままなので、
+	# 最初の cwd を読むと「昇格して空にした枠」に戻す候補として並び続ける。
+	# 戻すと成果物のある新しい場所ではなく、空の枠でセッションが立つ。
+	_new_tmp >/dev/null
+	_wipe_session "$(_ts 1)"
+
+	local f slot
+	slot=$(_slot_path 1)
+	f=$(ls "$(_transcript_dir "$slot")"/*.jsonl | head -1)
+
+	# 昇格を模す: 元の cwd で始まり、移送先の cwd で終わる会話ログ。
+	{
+		printf '{"type":"user","cwd":"%s","sessionId":"x"}\n' "$slot"
+		printf '{"type":"user","cwd":"/somewhere/promoted","sessionId":"x"}\n'
+	} >"$f"
+
+	run "$CCS_BIN" restore
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"cwd が違います"* ]] || return 1
+	[[ "$output" == *"promoted"* ]] || return 1
+	[[ "$output" != *"ccs restore --yes"* ]] || return 1
+}
+
+@test "restore: 動いていない会話は最初と最後が同じで通る" {
+	# 陰性対照 ── 最後を読むようにしたことで、普通の会話が弾かれないこと。
+	_new_tmp >/dev/null
+	_wipe_session "$(_ts 1)"
+
+	local f slot
+	slot=$(_slot_path 1)
+	f=$(ls "$(_transcript_dir "$slot")"/*.jsonl | head -1)
+	{
+		printf '{"type":"user","cwd":"%s","sessionId":"x"}\n' "$slot"
+		printf '{"type":"user","cwd":"%s","sessionId":"x"}\n' "$slot"
+	} >"$f"
+
+	run --separate-stderr "$CCS_BIN" restore --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq '.ready | length')" -eq 1 ]
+}
