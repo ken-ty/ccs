@@ -34,6 +34,9 @@ ccs_setup_sandbox() {
 	# **本物を書かせない。** 「これは死んだ」の記録は利用者の判断そのもので、
 	# テストが触ってよいものではない。
 	export CCS_DISMISSED_FILE="${CCS_TEST_TMP}/dismissed"
+	# **本物を読ませない。** MCP のログは Claude Code が書くもので、
+	# 手元には他セッションのぶんが大量にある。
+	export CCS_MCP_LOG_DIR="${CCS_TEST_TMP}/mcp-logs"
 	# **worktree の差し替え点は要らない**（ADR-0003 決定 6）。置き場所が
 	# リポジトリ配下 (`<repo>/.worktrees/`) になったので、テストが作る
 	# リポジトリはサンドボックスの中にあり、worktree もそこに落ちる。

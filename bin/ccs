@@ -106,6 +106,7 @@ CCS_NEW_TIMEOUT
 CCS_ADOPT_TIMEOUT
 CCS_RESTORE_MAX_AGE
 CCS_RESTORE_LAST_WINDOW
+CCS_MCP_LOG_DIR
 CCS_RESTORE_BOOT_EPOCH
 CCS_DISMISSED_FILE
 CCS_REMOTE_CONTROL
@@ -205,6 +206,21 @@ config_mark_env_sources
 load_config
 
 # --- 既定値 ---------------------------------------------------------------
+
+# MCP の接続ログの置き場。**Claude Code が書くもので、ccs は読むだけ。**
+#
+# `<ここ>/<エンコードした cwd>/mcp-logs-<server>/<ISO>.jsonl` に、接続 1 回 =
+# 1 ファイルで積まれる。`sessionId` が入っているので、**どのセッションの接続か**
+# が外から分かる ── これが「MCP が落ちているセッション」を見つける唯一の口。
+#
+# 置き場は OS で違う（macOS は `~/Library/Caches`、それ以外は XDG）。
+: "${CCS_MCP_LOG_DIR:=$(
+	if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+		printf '%s/Library/Caches/claude-cli-nodejs' "$HOME"
+	else
+		printf '%s/claude-cli-nodejs' "${XDG_CACHE_HOME:-${HOME}/.cache}"
+	fi
+)}"
 
 # 「人がこれは死んだと決めた」会話の記録（R6、#97）。
 #
@@ -578,6 +594,8 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
                                           （数 KB の複数行を argv に載せない）
   ccs ls [--json]                         ccs のセッションを一覧する
   ccs ls -l [--json]                      盤面（直近の依頼 / RSS / 最終更新）も出す
+  ccs ls --mcp [--json]                   MCP が落ちているセッションを見つける
+                                          （直し方は ccs kill → ccs restore）
   ccs agents [-l] [--json]                このマシンの claude を俯瞰する
                                           （管轄外は SLUG が `-`。畳めるのは ls に
                                             出るものだけ。引き取るなら ccs adopt）
@@ -2727,14 +2745,21 @@ cmd_ls() {
 
 	_json=''
 	_long=''
+	_mcp=''
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--json) _json=1 ;;
 		-l | --long) _long=1 ;;
+		--mcp) _mcp=1 ;;
 		*) die "$EX_USAGE" "ls: 知らないオプション: $1" ;;
 		esac
 		shift
 	done
+
+	# **`--mcp` は別の表。** `-l` の盤面に混ぜない ── あれは「いま何をして
+	# いるか」を見るためのもので、MCP の健康診断は別の問いへの答え。
+	[ -z "$_mcp" ] || [ -z "$_long" ] ||
+		die "$EX_USAGE" 'ls: --mcp と -l は一緒に使えません（別の表です）'
 
 	_slugs=$(list_slugs)
 
@@ -2754,7 +2779,111 @@ cmd_ls() {
 "
 	done
 
+	if [ -n "$_mcp" ]; then
+		if [ -n "$_json" ]; then
+			ls_as_json_mcp "$_rows"
+		else
+			ls_as_table_mcp "$_rows"
+		fi
+		return 0
+	fi
+
 	ls_render "$_rows" "$_long" "$_json"
+}
+
+# ---------------------------------------------------------------------------
+# MCP の健康診断（#105）
+#
+# **長く生きているセッションで MCP が落ちる。** 実測（2026-09-03、8 日稼働の
+# セッション）では 8 サーバが一斉に消え、claude.ai のコネクタ 5 つは
+# **エラーも出さずに再接続の試行ごと止まっていた**。`/mcp reconnect all` は
+# あれらを管轄していないので戻せない。
+#
+# **ccs がやるのは検知だけ。** 復帰は `ccs kill <slug>` → `ccs restore <slug>`
+# で、プロセスごと作り直せば全部戻る（実測。OAuth の再認可も要らなかった）。
+# **自動では畳まない** ── 作業中のセッションを黙って落とすほうが高くつく。
+#
+# **`ccs ls` の既定の出力は変えない。** ここは `--mcp` を付けたときだけ通る。
+# ---------------------------------------------------------------------------
+
+# その cwd の MCP ログの置き場。エンコード規則は会話ログと同じ（非英数字 → `-`）。
+mcp_log_dir_for() {
+	printf '%s/%s\n' "$CCS_MCP_LOG_DIR" \
+		"$(printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g')"
+}
+
+# その cwd・その会話で、いま落ちているサーバの名前を 1 行 1 件で出す。
+#
+# **判定は 3 つ揃ったときだけ。**
+#   1. サーバごとの最新のログファイルを見る（名前が ISO なので辞書順＝時刻順）
+#   2. その中の `sessionId` が、いま見ているセッションのものと一致する
+#   3. 最後の行が `"error"` を持つ
+#
+# **2 が要る。** 同じ場所で会話を何度も立てていると古い失敗ログが残るので、
+# 素直に読むと**死んでいないものを死んだと言う**。
+mcp_failed_servers() {
+	_mf_dir=$(mcp_log_dir_for "$1")
+	_mf_id=$2
+	[ -d "$_mf_dir" ] || return 0
+	[ -n "$_mf_id" ] || return 0
+
+	for _mf_s in "$_mf_dir"/mcp-logs-*; do
+		[ -d "$_mf_s" ] || continue
+		# **「この会話の」最新の接続試行を選ぶ。** 単に最新のファイルを取って
+		# から会話を照合すると、**同じ場所で後から別の会話が立っただけで
+		# 取りこぼす** ── 落ちているのに ok と出る（実測で踏んだ）。
+		#
+		# 名前が ISO なので、glob の並び（辞書順）＝時刻順。`ls` を使わない
+		# のは lint の要求（SC2012）だが、glob のほうが空白入りにも強い。
+		_mf_f=''
+		for _mf_c in "$_mf_s"/*; do
+			[ -f "$_mf_c" ] || continue
+			grep -aq "\"sessionId\":\"${_mf_id}\"" "$_mf_c" 2>/dev/null || continue
+			_mf_f=$_mf_c
+		done
+		[ -n "$_mf_f" ] || continue
+
+		tail -1 "$_mf_f" 2>/dev/null | grep -aq '"error"' || continue
+
+		printf '%s\n' "$(basename "$_mf_s" | sed 's/^mcp-logs-//')"
+	done
+}
+
+# `--mcp` の表。**落ちていないセッションも出す** ── 出ないと「調べたのか
+# 調べていないのか」が区別できない。
+ls_as_table_mcp() {
+	{
+		printf 'SLUG\tMCP\t落ちているサーバ\n'
+		printf '%s\n' "$1" | while IFS="$(printf '\t')" read -r _mt_slug _mt_st _mt_id _mt_path _mt_rest; do
+			[ -n "$_mt_slug" ] || continue
+			_mt_bad=$(mcp_failed_servers "$_mt_path" "$_mt_id" | tr '\n' ' ' | sed 's/ $//')
+			if [ -z "$_mt_bad" ]; then
+				printf '%s\tok\t-\n' "$_mt_slug"
+			else
+				printf '%s\tNG\t%s\n' "$_mt_slug" "$(printf '%s' "$_mt_bad" | tr ' ' ',')"
+			fi
+		done
+	} | column -t -s "$(printf '\t')"
+}
+
+ls_as_json_mcp() {
+	printf '[\n'
+	_mj_first=1
+	printf '%s\n' "$1" | while IFS="$(printf '\t')" read -r _mj_slug _mj_st _mj_id _mj_path _mj_rest; do
+		[ -n "$_mj_slug" ] || continue
+		[ "$_mj_first" -eq 1 ] || printf ',\n'
+		_mj_first=0
+		printf ' {"slug":%s,"sessionId":%s,"failed":[' \
+			"$(json_str "$_mj_slug")" "$(json_str "$_mj_id")"
+		_mj_n=0
+		mcp_failed_servers "$_mj_path" "$_mj_id" | while IFS= read -r _mj_srv; do
+			[ "$_mj_n" -eq 0 ] || printf ','
+			_mj_n=1
+			printf '%s' "$(json_str "$_mj_srv")"
+		done
+		printf ']}'
+	done
+	printf '\n]\n'
 }
 
 # 集めた行を、指定された形で出す。`ccs ls` と `ccs agents` で共有する。
