@@ -186,8 +186,28 @@ cwd に依存しない。ここに手当ては要らない。
 | 場所 | 値 |
 | --- | --- |
 | tmux セッション名 | `cc/<slug>` |
-| Claude の表示名 (`-n`) | `<slug>` |
+| Claude の表示名 (`-n`) | **リポジトリのセッションだけ `<slug>`。作業枠と worktree には渡さない**（#108、下記） |
 | Claude の session id | 起動時に生成した UUID を `--session-id` で固定 |
+
+**`-n` を渡すと自動命名が止まる。** レジストリが `nameSource: "user"` になり、
+**会話の内容から名前が付かなくなる**。実測（2026-09-04）:
+
+| 起動 | 会話ログの 1 行目 |
+| --- | --- |
+| `claude --session-id <uuid>` | `{"type":"ai-title","aiTitle":"Suicaカード移行手順"}` |
+| `claude -n <slug> --session-id <uuid>` | `{"type":"custom-title","customTitle":"<slug>"}` |
+すると Claude Desktop 上の表示名が slug の
+ままになり、**話題では検索できない** ── `tmp-f610a8e6` で立てた Suica の相談が、
+`suica` で見つからなかった（#108）。
+
+**それでもリポジトリには渡し続ける。** ghq 配下だけは、会話ログ 1 行目の `custom-title` が
+「`ccs` が立てた」ことの**唯一の痕跡**（§10.4 の `restore_started_by_ccs`）。
+[ADR-0002](adr/0002-session-identity.md) 決定 5 が ghq 配下への印を禁じているので代わりが無く、
+`--append-system-prompt` は会話ログに何も残さない（実測）。
+**外すと、以後に立てたリポジトリのセッションが黙って `restore` の候補から消える。**
+
+作業枠は印（`.ccs.json`）で、worktree は置き場所の規約（`.worktrees/`）で列挙するので、
+**どちらも痕跡に依存していない。**
 
 `<slug>` の決め方:
 
@@ -309,7 +329,8 @@ ccs gc                                    # 死んだペイン・空の一時デ
 2. `cc/<slug>` が既にあれば、その slug を返して終了（冪等）
 3. **trust を事前承認**（§4.4）
 4. UUID を生成
-5. `tmux new-session -d -s "cc/<slug>" -c <path> "claude -n <slug> --session-id <uuid>; exec $SHELL"`
+5. `tmux new-session -d -s "cc/<slug>" -c <path> "claude [-n <slug>] --session-id <uuid>; exec $SHELL"`
+   （`-n` はリポジトリのセッションだけ。§4.2）
 6. レジストリに `<uuid>` が現れるまで待つ（数秒。タイムアウトしたらペインの内容を出して失敗）
 7. slug / uuid / tmux ターゲット / transcript パス を JSON で返す
 
@@ -683,7 +704,7 @@ hub は自動起動で戻るが、他のセッションは誰も立て直さな�
 > セッションだけが戻らない**。名指しすれば戻せるが、**何が落ちたかを人が覚えていないと
 > 名指しできない** ── `ccs` が状態を持たないことの裏返しがここで効いた。
 >
-> **区別する印が会話ログの中にあった。** `ccs new` は `claude -n <slug>` を渡すので、
+> **区別する印が会話ログの中にあった。** `ccs new` はリポジトリのセッションに `claude -n <slug>` を渡すので、
 > 本物は会話ログの**1 行目**に `custom-title` を書く。アプリや VS Code から開いた
 > セッションは名前が自動で決まるため、この行が先頭に来ない。
 >
@@ -736,7 +757,7 @@ hub は自動起動で戻るが、他のセッションは誰も立て直さな�
 
 ### 10.5 会話の名前を上書きしない
 
-`ccs new` は `claude -n <slug>` で名前を渡すが、`restore` は渡さない。戻す会話には
+`ccs new` はリポジトリのセッションにだけ `claude -n <slug>` で名前を渡し、`restore` は渡さない。戻す会話には
 既に名前が付いていて、**アプリの一覧に出ているのはその名前**（実測。手で戻した 8 本は
 元の名前のまま戻った）。slug を被せると、戻した瞬間に `tmp-2` へ改名され、探している
 名前のほうが消える。
