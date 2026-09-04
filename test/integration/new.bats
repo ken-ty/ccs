@@ -607,3 +607,36 @@ teardown() {
 	[[ "$(cat "$_log")" == *"--append-system-prompt"* ]] || return 1
 	[[ "$(cat "$_log")" == *"hello"* ]] || return 1
 }
+
+# --- 名前を渡す先（#108） --------------------------------------------------
+#
+# **`-n <slug>` は自動命名を止める。** 渡すと Claude Desktop 上の表示名が
+# slug のままになり、話題では検索できない。だが `restore` の候補列挙は
+# ghq 配下だけ会話ログの `custom-title` を「ccs が立てた」痕跡に使うので、
+# そこだけは渡し続ける必要がある（`restore_started_by_ccs`、I3b）。
+
+@test "new --tmp: 作業枠には slug を名前として押し付けない" {
+	# 作業枠は印（.ccs.json）で列挙するので、痕跡が要らない。
+	# スタブは `-n` が無いとき `fake` を名乗る（本物の自動命名の代役）。
+	run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 0 ]
+	local id found slug
+	id=$(printf '%s' "$output" | jq -r '.sessionId')
+	slug=$(printf '%s' "$output" | jq -r '.slug')
+	found=$(grep -l "\"sessionId\":\"${id}\"" "$CCS_SESSIONS_DIR"/*.json)
+	[ -n "$found" ]
+	[ "$(jq -r '.name // ""' "$found")" != "$slug" ] || return 1
+}
+
+@test "new <repo>: リポジトリには名前を渡す（restore の痕跡になる）" {
+	# **外すと、以後に立てたリポジトリのセッションが黙って restore の候補から
+	# 消える。** ADR-0002 決定 5 が ghq 配下への印を禁じているので代わりが無い。
+	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
+
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	[ "$status" -eq 0 ]
+	local id found
+	id=$(printf '%s' "$output" | jq -r '.sessionId')
+	found=$(grep -l "\"sessionId\":\"${id}\"" "$CCS_SESSIONS_DIR"/*.json)
+	[ "$(jq -r '.name' "$found")" = 'myrepo' ]
+}

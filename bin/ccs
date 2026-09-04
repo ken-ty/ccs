@@ -2163,7 +2163,35 @@ cmd_new() {
 
 	# claude が終了してもペインを残す（design.md §4.3）。残しておけば
 	# あとから同じ場所で `claude --resume <uuid>` を流し込める。
-	_cmd="$(shq "$CCS_CLAUDE_BIN") -n $(shq "$_slug") --session-id $(shq "$_uuid")"
+	# **名前は、要るところにだけ渡す**（#108）。
+	#
+	# `-n <slug>` を渡すと `nameSource: "user"` になり、**会話の内容からの
+	# 自動命名が止まる**（実測）。すると Claude Desktop 上の表示名が slug の
+	# ままになり、**話題では検索できない** ── `tmp-f610a8e6` で立てた Suica の
+	# 相談が、`suica` で見つからなかった。
+	#
+	# **実測（2026-09-04）**: `-n` 無しで立てると会話ログの 1 行目が
+	# `{"type":"ai-title","aiTitle":"Suicaカード移行手順"}` になる ── 話題から
+	# 名前が付く。`-n` を渡すと `{"type":"custom-title","customTitle":"<slug>"}`
+	# になり、**そこで自動命名が止まる。**
+	#
+	# **渡さないと restore の候補列挙が壊れる経路が 1 つある。** ghq 配下の
+	# リポジトリ直下だけは、会話ログ 1 行目の `custom-title` が
+	# 「`ccs` が立てた」ことの**唯一の痕跡**（`restore_started_by_ccs`、I3b）。
+	# **`ai-title` では代われない** ── デスクトップから開いたセッションにも
+	# 同じ型が付くので、`ccs` が立てたかどうかを区別できない。
+	# [ADR-0002](docs/adr/0002-session-identity.md) 決定 5 が ghq 配下への印を
+	# 禁じているので代わりが無く、`--append-system-prompt` は会話ログに何も
+	# 残さない（実測）。**外すと、以後に立てたリポジトリのセッションが黙って
+	# 候補に出なくなる。**
+	#
+	# 作業枠は印（`.ccs.json`）で、worktree は置き場所の規約で列挙するので、
+	# **どちらも痕跡に依存していない** ── ここは外してよい。
+	if [ -n "$CCS_RESOLVED_SCRATCH" ] || [ -n "$CCS_RESOLVED_WORKTREE_REPO" ]; then
+		_cmd="$(shq "$CCS_CLAUDE_BIN") --session-id $(shq "$_uuid")"
+	else
+		_cmd="$(shq "$CCS_CLAUDE_BIN") -n $(shq "$_slug") --session-id $(shq "$_uuid")"
+	fi
 
 	# **作業枠だけに注意書きを渡す**（P0）。ここに立てたセッションは、
 	# 何も言わなければ成果物を `/tmp` 側へ置く。
@@ -4054,7 +4082,7 @@ restore_latest_in() {
 # 壊す）。だから**印ベースには置き換えられない**。名前が付いていたことの
 # 痕跡を読むしかない。
 #
-# `ccs new` は `claude -n <slug>` を渡すので、会話ログの 1 行目に
+# `ccs new` はリポジトリのセッションに `claude -n <slug>` を渡すので、会話ログの 1 行目に
 # `{"type":"custom-title","customTitle":"<slug>"}` が来る。アプリや VS Code
 # から開いたセッションは名前が自動で決まるので、この行が先頭に来ない。
 #
@@ -5241,7 +5269,8 @@ cmd_adopt() {
 		warn ''
 		printf '%s\n' "$_cands" | while IFS= read -r _c; do
 			[ -n "$_c" ] || continue
-			warn "  --pid $(registry_num_field "$_c" pid)  $(registry_field "$_c" name)"
+			_ad_nm=$(registry_field "$_c" name)
+			warn "  --pid $(registry_num_field "$_c" pid)  ${_ad_nm:--}"
 		done
 		exit "$EX_FAIL"
 	fi
@@ -5249,7 +5278,10 @@ cmd_adopt() {
 	_file=$_cands
 	_pid=$(registry_num_field "$_file" pid)
 	_uuid=$(registry_field "$_file" sessionId)
+	# **名前は表示にしか使わない。** `ccs new` は作業枠と worktree に `-n` を
+	# 渡さなくなった（#108）ので、無いことがある。
 	_name=$(registry_field "$_file" name)
+	[ -n "$_name" ] || _name='-'
 	[ -n "$_uuid" ] || die "$EX_FAIL" "adopt: sessionId を引けません: ${_file}"
 
 	# **ここから先は、正規化した `_path` ではなく相手が名乗る cwd を使う。**
