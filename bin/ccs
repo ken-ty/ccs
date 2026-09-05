@@ -4073,6 +4073,55 @@ restore_started_by_ccs() {
 	[ "$_rsc_title" = "$2" ]
 }
 
+# 予告に「`--last` なら N 本です」を併記する（R3、#89 の 2）。
+#
+# **`ccs restore --yes` は 7 日以内に触った会話を全部立てる。** 再起動のあとに
+# 欲しいのはたいてい「前回の停止まで生きていた組」だけで、そこには `--last` が
+# 要る。**知らないと全部戻して、身に覚えのないセッションが並ぶ**（#89）。
+#
+# **既定は変えない。** 出すのは案内だけ ── 既定を `--last` にすると、
+# `--all` を知らない人の手元で挙動が変わる（#89 の回答は「まず C、様子を見て B」）。
+#
+# **出さない場面が 3 つある。**
+#   - 0 本（「--last なら 0 本です」は情報が無い）
+#   - 全部と同じ本数（絞る意味が無い）
+#   - `--last` / `--since` を既に付けている（同じことを二度言わない。呼び出し側で分岐）
+restore_hint_last() {
+	_hl_n=$(restore_rows_last "$1" | grep -c . 2>/dev/null) || _hl_n=0
+	_hl_all=$(printf '%s\n' "$1" | grep -c . 2>/dev/null) || _hl_all=0
+	[ "$_hl_n" -gt 0 ] 2>/dev/null || return 0
+	[ "$_hl_n" -lt "$_hl_all" ] 2>/dev/null || return 0
+	printf '  前回の停止まで生きていた組だけなら %d 本: ccs restore --last --yes\n' "$_hl_n"
+}
+
+# `--last` の窓に入る行だけを返す（R3 で切り出した）。
+#
+# **数えるためにも使う。** 予告に「`--last` なら N 本です」と併記するのに
+# 同じ絞り込みを通す ── 別実装にすると、いつか食い違って**嘘の本数を出す**。
+#
+# **だから何も出さないし、早期 return もしない。** 起動時刻が取れないときの
+# 警告も呼び出し側に任せる（`ccs restore` を打っただけで警告が出るのを避ける）。
+# 窓に 1 本も入らなければ空を返す。
+restore_rows_last() {
+	_rl_dated=$(printf '%s\n' "$1" | restore_with_mtime)
+
+	# 上限は起動時刻。取れなければ上限を見ない。
+	_rl_hi=$(restore_boot_epoch 2>/dev/null) || _rl_hi=''
+	if [ -n "$_rl_hi" ]; then
+		_rl_dated=$(printf '%s\n' "$_rl_dated" |
+			awk -F'\t' -v hi="$_rl_hi" 'NF == 4 && $4 < hi')
+	fi
+
+	# 下限は塊の先頭（＝実質、停止の瞬間）から遡る。
+	_rl_t=$(printf '%s\n' "$_rl_dated" |
+		awk -F'\t' 'NF == 4 && $4 > m { m = $4 } END { print m + 0 }')
+	[ "${_rl_t:-0}" -gt 0 ] 2>/dev/null || return 0
+
+	printf '%s\n' "$_rl_dated" |
+		awk -F'\t' -v lo="$((_rl_t - CCS_RESTORE_LAST_WINDOW))" 'BEGIN { OFS = "\t" }
+			NF == 4 && $4 >= lo { print $1, $2, $3 }'
+}
+
 # 直近 CCS_RESTORE_MAX_AGE 日に触られた会話ログか。0 なら無制限。
 #
 # **`date` で差を取らない。** mtime を epoch で読む方法は環境差が大きい
@@ -4864,24 +4913,21 @@ cmd_restore() {
 	if [ -n "$_last" ] || [ -n "$_has_since" ]; then
 		_dated=$(printf '%s\n' "$_rows" | restore_with_mtime)
 
-		# 上限。`--last` は起動時刻で切り、`--since` は切らない
-		# （現在時刻から遡る指定なので、上限は「いま」）。
-		_hi=''
+		# **起動時刻が取れないことは、ここでだけ言う。** 予告のために数える
+		# ときにも同じ経路を通るので、関数の中で言うと `ccs restore` を
+		# 打っただけで警告が出る。
 		if [ -n "$_last" ]; then
-			_hi=$(restore_boot_epoch) || _hi=''
-			[ -n "$_hi" ] ||
+			restore_boot_epoch >/dev/null 2>&1 ||
 				warn 'ccs: 起動時刻が取れないので、起動より前かどうかは見ません（CCS_RESTORE_BOOT_EPOCH で指定できます）。'
-		fi
-		if [ -n "$_hi" ]; then
-			_dated=$(printf '%s\n' "$_dated" |
-				awk -F'\t' -v hi="$_hi" 'NF == 4 && $4 < hi')
 		fi
 
 		# 下限。`--last` は塊の先頭（＝実質、停止の瞬間）から遡る。
 		if [ -n "$_last" ]; then
-			_t_last=$(printf '%s\n' "$_dated" |
-				awk -F'\t' 'NF == 4 && $4 > m { m = $4 } END { print m + 0 }')
-			if [ "${_t_last:-0}" -le 0 ] 2>/dev/null; then
+			# **絞り込みは関数に置いた**（R3）。予告で「`--last` なら N 本」を
+			# 数えるのに同じものを使う ── 別実装にすると、いつか食い違って
+			# **嘘の本数を出す**。
+			_rows_last=$(restore_rows_last "$_rows")
+			if [ -z "$_rows_last" ]; then
 				if [ -n "$_json" ]; then
 					restore_json_empty "$_apply"
 				else
@@ -4889,14 +4935,13 @@ cmd_restore() {
 				fi
 				return 0
 			fi
-			_lo=$((_t_last - CCS_RESTORE_LAST_WINDOW))
+			_rows=$_rows_last
 		else
 			_lo=$(($(date +%s) - _since_sec))
+			_rows=$(printf '%s\n' "$_dated" |
+				awk -F'\t' -v lo="$_lo" 'BEGIN { OFS = "\t" }
+					NF == 4 && $4 >= lo { print $1, $2, $3 }')
 		fi
-
-		_rows=$(printf '%s\n' "$_dated" |
-			awk -F'\t' -v lo="$_lo" 'BEGIN { OFS = "\t" }
-				NF == 4 && $4 >= lo { print $1, $2, $3 }')
 	fi
 
 	if [ -z "$_rows" ]; then
@@ -5055,6 +5100,7 @@ cmd_restore() {
 			printf '実行するには: ccs restore --since %s --yes\n' "$_since"
 		else
 			printf '実行するには: ccs restore --yes\n'
+			restore_hint_last "$_ready"
 		fi
 		printf '別の会話を選ぶ: ccs restore <slug> --list\n'
 		return 0

@@ -1103,3 +1103,81 @@ _pick_restore() {
 	[ "$status" -eq 0 ]
 	[ "$(printf '%s' "$output" | jq '.ready | length')" -eq 1 ]
 }
+
+# --- 予告に「--last なら N 本」を併記する（R3、#89 の 2） ------------------
+#
+# **`ccs restore --yes` は 7 日以内に触った会話を全部立てる。** 再起動のあとに
+# 欲しいのはたいてい「前回の停止まで生きていた組」だけなので、そこへ案内する。
+# **既定は変えない** ── 出すのは案内だけ。
+
+@test "restore: 絞れるときは --last なら何本かを併記する" {
+	_wipe_slots 3
+
+	local stop=$(($(date +%s) - 3600))
+	_touch_slot 1 "$stop"
+	_touch_slot 2 "$((stop - 20))"
+	_touch_slot 3 "$((stop - 3600))"
+	export CCS_RESTORE_BOOT_EPOCH=$((stop + 60))
+
+	run "$CCS_BIN" restore
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"実行するには: ccs restore --yes"* ]] || return 1
+	[[ "$output" == *"2 本"* ]] || return 1
+	[[ "$output" == *"ccs restore --last --yes"* ]] || return 1
+}
+
+@test "restore: 全部が同じ組なら併記しない（絞る意味が無い）" {
+	_wipe_slots 2
+
+	local stop=$(($(date +%s) - 3600))
+	_touch_slot 1 "$stop"
+	_touch_slot 2 "$((stop - 20))"
+	export CCS_RESTORE_BOOT_EPOCH=$((stop + 60))
+
+	run "$CCS_BIN" restore
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"--last --yes"* ]] || return 1
+}
+
+@test "restore: 0 本なら併記しない（情報が無い）" {
+	_wipe_slots 1
+
+	local stop=$(($(date +%s) - 3600))
+	_touch_slot 1 "$stop"
+	# 候補が全部「起動より後」＝前回の組は 1 本も無い。
+	export CCS_RESTORE_BOOT_EPOCH=$((stop - 60))
+
+	run "$CCS_BIN" restore
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"--last --yes"* ]] || return 1
+}
+
+@test "restore --last: 既に絞っているときは併記しない（二度言わない）" {
+	_wipe_slots 3
+
+	local stop=$(($(date +%s) - 3600))
+	_touch_slot 1 "$stop"
+	_touch_slot 2 "$((stop - 20))"
+	_touch_slot 3 "$((stop - 3600))"
+	export CCS_RESTORE_BOOT_EPOCH=$((stop + 60))
+
+	run "$CCS_BIN" restore --last
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"実行するには: ccs restore --last --yes"* ]] || return 1
+	[[ "$output" != *"本: ccs restore --last --yes"* ]] || return 1
+}
+
+@test "restore --json: 併記は出さない（出力形式は変えない）" {
+	_wipe_slots 3
+
+	local stop=$(($(date +%s) - 3600))
+	_touch_slot 1 "$stop"
+	_touch_slot 2 "$((stop - 20))"
+	_touch_slot 3 "$((stop - 3600))"
+	export CCS_RESTORE_BOOT_EPOCH=$((stop + 60))
+
+	run --separate-stderr "$CCS_BIN" restore --json
+	[ "$status" -eq 0 ]
+	printf '%s' "$output" | jq -e . >/dev/null
+	[[ "$output" != *"--last --yes"* ]] || return 1
+}
