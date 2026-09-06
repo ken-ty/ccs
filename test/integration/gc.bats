@@ -726,24 +726,49 @@ _slot_mark() { # <dir> [workspaceId] [kind]
 	[[ "$output" == *"tmp-aaaa1111"* ]] || return 1
 }
 
-@test "gc --yes: 印の無い空ディレクトリは消さない" {
-	# **ここが本体。** 以前は「空なら消す」だったので、人が手で作った
-	# 空ディレクトリを消していた。
+@test "gc --yes: 印の無い空ディレクトリも消す" {
+	# **2026-09-05 に消す側へ倒した**（#91）。印が無いものを触らずにいると、
+	# レガシー枠（`{1..8}`）が空になっても永久に残る ── I2b 以降は番号の枠を
+	# 発行しないので、畳んだあとは誰も触らない。
+	#
+	# **代償は受け入れた**: 人が手で作った空ディレクトリも消える。
 	mkdir -p "${CCS_SCRATCH_ROOT}/handmade"
 
 	run --separate-stderr "$CCS_BIN" gc --yes
 	[ "$status" -eq 0 ]
-	[ -d "${CCS_SCRATCH_ROOT}/handmade" ]
+	[ ! -d "${CCS_SCRATCH_ROOT}/handmade" ]
 }
 
-@test "gc: 印の無いディレクトリは素性不明として報告する" {
+@test "gc --yes: 中身があれば印が無くても消さない" {
+	# **消えるのは空のときだけ。** 失うものは「そこに何かを置くつもりだった」
+	# という意図だけで、置いたものは失わない。
 	mkdir -p "${CCS_SCRATCH_ROOT}/handmade"
+	printf 'x\n' >"${CCS_SCRATCH_ROOT}/handmade/note.txt"
+
+	run --separate-stderr "$CCS_BIN" gc --yes
+	[ "$status" -eq 0 ]
+	[ -d "${CCS_SCRATCH_ROOT}/handmade" ]
+	[ -f "${CCS_SCRATCH_ROOT}/handmade/note.txt" ]
+}
+
+@test "gc: 印が無くて中身のあるディレクトリは素性不明として報告する" {
+	mkdir -p "${CCS_SCRATCH_ROOT}/handmade"
+	printf 'x\n' >"${CCS_SCRATCH_ROOT}/handmade/note.txt"
 
 	run --separate-stderr "$CCS_BIN" gc
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"素性の分からないディレクトリ"* ]] || return 1
 	[[ "$output" == *"handmade"* ]] || return 1
-	[[ "$output" != *"空のまま残った作業枠"* ]] || return 1
+}
+
+@test "gc: レガシー枠は空になれば消える（#91 の狙い）" {
+	# 番号の枠には印が無い（遡って打たないと決めてある。ADR-0002 決定 8）。
+	mkdir -p "${CCS_SCRATCH_ROOT}/1" "${CCS_SCRATCH_ROOT}/8"
+
+	run --separate-stderr "$CCS_BIN" gc --yes
+	[ "$status" -eq 0 ]
+	[ ! -d "${CCS_SCRATCH_ROOT}/1" ]
+	[ ! -d "${CCS_SCRATCH_ROOT}/8" ]
 }
 
 @test "gc: 壊れた印も素性不明として扱う" {
