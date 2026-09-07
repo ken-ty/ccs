@@ -27,6 +27,19 @@ ccs_setup_sandbox() {
 	export HOME="${CCS_TEST_TMP}/home"
 	mkdir -p "$HOME"
 
+	# **設定キーを env ごと落とす。差し替え点を置く前に。**
+	# `CCS_CONFIG_FILE` を差し替えても、**env は設定ファイルより強い**ので、
+	# 利用者のシェルに export されている値がそのまま効く（実測:
+	# `CCS_REMOTE_CONTROL=on` が漏れて `hub status --json` の既定を確かめる
+	# テストが手元でだけ落ちた）。**CI は素の環境なので通り、手元でだけ
+	# 落ちる**という、いちばん質の悪い形。
+	#
+	# キーの一覧は `bin/ccs` の CCS_CONFIG_KEYS から読む（正本を二重に持たない）。
+	local _k
+	for _k in $(sed -n "/^CCS_CONFIG_KEYS='/,/^'/p" "$CCS_BIN" | grep -E '^CCS_[A-Z0-9_]+$'); do
+		unset "$_k" 2>/dev/null || true
+	done
+
 	export CCS_SESSIONS_DIR="${CCS_TEST_TMP}/sessions"
 	export CCS_TRUST_FILE="${CCS_TEST_TMP}/claude.json"
 	export CCS_SCRATCH_ROOT="${CCS_TEST_TMP}/scratch"
