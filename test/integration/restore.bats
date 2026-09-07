@@ -264,6 +264,9 @@ _wipe_session() {
 	local f
 	f=$(ls "$(_transcript_dir "$(_slot_path 1)")"/*.jsonl | head -1)
 	printf '{"type":"user","cwd":"/somewhere/else","sessionId":"x"}\n' >"$f"
+	# **枠に中身を置く。** 空だと「昇格して移った」ほうの判定に先に当たる。
+	# ここで見たいのはエンコード規則の答え合わせのほう。
+	printf 'x\n' >"$(_slot_path 1)/note.txt"
 
 	run "$CCS_BIN" restore
 	[ "$status" -eq 0 ]
@@ -1061,7 +1064,7 @@ _pick_restore() {
 
 # --- 昇格した会話（#94 の案 B） --------------------------------------------
 
-@test "restore: cwd は最後のものを読む（昇格して移った会話を飛ばす）" {
+@test "restore: 会話が移り、枠も空なら飛ばす（昇格。#94）" {
 	# **`claude --resume` は cwd を跨げて、跨いだ先の cwd を会話ログに
 	# 書き足す**（2026-09-03 実測）。会話ログの置き場は元のままなので、
 	# 最初の cwd を読むと「昇格して空にした枠」に戻す候補として並び続ける。
@@ -1081,7 +1084,7 @@ _pick_restore() {
 
 	run "$CCS_BIN" restore
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"cwd が違います"* ]] || return 1
+	[[ "$output" == *"枠は空です"* ]] || return 1
 	[[ "$output" == *"promoted"* ]] || return 1
 	[[ "$output" != *"ccs restore --yes"* ]] || return 1
 }
@@ -1181,3 +1184,41 @@ _pick_restore() {
 	printf '%s' "$output" | jq -e . >/dev/null
 	[[ "$output" != *"--last --yes"* ]] || return 1
 }
+
+# --- 枠が空かどうかで見る（#94 の直し、#103 の回帰） -----------------------
+#
+# **会話ログの `cwd` は 1 行ごとに記録され、1 本の会話でも変わる。** 実測で
+# `~/.claude/uploads/<uuid>`（スマホからの画像）、`~/.claude/skills`
+# （スキル実行）、`/private/tmp/…/scratchpad`（一時ファイル）が最後に来ていた。
+#
+# 「最後の cwd が一致するか」で見ると**よそを触っただけの会話まで落ちる**ので、
+# **枠が空かどうか**を直接見る。昇格は中身を持ち出すので枠が空になる。
+
+# 最初は枠、最後はよそ、という会話ログを作る。
+_seed_moved() { # <slot-path> <uuid> <最後の cwd>
+	local d
+	d=$(_transcript_dir "$1")
+	mkdir -p "$d"
+	{
+		printf '{"type":"user","cwd":"%s","sessionId":"%s"}\n' "$1" "$2"
+		printf '{"type":"user","cwd":"%s","sessionId":"%s"}\n' "$3" "$2"
+	} >"${d}/${2}.jsonl"
+}
+
+@test "restore: よそを触っただけの会話は、枠に中身があれば戻せる" {
+	_new_tmp >/dev/null
+	_wipe_session "$(_ts 1)"
+
+	local slot uuid
+	slot=$(_slot_path 1)
+	uuid=$(ls "$(_transcript_dir "$slot")"/*.jsonl | head -1 | xargs basename | sed 's/\.jsonl$//')
+	_seed_moved "$slot" "$uuid" "${HOME}/.claude/skills"
+	# 枠に中身がある＝昇格していない。
+	printf 'x\n' >"${slot}/note.txt"
+
+	run --separate-stderr "$CCS_BIN" restore --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq '.ready | length')" -eq 1 ]
+}
+
+
