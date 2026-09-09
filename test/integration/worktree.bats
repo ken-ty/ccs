@@ -379,10 +379,15 @@ teardown() {
 	[[ "$(printf '%s' "$output" | jq -r '.slug')" != *"@"* ]] || return 1
 	[[ "$(printf '%s' "$output" | jq -r '.tmux')" != *"@"* ]] || return 1
 
-	# **claude に渡した名前にも入っていない。** tmux 名だけ直しても、
+	# **起動コマンドにも @ が入らない。** tmux 名だけ直しても、
 	# 宛先として使われるのはこちら。
-	ccs_tmux list-panes -t '=cc/x01--topic' -F '#{pane_start_command}' |
-		grep -q -- "-n 'x01--topic'"
+	#
+	# **worktree には `-n` を渡さなくなった**（#108）ので、渡す名前そのものが
+	# 無い。@ が入る余地が無いことと、名前を押し付けていないことの両方を見る。
+	local _cmd
+	_cmd=$(ccs_tmux list-panes -t '=cc/x01--topic' -F '#{pane_start_command}')
+	[[ "$_cmd" != *"@"* ]] || return 1
+	[[ "$_cmd" != *" -n "* ]] || return 1
 }
 
 @test "worktree: 打ち方は <repo>@<branch> のまま" {

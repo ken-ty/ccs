@@ -53,7 +53,8 @@ teardown() {
 
 	_found=$(grep -l "\"sessionId\":\"${_id}\"" "$CCS_SESSIONS_DIR"/*.json)
 	[ -n "$_found" ]
-	[ "$(jq -r '.name' "$_found")" = 'myrepo' ]
+	# **名前は渡さなくなった**（#108）。スタブは `-n` が無いとき `fake` を名乗る。
+	[ "$(jq -r '.name // ""' "$_found")" != 'myrepo' ]
 }
 
 @test "new: sessionId は妥当な UUID の形" {
@@ -85,8 +86,10 @@ teardown() {
 	_id=$(echo "$output" | jq -r '.sessionId')
 
 	run cat "$FAKE_CLAUDE_LOG"
-	[[ "$output" == *"-n myrepo"* ]] || return 1
 	[[ "$output" == *"--session-id ${_id}"* ]] || return 1
+	# **名前は渡さない**（#108）。渡すと自動命名が止まり、Desktop 上の
+	# 表示名が slug のままになって話題では検索できなくなる。
+	[[ "$output" != *"-n "* ]] || return 1
 }
 
 @test "new: セッションの cwd は解決したパス" {
@@ -606,4 +609,47 @@ teardown() {
 	[ "$status" -eq 0 ]
 	[[ "$(cat "$_log")" == *"--append-system-prompt"* ]] || return 1
 	[[ "$(cat "$_log")" == *"hello"* ]] || return 1
+}
+
+# --- 名前を渡す先（#108） --------------------------------------------------
+#
+# **`-n <slug>` は自動命名を止める。** 渡すと Claude Desktop 上の表示名が
+# slug のままになり、話題では検索できない。だが `restore` の候補列挙は
+# ghq 配下だけ会話ログの `custom-title` を「ccs が立てた」痕跡に使うので、
+# そこだけは渡し続ける必要がある（`restore_started_by_ccs`、I3b）。
+
+@test "new --tmp: 作業枠には slug を名前として押し付けない" {
+	# 作業枠は印（.ccs.json）で列挙するので、痕跡が要らない。
+	# スタブは `-n` が無いとき `fake` を名乗る（本物の自動命名の代役）。
+	run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 0 ]
+	local id found slug
+	id=$(printf '%s' "$output" | jq -r '.sessionId')
+	slug=$(printf '%s' "$output" | jq -r '.slug')
+	found=$(grep -l "\"sessionId\":\"${id}\"" "$CCS_SESSIONS_DIR"/*.json)
+	[ -n "$found" ]
+	[ "$(jq -r '.name // ""' "$found")" != "$slug" ] || return 1
+}
+
+@test "new <repo>: リポジトリにも名前を渡さない" {
+	# **痕跡の代わりは記録が持つ**（#108）。ghq 配下は ADR-0002 決定 5 が
+	# 印を禁じているので、立てた会話を CCS_LAUNCHED_FILE に記録する。
+	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
+
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	[ "$status" -eq 0 ]
+	local id found
+	id=$(printf '%s' "$output" | jq -r '.sessionId')
+	found=$(grep -l "\"sessionId\":\"${id}\"" "$CCS_SESSIONS_DIR"/*.json)
+	[ "$(jq -r '.name // ""' "$found")" != 'myrepo' ] || return 1
+}
+
+@test "new: 立てた会話を記録する（restore が ghq 配下で使う）" {
+	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
+
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	[ "$status" -eq 0 ]
+	local id
+	id=$(printf '%s' "$output" | jq -r '.sessionId')
+	grep -q "^${id}	" "$CCS_LAUNCHED_FILE" || return 1
 }

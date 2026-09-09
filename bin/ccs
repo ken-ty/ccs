@@ -106,6 +106,7 @@ CCS_NEW_TIMEOUT
 CCS_ADOPT_TIMEOUT
 CCS_RESTORE_MAX_AGE
 CCS_RESTORE_LAST_WINDOW
+CCS_LAUNCHED_FILE
 CCS_MCP_LOG_DIR
 CCS_RESTORE_BOOT_EPOCH
 CCS_DISMISSED_FILE
@@ -221,6 +222,22 @@ load_config
 		printf '%s/claude-cli-nodejs' "${XDG_CACHE_HOME:-${HOME}/.cache}"
 	fi
 )}"
+
+# **`ccs` が立てた会話の記録**（#108）。
+#
+# **これは索引ではない。** ADR-0002 決定 6 が禁じたのは**存在を二重に持つこと**
+# （レジストリが既に持つ事実を写して、ずれる）。ここが持つのは
+# **「この会話は `ccs` が立てた」という、他のどこにも無い事実**で、
+# 会話ログにもレジストリにも印にも書かれていない。**写しではないので、
+# ずれる先が無い**（`CCS_DISMISSED_FILE` と同じ理屈。ADR-0002 の追記）。
+#
+# **なぜ要るか。** ghq 配下は [ADR-0002](docs/adr/0002-session-identity.md) 決定 5 が
+# 印を禁じているので、`restore` は「`ccs` が立てたか」を会話ログの 1 行目の
+# `custom-title` から読んでいた。名前を渡すのをやめると、その痕跡が消える。
+#
+# **残り続ける問題は引き受ける**: 書き込みのたびに会話ログが消えた行を落とし、
+# `rm` すれば全部やり直せる（そのときは痕跡のある古いセッションだけが残る）。
+: "${CCS_LAUNCHED_FILE:=${XDG_CONFIG_HOME:-${HOME}/.config}/ccs/launched}"
 
 # 「人がこれは死んだと決めた」会話の記録（R6、#97）。
 #
@@ -2163,7 +2180,27 @@ cmd_new() {
 
 	# claude が終了してもペインを残す（design.md §4.3）。残しておけば
 	# あとから同じ場所で `claude --resume <uuid>` を流し込める。
-	_cmd="$(shq "$CCS_CLAUDE_BIN") -n $(shq "$_slug") --session-id $(shq "$_uuid")"
+	# **名前は、要るところにだけ渡す**（#108）。
+	#
+	# `-n <slug>` を渡すと `nameSource: "user"` になり、**会話の内容からの
+	# 自動命名が止まる**（実測）。すると Claude Desktop 上の表示名が slug の
+	# ままになり、**話題では検索できない** ── `tmp-f610a8e6` で立てた Suica の
+	# 相談が、`suica` で見つからなかった。
+	#
+	# **実測（2026-09-04）**: `-n` 無しで立てると会話ログの 1 行目が
+	# `{"type":"ai-title","aiTitle":"Suicaカード移行手順"}` になる ── 話題から
+	# 名前が付く。`-n` を渡すと `{"type":"custom-title","customTitle":"<slug>"}`
+	# になり、**そこで自動命名が止まる。**
+	#
+	# **痕跡の代わりは記録が持つ**（#108）。ghq 配下は
+	# [ADR-0002](docs/adr/0002-session-identity.md) 決定 5 が印を禁じているので、
+	# `restore` は「`ccs` が立てたか」を会話ログ 1 行目の `custom-title` から
+	# 読んでいた。名前を渡すのをやめるとそれが消えるので、**立てた会話を
+	# `CCS_LAUNCHED_FILE` に記録する**（`launched_add`）。
+	#
+	# **`ai-title` では代われない** ── デスクトップから開いたセッションにも
+	# 同じ型が付くので、`ccs` が立てたかどうかを区別できない。
+	_cmd="$(shq "$CCS_CLAUDE_BIN") --session-id $(shq "$_uuid")"
 
 	# **作業枠だけに注意書きを渡す**（P0）。ここに立てたセッションは、
 	# 何も言わなければ成果物を `/tmp` 側へ置く。
@@ -2177,6 +2214,10 @@ cmd_new() {
 		error_is 'tmux' "tmux セッションを作れませんでした: ${_session}"
 		die "$EX_FAIL" "tmux セッションを作れませんでした: ${_session}"
 	}
+
+	# **立てたことを記録する**（#108）。ghq 配下は印を置けないので、
+	# `restore` が「`ccs` が立てた会話か」を判定する唯一の手掛かりになる。
+	launched_add "$_uuid" "$_path"
 
 	if ! wait_for_registration "$_uuid"; then
 		error_is 'not-registered' "${CCS_NEW_TIMEOUT} 秒待ちましたが、セッションが登録されませんでした"
@@ -4086,7 +4127,7 @@ restore_latest_in() {
 # 壊す）。だから**印ベースには置き換えられない**。名前が付いていたことの
 # 痕跡を読むしかない。
 #
-# `ccs new` は `claude -n <slug>` を渡すので、会話ログの 1 行目に
+# `ccs new` はリポジトリのセッションに `claude -n <slug>` を渡すので、会話ログの 1 行目に
 # `{"type":"custom-title","customTitle":"<slug>"}` が来る。アプリや VS Code
 # から開いたセッションは名前が自動で決まるので、この行が先頭に来ない。
 #
@@ -4098,6 +4139,12 @@ restore_latest_in() {
 # **外れるときは「候補に出さない」側に倒れる。** リポジトリ名の曖昧さ解消で
 # slug が変わっていれば拾えなくなるが、それは名指しで戻せる。
 restore_started_by_ccs() {
+	# **まず記録を見る**（#108）。`ccs new` は立てた会話をここに書く。
+	# 名前を渡さなくなったので、痕跡だけでは新しいセッションを拾えない。
+	launched_has "$3" && return 0
+
+	# **痕跡は残す。** 記録を作る前に立てたセッションは、これでしか拾えない
+	# （`rm` で記録を消したときも同じ）。**古い順に捨てない**ための後方互換。
 	_rsc_title=$(head -c 8192 "$1" 2>/dev/null | head -1 |
 		"$CCS_JQ_BIN" -r 'select(.type == "custom-title") | .customTitle // empty' \
 			2>/dev/null) || return 1
@@ -4403,7 +4450,7 @@ restore_candidates() {
 		# **slug を先に決める。** 痕跡の照合に使うので（I3b）。`ghq list` は
 		# 既に舐め終わっているので、ここでの追加の費用は無い。
 		_slug=$(slug_for_path "$_rp")
-		restore_started_by_ccs "$_f" "$_slug" || continue
+		restore_started_by_ccs "$_f" "$_slug" "$_u" || continue
 		[ "$_slug" = "$CCS_HUB_SLUG" ] && continue
 		tmux_session_exists "${CCS_PREFIX}${_slug}" && continue
 		printf '%s\t%s\t%s\n' "$_slug" "$_rp" "$_u"
@@ -4723,6 +4770,41 @@ restore_json_conversations() {
 # **戻したら記録を消す。** 生き返ったものを「死んだ」と覚えたままにすると、
 # 次に死んだとき候補に出ない。
 # ---------------------------------------------------------------------------
+
+# `ccs` が立てた会話を覚えておく。形は `<uuid><TAB><path>` の 1 行 1 件。
+#
+# **path を持つのは掃除のため。** 会話ログが消えた行を、書き込みのたびに落とす。
+launched_has() {
+	[ -f "$CCS_LAUNCHED_FILE" ] || return 1
+	grep -q "^${1}	" "$CCS_LAUNCHED_FILE" 2>/dev/null
+}
+
+launched_add() {
+	launched_has "$1" && return 0
+
+	# **会話ログが残っている行だけを書き戻す。** 放っておくと増え続ける。
+	_la_rows=$(
+		[ -f "$CCS_LAUNCHED_FILE" ] || exit 0
+		while IFS="$(printf '\t')" read -r _la_u _la_p; do
+			[ -n "$_la_u" ] && [ -n "$_la_p" ] || continue
+			[ -f "$(transcript_path "$_la_p" "$_la_u")" ] || continue
+			printf '%s\t%s\n' "$_la_u" "$_la_p"
+		done <"$CCS_LAUNCHED_FILE"
+	)
+
+	# `$()` は末尾の改行を落とすので、繋ぐ前に足す。
+	[ -z "$_la_rows" ] || _la_rows="${_la_rows}
+"
+	_la_rows="${_la_rows}${1}	${2}
+"
+	mkdir -p "$(dirname "$CCS_LAUNCHED_FILE")" 2>/dev/null || return 0
+	_la_tmp="${CCS_LAUNCHED_FILE}.$$"
+	if printf '%s' "$_la_rows" >"$_la_tmp" 2>/dev/null &&
+		mv "$_la_tmp" "$CCS_LAUNCHED_FILE" 2>/dev/null; then
+		return 0
+	fi
+	warn "ccs: 立てた記録を書けませんでした: ${CCS_LAUNCHED_FILE}"
+}
 
 dismissed_has() {
 	[ -f "$CCS_DISMISSED_FILE" ] || return 1
@@ -5345,7 +5427,8 @@ cmd_adopt() {
 		warn ''
 		printf '%s\n' "$_cands" | while IFS= read -r _c; do
 			[ -n "$_c" ] || continue
-			warn "  --pid $(registry_num_field "$_c" pid)  $(registry_field "$_c" name)"
+			_ad_nm=$(registry_field "$_c" name)
+			warn "  --pid $(registry_num_field "$_c" pid)  ${_ad_nm:--}"
 		done
 		exit "$EX_FAIL"
 	fi
@@ -5353,7 +5436,10 @@ cmd_adopt() {
 	_file=$_cands
 	_pid=$(registry_num_field "$_file" pid)
 	_uuid=$(registry_field "$_file" sessionId)
+	# **名前は表示にしか使わない。** `ccs new` は作業枠と worktree に `-n` を
+	# 渡さなくなった（#108）ので、無いことがある。
 	_name=$(registry_field "$_file" name)
+	[ -n "$_name" ] || _name='-'
 	[ -n "$_uuid" ] || die "$EX_FAIL" "adopt: sessionId を引けません: ${_file}"
 
 	# **ここから先は、正規化した `_path` ではなく相手が名乗る cwd を使う。**
