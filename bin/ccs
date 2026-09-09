@@ -5841,10 +5841,32 @@ hub_ensure_home() {
 EOF
 	fi
 
+	# **立てる系と見る系は allow に置く。** hub の役割はセッションを立てる
+	# ことなので、そこで止まると仕事にならない。**しかも止まり方が悪い** ──
+	# auto mode の分類器は「拒否」であって権限プロンプトではないので、
+	# **遠隔から見ている人には承認する対象すら出ない**（ccs#107）。
+	#
+	# **畳む系は ask のまま。** 立てるのは取り返しがつくが、畳むのはつかない。
+	# `ccs config` は読むだけなので allow に入れてよい（書く口が無い）。
+	#
+	# **既存のファイルは書き換えない。** 人が手で足した設定を消すため。
+	# 足りないときは `ccs doctor` が指摘する。
 	if [ ! -f "${CCS_HUB_HOME}/.claude/settings.json" ]; then
 		cat >"${CCS_HUB_HOME}/.claude/settings.json" <<'EOF'
 {
   "permissions": {
+    "allow": [
+      "Bash(ccs new:*)",
+      "Bash(ccs restore:*)",
+      "Bash(ccs ls:*)",
+      "Bash(ccs agents:*)",
+      "Bash(ccs resolve:*)",
+      "Bash(ccs attach:*)",
+      "Bash(ccs config:*)",
+      "Bash(ccs doctor:*)",
+      "Bash(ccs version:*)",
+      "Bash(ccs help:*)"
+    ],
     "ask": [
       "Bash(ccs kill:*)",
       "Bash(ccs gc:*)",
@@ -5858,6 +5880,51 @@ EOF
 }
 EOF
 	fi
+}
+
+# hub の許可が足りているかを見て、足りなければ足し方を出す。
+#
+# **黙って書き換えない。** `hub_ensure_home` は既存の settings.json を
+# 触らない（人が手で足した設定を消すため）ので、**古い hub には新しい
+# allow が入らない**。`ccs doctor` が指摘するだけにして、直すのは人に任せる。
+#
+# **止まり方が悪いので、指摘する価値がある。** auto mode の分類器は
+# 「拒否」であって権限プロンプトではないため、遠隔から見ている人には
+# **承認する対象すら出ない**（ccs#107）。何も知らないと、hub が黙って
+# 仕事をしなくなったように見える。
+hub_doctor_settings() {
+	_hd_file="${CCS_HUB_HOME}/.claude/settings.json"
+
+	printf '\nhub の許可\n'
+	if [ ! -f "$_hd_file" ]; then
+		printf '  設定はまだありません（%s）。\n' "$(tilde_path "$_hd_file")"
+		printf '  次に ccs hub up を打つと、allow つきで作られます。\n'
+		return 0
+	fi
+
+	_hd_missing=''
+	for _hd_c in new restore ls agents resolve; do
+		grep -q "Bash(ccs ${_hd_c}:\*)" "$_hd_file" 2>/dev/null ||
+			_hd_missing="${_hd_missing} ${_hd_c}"
+	done
+
+	if [ -z "$_hd_missing" ]; then
+		printf '  足りています（%s）。\n' "$(tilde_path "$_hd_file")"
+		return 0
+	fi
+
+	printf '  **足りません**:%s\n' "$_hd_missing"
+	printf '  %s\n' "$(tilde_path "$_hd_file")"
+	printf '\n'
+	printf '  hub は auto mode で動くので、足りないと**拒否されて止まります**。\n'
+	printf '  しかも権限プロンプトではないので、遠隔からは承認する対象も出ません。\n'
+	printf '\n'
+	printf '  permissions.allow に足してください:\n'
+	for _hd_c in $_hd_missing; do
+		printf '    "Bash(ccs %s:*)",\n' "$_hd_c"
+	done
+	printf '\n'
+	printf '  **こちらでは書き換えません**（手で足した設定を消さないため）。\n'
 }
 
 # hub を tmux に立てる。立てるだけで、待ちも報告もしない。
@@ -6508,6 +6575,8 @@ cmd_doctor() {
 	else
 		printf '  %s は在りません\n' "$(tilde_path "$_dr_link")"
 	fi
+
+	hub_doctor_settings
 
 	printf '\n更新\n'
 	if ! _dr_inst=$(ccs_installer); then
