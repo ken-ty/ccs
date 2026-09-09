@@ -344,9 +344,11 @@ _wipe_session() {
 	[ "$(printf '%s' "$output" | jq -r '.[0].sessionId')" = "$id" ]
 }
 
-@test "restore: ghq 配下でも、ccs が立てた印があれば列挙する" {
-	# 印は「会話ログの 1 行目が custom-title」。ccs new は -n <slug> を渡すので
-	# 本物はそこに名前を書く（実測）。
+@test "restore: ghq 配下でも、ccs が立てたものなら列挙する" {
+	# **判定は記録（CCS_LAUNCHED_FILE）で行う**（#108）。ghq 配下は
+	# ADR-0002 決定 5 が印を禁じているので、`ccs new` が立てた会話を
+	# 記録しておく。以前は会話ログ 1 行目の `custom-title` を痕跡にしていたが、
+	# 名前を渡すのをやめたのでそれは残らない。
 	local repo="${CCS_TEST_TMP}/ghq/github.com/o/x01"
 	ccs_make_git_repo "$repo"
 	ccs_stub_ghq "$repo"
@@ -1222,3 +1224,49 @@ _seed_moved() { # <slot-path> <uuid> <最後の cwd>
 }
 
 
+
+@test "restore: 記録が無くても、古い痕跡があれば列挙する（後方互換）" {
+	# **記録を作る前に立てたセッションは、痕跡でしか拾えない。**
+	# `rm ~/.config/ccs/launched` で消したときも同じ。古い順に捨てないための道。
+	local repo="${CCS_TEST_TMP}/ghq/github.com/o/x01"
+	ccs_make_git_repo "$repo"
+	ccs_stub_ghq "$repo"
+
+	run --separate-stderr "$CCS_BIN" new x01
+	[ "$status" -eq 0 ]
+	local id
+	id=$(printf '%s' "$output" | jq -r '.sessionId')
+	_wipe_session x01
+
+	# 記録を消し、代わりに昔の形の痕跡を置く。
+	# **パスは正規化したものを使う**（macOS は /var → /private/var）。
+	local rp
+	rp=$(cd "$repo" && pwd -P)
+	rm -f "$CCS_LAUNCHED_FILE"
+	mkdir -p "$(_transcript_dir "$rp")"
+	{
+		printf '{"type":"custom-title","customTitle":"x01","sessionId":"%s"}\n' "$id"
+		printf '{"type":"user","cwd":"%s","sessionId":"%s"}\n' "$rp" "$id"
+	} >"$(_transcript_dir "$rp")/${id}.jsonl"
+
+	run "$CCS_BIN" restore
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"x01"* ]] || return 1
+}
+
+@test "restore: 記録も痕跡も無ければ、ghq 配下は列挙しない" {
+	# **一括で戻すと、ccs が管理していない会話まで tmux に生える。**
+	local repo="${CCS_TEST_TMP}/ghq/github.com/o/x01"
+	ccs_make_git_repo "$repo"
+	ccs_stub_ghq "$repo"
+
+	local uuid='00000000-0000-4000-8000-0000000000ff' rp
+	rp=$(cd "$repo" && pwd -P)
+	mkdir -p "$(_transcript_dir "$rp")"
+	printf '{"type":"user","cwd":"%s","sessionId":"%s"}\n' "$rp" "$uuid" \
+		>"$(_transcript_dir "$rp")/${uuid}.jsonl"
+
+	run "$CCS_BIN" restore
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"x01"* ]] || return 1
+}

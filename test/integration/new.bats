@@ -53,7 +53,8 @@ teardown() {
 
 	_found=$(grep -l "\"sessionId\":\"${_id}\"" "$CCS_SESSIONS_DIR"/*.json)
 	[ -n "$_found" ]
-	[ "$(jq -r '.name' "$_found")" = 'myrepo' ]
+	# **名前は渡さなくなった**（#108）。スタブは `-n` が無いとき `fake` を名乗る。
+	[ "$(jq -r '.name // ""' "$_found")" != 'myrepo' ]
 }
 
 @test "new: sessionId は妥当な UUID の形" {
@@ -85,8 +86,10 @@ teardown() {
 	_id=$(echo "$output" | jq -r '.sessionId')
 
 	run cat "$FAKE_CLAUDE_LOG"
-	[[ "$output" == *"-n myrepo"* ]] || return 1
 	[[ "$output" == *"--session-id ${_id}"* ]] || return 1
+	# **名前は渡さない**（#108）。渡すと自動命名が止まり、Desktop 上の
+	# 表示名が slug のままになって話題では検索できなくなる。
+	[[ "$output" != *"-n "* ]] || return 1
 }
 
 @test "new: セッションの cwd は解決したパス" {
@@ -628,9 +631,9 @@ teardown() {
 	[ "$(jq -r '.name // ""' "$found")" != "$slug" ] || return 1
 }
 
-@test "new <repo>: リポジトリには名前を渡す（restore の痕跡になる）" {
-	# **外すと、以後に立てたリポジトリのセッションが黙って restore の候補から
-	# 消える。** ADR-0002 決定 5 が ghq 配下への印を禁じているので代わりが無い。
+@test "new <repo>: リポジトリにも名前を渡さない" {
+	# **痕跡の代わりは記録が持つ**（#108）。ghq 配下は ADR-0002 決定 5 が
+	# 印を禁じているので、立てた会話を CCS_LAUNCHED_FILE に記録する。
 	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
 
 	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
@@ -638,5 +641,15 @@ teardown() {
 	local id found
 	id=$(printf '%s' "$output" | jq -r '.sessionId')
 	found=$(grep -l "\"sessionId\":\"${id}\"" "$CCS_SESSIONS_DIR"/*.json)
-	[ "$(jq -r '.name' "$found")" = 'myrepo' ]
+	[ "$(jq -r '.name // ""' "$found")" != 'myrepo' ] || return 1
+}
+
+@test "new: 立てた会話を記録する（restore が ghq 配下で使う）" {
+	mkdir -p "${CCS_TEST_TMP}/work/myrepo"
+
+	run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/myrepo"
+	[ "$status" -eq 0 ]
+	local id
+	id=$(printf '%s' "$output" | jq -r '.sessionId')
+	grep -q "^${id}	" "$CCS_LAUNCHED_FILE" || return 1
 }

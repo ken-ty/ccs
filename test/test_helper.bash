@@ -47,6 +47,8 @@ ccs_setup_sandbox() {
 	# **本物を書かせない。** 「これは死んだ」の記録は利用者の判断そのもので、
 	# テストが触ってよいものではない。
 	export CCS_DISMISSED_FILE="${CCS_TEST_TMP}/dismissed"
+	# **本物を書かせない。** 「ccs が立てた会話」の記録も同じ扱い。
+	export CCS_LAUNCHED_FILE="${CCS_TEST_TMP}/launched"
 	# **本物を読ませない。** MCP のログは Claude Code が書くもので、
 	# 手元には他セッションのぶんが大量にある。
 	export CCS_MCP_LOG_DIR="${CCS_TEST_TMP}/mcp-logs"
