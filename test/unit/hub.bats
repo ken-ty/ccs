@@ -253,3 +253,64 @@ ccs_generated_path_line() {
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"ccs hub agent --print"* ]] || return 1
 }
+
+# --- hub の許可（#107 の続き） ---------------------------------------------
+#
+# **hub の役割はセッションを立てること。** そこで auto mode の分類器に
+# 拒否されると仕事にならず、しかも**権限プロンプトではないので遠隔からは
+# 承認する対象すら出ない**。だから雛形に allow を入れる。
+
+# 雛形は `hub_launch` の中でしか書かれない（実際に立てないと通らない）ので、
+# ここでは **`bin/ccs` に埋め込まれた雛形そのもの**を読んで確かめる。
+_hub_template() {
+	sed -n '/^{$/,/^}$/p' "$CCS_BIN" |
+		sed -n '/"permissions"/,$p' |
+		sed '1i\
+{'
+}
+
+@test "hub の雛形: 立てる系の allow が入っている" {
+	local t
+	t=$(_hub_template)
+	printf '%s' "$t" | jq -e '.permissions.allow | index("Bash(ccs new:*)")' >/dev/null
+	printf '%s' "$t" | jq -e '.permissions.allow | index("Bash(ccs restore:*)")' >/dev/null
+	printf '%s' "$t" | jq -e '.permissions.allow | index("Bash(ccs ls:*)")' >/dev/null
+}
+
+@test "hub の雛形: 畳む系は ask のまま（立てるのは戻せるが、畳むのは戻せない）" {
+	local t
+	t=$(_hub_template)
+	printf '%s' "$t" | jq -e '.permissions.ask | index("Bash(ccs kill:*)")' >/dev/null
+	printf '%s' "$t" | jq -e '.permissions.deny | index("Bash(ccs hub down:*)")' >/dev/null
+	# 畳む系が allow に漏れていないこと。
+	[ "$(printf '%s' "$t" | jq -r '.permissions.allow | map(select(test("kill|gc|hub down"))) | length')" -eq 0 ]
+}
+
+@test "doctor: hub の許可が足りなければ指摘する（書き換えはしない）" {
+	mkdir -p "${CCS_HUB_HOME}/.claude"
+	printf '{"permissions":{"ask":["Bash(ccs kill:*)"]}}\n' \
+		>"${CCS_HUB_HOME}/.claude/settings.json"
+
+	run "$CCS_BIN" doctor
+	[[ "$output" == *"hub の許可"* ]] || return 1
+	[[ "$output" == *"足りません"* ]] || return 1
+	[[ "$output" == *"Bash(ccs new:*)"* ]] || return 1
+	[[ "$output" == *"書き換えません"* ]] || return 1
+
+	# 本当に書き換えていない。
+	[ "$(jq -r '.permissions.allow // "なし"' "${CCS_HUB_HOME}/.claude/settings.json")" = 'なし' ]
+}
+
+@test "doctor: 足りていれば足りていると言う" {
+	mkdir -p "${CCS_HUB_HOME}/.claude"
+	_hub_template >"${CCS_HUB_HOME}/.claude/settings.json"
+
+	run "$CCS_BIN" doctor
+	[[ "$output" == *"足りています"* ]] || return 1
+}
+
+@test "doctor: 設定がまだ無ければ、次に立てれば付くと言う" {
+	run "$CCS_BIN" doctor
+	[[ "$output" == *"設定はまだありません"* ]] || return 1
+	[[ "$output" == *"ccs hub up"* ]] || return 1
+}
