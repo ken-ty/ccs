@@ -585,21 +585,65 @@ teardown() {
 	[ "$(ls -A "$_p" | tr '\n' ' ')" = ".ccs.json " ]
 }
 
-@test "new <repo>: 作業枠でなければ注意書きは渡さない" {
+@test "new <repo>: 作業枠でなければ作業枠の注意書きは渡さない" {
 	# **枠だけの話。** リポジトリの cwd は消えないので、伝える理由が無い。
+	# （「終わったら畳む」のほうは全セッションに渡る。下記）
 	mkdir -p "${CCS_TEST_TMP}/work/mine"
 	local _log="${CCS_TEST_TMP}/args.log"
 	FAKE_CLAUDE_LOG="$_log" run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/mine"
 	[ "$status" -eq 0 ]
-	[[ "$(cat "$_log")" != *"--append-system-prompt"* ]] || return 1
+	[[ "$(cat "$_log")" != *"scratchpad"* ]] || return 1
 }
 
-@test "new --tmp: CCS_SCRATCH_NOTE を空にすれば渡さない" {
+@test "new --tmp: CCS_SCRATCH_NOTE を空にすれば作業枠の注意書きは渡さない" {
 	export CCS_SCRATCH_NOTE=''
 	local _log="${CCS_TEST_TMP}/args.log"
 	FAKE_CLAUDE_LOG="$_log" run --separate-stderr "$CCS_BIN" new --tmp
 	[ "$status" -eq 0 ]
+	[[ "$(cat "$_log")" != *"scratchpad"* ]] || return 1
+}
+
+@test "new: 両方を空にすれば --append-system-prompt ごと渡さない" {
+	export CCS_SCRATCH_NOTE=''
+	export CCS_DONE_NOTE=''
+	local _log="${CCS_TEST_TMP}/args.log"
+	FAKE_CLAUDE_LOG="$_log" run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 0 ]
 	[[ "$(cat "$_log")" != *"--append-system-prompt"* ]] || return 1
+}
+
+# --- 「終わったら自分で畳む」と伝える -----------------------------------------
+#
+# 人が「終了」と言って会話を終えても、claude のプロセスは残る。畳む口は
+# `ccs kill --self` として既にあるが、頼まれなければ誰も打たない
+# （実測 2026-09-11: 終了宣言のあと 1〜3 日残っていたセッションが 5 本）。
+
+@test "new: 全セッションに「終わったら ccs kill --self」と伝える" {
+	mkdir -p "${CCS_TEST_TMP}/work/mine"
+	local _log="${CCS_TEST_TMP}/args.log"
+	FAKE_CLAUDE_LOG="$_log" run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/mine"
+	[ "$status" -eq 0 ]
+	[[ "$(cat "$_log")" == *"--append-system-prompt"* ]] || return 1
+	[[ "$(cat "$_log")" == *"ccs kill --self"* ]] || return 1
+}
+
+@test "new --tmp: 作業枠の注意書きと 1 本にまとめて渡す" {
+	# 2 本渡せるかは claude の版次第なので、こちらで 1 本にする。
+	local _log="${CCS_TEST_TMP}/args.log"
+	FAKE_CLAUDE_LOG="$_log" run --separate-stderr "$CCS_BIN" new --tmp
+	[ "$status" -eq 0 ]
+	[ "$(grep -o -- '--append-system-prompt' "$_log" | wc -l | tr -d ' ')" -eq 1 ]
+	[[ "$(cat "$_log")" == *"scratchpad"* ]] || return 1
+	[[ "$(cat "$_log")" == *"ccs kill --self"* ]] || return 1
+}
+
+@test "new: CCS_DONE_NOTE を空にすれば渡さない" {
+	export CCS_DONE_NOTE=''
+	mkdir -p "${CCS_TEST_TMP}/work/mine"
+	local _log="${CCS_TEST_TMP}/args.log"
+	FAKE_CLAUDE_LOG="$_log" run --separate-stderr "$CCS_BIN" new "${CCS_TEST_TMP}/work/mine"
+	[ "$status" -eq 0 ]
+	[[ "$(cat "$_log")" != *"ccs kill --self"* ]] || return 1
 }
 
 @test "new --tmp: 注意書きは初期プロンプトを潰さない" {
