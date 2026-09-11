@@ -3556,9 +3556,16 @@ cmd_kill() {
 		exit "$EX_FAIL"
 	fi
 
-	# **--self は報告を先に出し切ってから畳む。** 畳んだあとに置いた処理は
-	# 動かない（ペインごと消える）ので、順序がそのまま仕様になる。
+	# **畳んだ会話は「終わった」として記録する**（R6 の記録と同じもの。
+	# [#89](https://github.com/ken-ty/ccs/issues/89) の 3 を C に倒した）。
+	# `ccs kill` は人の判断そのものなので、再起動のあとの `ccs restore` に
+	# 並べない。**名指し（`ccs restore <slug>`）なら戻せる** ── kill →
+	# restore で作り直す経路（MCP の復帰など）はそのまま通る。
+	#
+	# **--self は畳む前に書く。** 畳んだあとに置いた処理は動かない。
+	# 普通の kill は畳めてから書く ── 畳めなかったものを死んだと覚えない。
 	if [ -n "$_self" ]; then
+		[ -z "$_id" ] || [ -z "$_cwd" ] || dismissed_add "$_id" "$_cwd"
 		kill_report "$_session" "$_id" "$_cwd"
 		# **最後の 1 手。`exec` で置き換えて、後ろに何も書けなくする。**
 		# 終了コードは誰も読まない ── この tmux 自身が、畳んだ結果の
@@ -3569,6 +3576,7 @@ cmd_kill() {
 	"$CCS_TMUX_BIN" kill-session -t "$_session" ||
 		die "$EX_FAIL" "畳めませんでした: ${_session}"
 
+	[ -z "$_id" ] || [ -z "$_cwd" ] || dismissed_add "$_id" "$_cwd"
 	kill_report "$_session" "$_id" "$_cwd"
 }
 
