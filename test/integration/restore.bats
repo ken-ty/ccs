@@ -1270,3 +1270,75 @@ _seed_moved() { # <slot-path> <uuid> <最後の cwd>
 	[ "$status" -eq 0 ]
 	[[ "$output" != *"x01"* ]] || return 1
 }
+
+# --- アプリで閉じられた会話 -------------------------------------------------
+#
+# アーカイブ・削除は人の判断そのもの。再起動のあとに `ccs restore` が
+# 生き返らせると「畳んだのに戻る」になる（gc.bats の但し書き）。
+
+_archived_from_app() {
+	jq -cn '{type:"system",subtype:"informational",isMeta:false,
+		content:"Remote Control disconnected — this session was ended or archived from another device or app (code 4090)",
+		timestamp:"2026-09-09T11:56:52.767Z"}' >>"$1"
+}
+
+_transcript_file() { # <slot n>
+	ls "$(_transcript_dir "$(_slot_path "$1")")"/*.jsonl | head -1
+}
+
+@test "restore: アプリで閉じられた会話は列挙では戻さない" {
+	_new_tmp >/dev/null
+	_wipe_session $(_ts 1)
+	_archived_from_app "$(_transcript_file 1)"
+
+	run "$CCS_BIN" restore
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"アプリで閉じられています（archived）"* ]] || return 1
+	[[ "$output" != *"ccs restore --yes"* ]] || return 1
+}
+
+@test "restore --json: アプリで閉じられた会話は skipped に理由つきで入る" {
+	_new_tmp >/dev/null
+	_wipe_session $(_ts 1)
+	_archived_from_app "$(_transcript_file 1)"
+
+	run --separate-stderr "$CCS_BIN" restore --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq '.ready | length')" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.skipped[0].slug')" = "$(_ts 1)" ]
+	[[ "$(printf '%s' "$output" | jq -r '.skipped[0].reason')" == *"archived"* ]] || return 1
+}
+
+@test "restore: 閉じられたあとに人が続けていれば戻す" {
+	_new_tmp >/dev/null
+	_wipe_session $(_ts 1)
+	_archived_from_app "$(_transcript_file 1)"
+	jq -cn '{type:"user",message:{role:"user",content:"やっぱり続けて"}}' >>"$(_transcript_file 1)"
+
+	run "$CCS_BIN" restore
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"$(_ts 1)"* ]] || return 1
+	[[ "$output" == *"ccs restore --yes"* ]] || return 1
+}
+
+@test "restore <slug>: 名指しならアプリで閉じられた会話も戻す" {
+	_new_tmp >/dev/null
+	_wipe_session $(_ts 1)
+	_archived_from_app "$(_transcript_file 1)"
+
+	run "$CCS_BIN" restore "$(_ts 1)" --yes
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"戻しました"* ]] || return 1
+	ccs_tmux has-session -t "=cc/$(_ts 1)"
+}
+
+@test "restore --all: アプリで閉じられた会話も候補に入れる" {
+	_new_tmp >/dev/null
+	_wipe_session $(_ts 1)
+	_archived_from_app "$(_transcript_file 1)"
+
+	run "$CCS_BIN" restore --all
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"$(_ts 1)"* ]] || return 1
+	[[ "$output" == *"ccs restore --yes"* ]] || return 1
+}

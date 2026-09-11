@@ -26,6 +26,9 @@ tmp-3                   waiting     128M    16h  ページについて、プレ�
 | `RSS` | その `claude` プロセスの実メモリ（MB）。畳むかどうかの判断材料 |
 | `AGE` | 会話ログの mtime からの経過（`3m` / `2h` / `5d`） |
 
+`STATUS` はレジストリの値（`idle` / `busy` / `waiting`）だが、**アプリで閉じられた
+セッションは `archived` / `deleted` と出す**（[下記](#アプリで閉じられたセッション)）。
+
 `-l` は `--long` とも書ける。`--json` と併せると、既定のキー
 （`slug` / `status` / `sessionId` / `path` / `tmux`）を**残したまま**
 `pid` / `rssMb` / `updatedAt` / `age` / `request` が足される。
@@ -44,6 +47,43 @@ $ ccs ls -l --json | jq -r '.[] | "\(.slug)\t\(.rssMb)M\t\(.request)"'
 収めるのが目的なので、36 桁の uuid と長いパスを並べると依頼が折り返して
 読めなくなる。uuid が要るときは既定の `ccs ls`、機械で読むなら
 `ccs ls -l --json`。
+
+## アプリで閉じられたセッション
+
+claude.ai やスマホアプリの「アーカイブ」「削除」は、ローカルの claude に届く。
+**ただし届いた claude は Remote Control を切るだけで、プロセスは生き続ける**
+（実測 2026-09-11）。tmux のペインは残り、レジストリは `idle` のまま、`ccs ls` にも
+並ぶ ── 人はアプリで畳んだつもりなのに、誰にも畳まれない。
+
+```console
+$ ccs ls -l
+SLUG            STATUS       RSS    AGE  REQUEST
+tmp-ba825913    archived    121M    29m  買い物リストの Photo を埋めて…
+tmp-1ae1ffc0    deleted     131M    23h  allowlist に何を足した？
+```
+
+痕跡は 2 か所にある。**両方揃ったときだけ**そう出す。
+
+| どこ | 何 |
+| --- | --- |
+| 会話ログ | system 行が 1 本書かれる。アーカイブは `Remote Control disconnected — this session was ended or archived from another device or app (code 4090)`、削除は `… the server no longer reports this session — it may have been deleted …` |
+| レジストリ | `bridgeSessionId` が null になる |
+
+**片方では足りない。** 一度アーカイブした会話を [`ccs restore`](restore.md) で立て直すと
+Remote Control は**同じ id で**付き直り、会話ログには古い行が残ったまま普通のセッションに
+戻る（レジストリを見ればそれが分かる）。逆に `bridgeSessionId` が null になる経路は他にも
+ある（同じ会話を 2 本開いたときの取り合い）。会話ログの行が無ければ、閉じたのではない。
+
+さらに、**disconnect の行より後に人が打った依頼があれば、閉じていない**と読む。
+`ccs attach` で乗り込んで続けたなら、それは生きているセッション。hub からの
+メッセージは「人が打った」に数えない（次節）。
+
+畳むのは [`ccs gc`](index.md) の仕事 ── 「アプリで閉じられたセッション（畳む対象）」に
+並び、`--yes` で畳む。畳んだ会話は「終わった」と記録され、再起動のあとの
+[`ccs restore`](restore.md#アプリで閉じられた会話) に並ばない（名指しなら戻せる）。
+
+`--json` では `closed`（`"archived"` / `"deleted"` / `null`）が足される。**`status` は
+変えない** ── レジストリの値をそのまま読んでいる側を壊さない。
 
 ## MCP の健康診断（`--mcp`）
 
@@ -154,6 +194,10 @@ Claude Code が `CCS_MCP_LOG_DIR` の下に、**接続 1 回 = 1 ファイル**�
 
 **モデルは一切呼ばない。** 依頼の文はテキスト処理でそのまま切り出しているだけで、
 要約もしない。
+
+**hub からのメッセージ（`Another Claude session sent a message:`）も定型文として
+落とす。** 組み込みの `SendMessage` が届けるもので、人が打ったものではない。出すと、
+放置しているセッションが hub の棚卸しのたびに「いま依頼された」顔になる。
 
 ## 実測（15 本）
 

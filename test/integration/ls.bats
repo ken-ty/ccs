@@ -420,7 +420,7 @@ _tool_result() {
 	[ "$status" -eq 0 ]
 	echo "$output" | jq -e . >/dev/null
 	_keys=$(echo "$output" | jq -r '.[0] | keys_unsorted | join(",")')
-	[ "$_keys" = 'slug,status,sessionId,path,tmux,labels,startedAt,transcript,worktree,pid,rssMb,updatedAt,age,request' ]
+	[ "$_keys" = 'slug,status,sessionId,path,tmux,labels,startedAt,transcript,worktree,pid,rssMb,updatedAt,age,request,closed' ]
 	[ "$(echo "$output" | jq -r '.[0].request')" = 'いらい' ]
 	[ "$(echo "$output" | jq -r '.[0].updatedAt')" -gt 0 ]
 }
@@ -530,8 +530,71 @@ _tool_result() {
 	run "$CCS_BIN" ls -l --json
 	[ "$status" -eq 0 ]
 	_keys=$(echo "$output" | jq -r '.[0] | keys_unsorted | join(",")')
-	[ "$_keys" = 'slug,status,sessionId,path,tmux,labels,startedAt,transcript,worktree,pid,rssMb,updatedAt,age,request' ]
+	[ "$_keys" = 'slug,status,sessionId,path,tmux,labels,startedAt,transcript,worktree,pid,rssMb,updatedAt,age,request,closed' ]
 	# 盤面の列は今までどおり出る。
 	[ "$(echo "$output" | jq -r '.[0].request')" = 'いらい' ]
 	[ "$(echo "$output" | jq -r '.[0].pid')" != 'null' ]
+}
+
+# --- アプリで閉じられたセッション（ccs ls -l）--------------------------------
+#
+# アプリの「アーカイブ」「削除」は claude のプロセスを止めない（gc.bats の
+# 但し書き）。盤面では STATUS にそう出す ── レジストリの `idle` は
+# 「claude は生きている」の意味でしかなく、人が見たいのは「畳んでよいか」。
+
+_archived_from_app() {
+	jq -cn '{type:"system",subtype:"informational",isMeta:false,
+		content:"Remote Control disconnected — this session was ended or archived from another device or app (code 4090)",
+		timestamp:"2026-09-09T11:56:52.767Z"}' >>"$1"
+}
+
+@test "ls -l: アプリでアーカイブされていれば STATUS に archived と出す" {
+	_new myrepo >/dev/null
+	_f=$(_transcript_of myrepo)
+	_say "$_f" 'おわり'
+	_archived_from_app "$_f"
+
+	run "$CCS_BIN" ls -l
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"archived"* ]] || return 1
+	[[ "$output" != *"idle"* ]] || return 1
+}
+
+@test "ls -l --json: closed を返す（閉じられていなければ null）" {
+	_new myrepo >/dev/null
+	_new other >/dev/null
+	_archived_from_app "$(_transcript_of myrepo)"
+
+	run --separate-stderr "$CCS_BIN" ls -l --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.[] | select(.slug=="myrepo") | .closed')" = 'archived' ]
+	[ "$(printf '%s' "$output" | jq -r '.[] | select(.slug=="other") | .closed')" = 'null' ]
+	# **`status` は変えない。** レジストリの値をそのまま読んでいる側を壊さない。
+	[ "$(printf '%s' "$output" | jq -r '.[] | select(.slug=="myrepo") | .status')" = 'idle' ]
+}
+
+@test "ls -l: hub からのメッセージは直近の依頼として出さない" {
+	# 組み込みの SendMessage が届けるもので、人が打ったものではない。
+	# 出すと、放置しているセッションが hub の棚卸しのたびに「いま依頼された」顔になる。
+	_new myrepo >/dev/null
+	_f=$(_transcript_of myrepo)
+	_say "$_f" 'ひとのいらい'
+	_say "$_f" 'Another Claude session sent a message: <cross-session-message from="hub">棚卸しです</cross-session-message>'
+
+	run "$CCS_BIN" ls -l
+	[[ "$output" == *"ひとのいらい"* ]] || return 1
+	[[ "$output" != *"Another Claude session"* ]] || return 1
+}
+
+@test "ls: 既定の出力にはアプリで閉じられた印を出さない" {
+	# 会話ログを舐める列は `-l` の下にだけ。既定は軽いまま。
+	_new myrepo >/dev/null
+	_archived_from_app "$(_transcript_of myrepo)"
+
+	run "$CCS_BIN" ls
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"archived"* ]] || return 1
+
+	run --separate-stderr "$CCS_BIN" ls --json
+	[ "$(printf '%s' "$output" | jq -r '.[0] | has("closed")')" = 'false' ]
 }
