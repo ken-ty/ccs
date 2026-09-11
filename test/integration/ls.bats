@@ -257,6 +257,12 @@ _say_blocks() {
 		'{type:"user",message:{role:"user",content:[{type:"text",text:$t}]}}' >>"$1"
 }
 
+# 人が打った依頼を、時刻つきで 1 行足す（ISO 8601、本物と同じ形）。
+_say_at() {
+	jq -cn --arg t "$2" --arg ts "$3" \
+		'{type:"user",timestamp:$ts,message:{role:"user",content:$t}}' >>"$1"
+}
+
 # ツール結果を 1 行足す。これは「依頼」ではない。
 _tool_result() {
 	jq -cn --arg t "$2" \
@@ -420,7 +426,7 @@ _tool_result() {
 	[ "$status" -eq 0 ]
 	echo "$output" | jq -e . >/dev/null
 	_keys=$(echo "$output" | jq -r '.[0] | keys_unsorted | join(",")')
-	[ "$_keys" = 'slug,status,sessionId,path,tmux,labels,startedAt,transcript,worktree,pid,rssMb,updatedAt,age,request,closed' ]
+	[ "$_keys" = 'slug,status,sessionId,path,tmux,labels,startedAt,transcript,worktree,pid,rssMb,updatedAt,age,request,closed,requestedAt' ]
 	[ "$(echo "$output" | jq -r '.[0].request')" = 'いらい' ]
 	[ "$(echo "$output" | jq -r '.[0].updatedAt')" -gt 0 ]
 }
@@ -530,7 +536,7 @@ _tool_result() {
 	run "$CCS_BIN" ls -l --json
 	[ "$status" -eq 0 ]
 	_keys=$(echo "$output" | jq -r '.[0] | keys_unsorted | join(",")')
-	[ "$_keys" = 'slug,status,sessionId,path,tmux,labels,startedAt,transcript,worktree,pid,rssMb,updatedAt,age,request,closed' ]
+	[ "$_keys" = 'slug,status,sessionId,path,tmux,labels,startedAt,transcript,worktree,pid,rssMb,updatedAt,age,request,closed,requestedAt' ]
 	# 盤面の列は今までどおり出る。
 	[ "$(echo "$output" | jq -r '.[0].request')" = 'いらい' ]
 	[ "$(echo "$output" | jq -r '.[0].pid')" != 'null' ]
@@ -597,4 +603,48 @@ _archived_from_app() {
 
 	run --separate-stderr "$CCS_BIN" ls --json
 	[ "$(printf '%s' "$output" | jq -r '.[0] | has("closed")')" = 'false' ]
+}
+
+# --- AGE は「人が最後に打った」時刻で測る ---------------------------------
+#
+# 会話ログの mtime は「最後に生きていた時刻」であって「最後に触った時刻」
+# ではない。hub からのメッセージもシャットダウン時の書き切りも mtime を
+# 進めるので、3 日放置したセッションが「いま動いた」顔になる（実測
+# 2026-09-11: 30 本のうち 12 本がそうだった）。
+
+@test "ls -l: AGE は最後に人が打った依頼の時刻から数える" {
+	_new myrepo >/dev/null
+	_f=$(_transcript_of myrepo)
+	_say_at "$_f" 'ふるいいらい' "$(date -u -v-3d '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null || date -u -d '3 days ago' '+%Y-%m-%dT%H:%M:%S.000Z')"
+	# hub からのメッセージが今届いた。mtime は今になる。
+	_say "$_f" 'Another Claude session sent a message: <cross-session-message from="hub">棚卸し</cross-session-message>'
+
+	run "$CCS_BIN" ls -l
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"  3d  "* ]] || return 1
+	[[ "$output" != *"  0m  "* ]] || return 1
+}
+
+@test "ls -l --json: requestedAt と age を返す" {
+	_new myrepo >/dev/null
+	_f=$(_transcript_of myrepo)
+	_say_at "$_f" 'いらい' '2026-09-01T00:00:00.000Z'
+
+	run --separate-stderr "$CCS_BIN" ls -l --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].requestedAt')" = "$(printf '2026-09-01T00:00:00Z' | jq -R 'fromdateiso8601')" ]
+	[[ "$(printf '%s' "$output" | jq -r '.[0].age')" == *d ]] || return 1
+	# updatedAt（mtime）はそのまま残す。restore --last が見るのはこちら。
+	[ "$(printf '%s' "$output" | jq -r '.[0].updatedAt | type')" = 'number' ]
+}
+
+@test "ls -l: 依頼に時刻が無ければ mtime に戻る" {
+	_new myrepo >/dev/null
+	_f=$(_transcript_of myrepo)
+	_say "$_f" 'じこくのないいらい'
+
+	run --separate-stderr "$CCS_BIN" ls -l --json
+	[ "$status" -eq 0 ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].requestedAt')" = 'null' ]
+	[ "$(printf '%s' "$output" | jq -r '.[0].age')" = '0m' ]
 }

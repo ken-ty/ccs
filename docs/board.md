@@ -24,14 +24,24 @@ tmp-3                   waiting     128M    16h  ページについて、プレ�
 | --- | --- |
 | `REQUEST` | 会話ログの最後の user メッセージ。ツール結果と定型文は除く |
 | `RSS` | その `claude` プロセスの実メモリ（MB）。畳むかどうかの判断材料 |
-| `AGE` | 会話ログの mtime からの経過（`3m` / `2h` / `5d`） |
+| `AGE` | **最後に人が打った依頼の時刻**からの経過（`3m` / `2h` / `5d`）。時刻が取れなければ会話ログの mtime |
 
 `STATUS` はレジストリの値（`idle` / `busy` / `waiting`）だが、**アプリで閉じられた
 セッションは `archived` / `deleted` と出す**（[下記](#アプリで閉じられたセッション)）。
 
 `-l` は `--long` とも書ける。`--json` と併せると、既定のキー
 （`slug` / `status` / `sessionId` / `path` / `tmux`）を**残したまま**
-`pid` / `rssMb` / `updatedAt` / `age` / `request` が足される。
+`pid` / `rssMb` / `updatedAt` / `age` / `request` / `closed` / `requestedAt` が足される。
+
+### AGE は mtime ではない
+
+会話ログの mtime は「最後に生きていた時刻」であって「最後に触った時刻」ではない。
+hub からのメッセージ（棚卸し）が届くたびに、シャットダウンで書き切られるたびに進む
+── 実測（2026-09-11）では 30 本のうち 12 本が、3 日触っていないのに「今日動いた」顔を
+していた。**放置を放置として見せる**ため、AGE は `REQUEST` と同じ行の `timestamp`
+から数える（`requestedAt`）。`updatedAt`（mtime）は残してある ──
+[`restore --last`](restore.md#前回の停止まで生きていた組だけ戻す--last) が見るのは
+こちらで、あれは「一緒に落ちた」を mtime の塊で切るので、意図して触っていない。
 
 ```console
 $ ccs ls -l --json | jq -r '.[] | "\(.slug)\t\(.rssMb)M\t\(.request)"'
