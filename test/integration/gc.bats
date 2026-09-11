@@ -788,3 +788,140 @@ _slot_mark() { # <dir> [workspaceId] [kind]
 	[ "$status" -eq 0 ]
 	[ -d "${CCS_SCRATCH_ROOT}/aaaa1111" ]
 }
+
+# --- アプリで閉じられたセッション --------------------------------------------
+#
+# **claude.ai / スマホアプリの「アーカイブ」「削除」はローカルに届くが、
+# 届いた claude は Remote Control を切るだけでプロセスは残る**（実測
+# 2026-09-11）。人はアプリで畳んだつもりなのに、tmux にも `ccs ls` にも
+# 残り続ける。会話ログに書かれる system 行を読んで、gc が畳む。
+
+# その slug の会話ログのパス。無ければ置き場所ごと作る（ls.bats と同じ）。
+_transcript_of() {
+	_tr_json=$("$CCS_BIN" ls --json)
+	_tr_path=$(echo "$_tr_json" | jq -r --arg s "$1" '.[] | select(.slug==$s) | .path')
+	_tr_id=$(echo "$_tr_json" | jq -r --arg s "$1" '.[] | select(.slug==$s) | .sessionId')
+	_tr_dir="${CCS_PROJECTS_DIR}/$(printf '%s' "$_tr_path" | sed 's/[^A-Za-z0-9]/-/g')"
+	mkdir -p "$_tr_dir"
+	printf '%s/%s.jsonl\n' "$_tr_dir" "$_tr_id"
+}
+
+# 人が打った依頼を 1 行足す。
+_say() {
+	jq -cn --arg t "$2" '{type:"user",message:{role:"user",content:$t}}' >>"$1"
+}
+
+# アプリでアーカイブされたときに claude が書く行（実測の文面そのまま）。
+_archived_from_app() {
+	jq -cn '{type:"system",subtype:"informational",isMeta:false,
+		content:"Remote Control disconnected — this session was ended or archived from another device or app (code 4090)",
+		timestamp:"2026-09-09T11:56:52.767Z"}' >>"$1"
+}
+
+# アプリで削除されたときの行。
+_deleted_from_app() {
+	jq -cn '{type:"system",subtype:"informational",isMeta:false,
+		content:"Remote Control disconnected — the server no longer reports this session — it may have been deleted from another device or app (code 4090)",
+		timestamp:"2026-09-09T11:56:52.767Z"}' >>"$1"
+}
+
+@test "gc: アプリでアーカイブされたセッションを畳む対象に出す（既定は畳まない）" {
+	_new archived >/dev/null
+	_say "$(_transcript_of archived)" 'これで終わり'
+	_archived_from_app "$(_transcript_of archived)"
+
+	run "$CCS_BIN" gc
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"アプリで閉じられた"* ]] || return 1
+	[[ "$output" == *"archived"* ]] || return 1
+	[[ "$output" == *"ccs gc --yes"* ]] || return 1
+
+	# 既定は dry-run。生きている claude を黙って落とさない。
+	ccs_tmux has-session -t '=cc/archived'
+}
+
+@test "gc --yes: アプリでアーカイブされたセッションを畳み、終わったと記録する" {
+	_new archived >/dev/null
+	local _f _u
+	_f=$(_transcript_of archived)
+	_u=$("$CCS_BIN" ls --json | jq -r '.[] | select(.slug=="archived") | .sessionId')
+	_archived_from_app "$_f"
+
+	run "$CCS_BIN" gc --yes
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"畳みました: cc/archived"* ]] || return 1
+
+	run ccs_tmux has-session -t '=cc/archived'
+	[ "$status" -ne 0 ]
+
+	# **人の判断として記録する**（R6 と同じ記録）。再起動のあとの
+	# `ccs restore` に並ばないようにするため。
+	grep -q "^${_u}	" "$CCS_DISMISSED_FILE"
+}
+
+@test "gc: アプリで削除されたセッションも同じく畳む対象" {
+	_new deleted >/dev/null
+	_deleted_from_app "$(_transcript_of deleted)"
+
+	run "$CCS_BIN" gc
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"deleted"* ]] || return 1
+	[[ "$output" == *"ccs gc --yes"* ]] || return 1
+}
+
+@test "gc: 閉じられたあとに人が続けていれば畳まない" {
+	# `ccs attach` で乗り込んで続けた、あるいは `ccs restore` で立て直して
+	# 使っている。会話ログに古い行が残っていても、それは閉じていない。
+	_new revived >/dev/null
+	_archived_from_app "$(_transcript_of revived)"
+	_say "$(_transcript_of revived)" 'やっぱり続けて'
+
+	run "$CCS_BIN" gc
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"アプリで閉じられた"* ]] || return 1
+	[[ "$output" == *"ありません"* ]] || return 1
+}
+
+@test "gc: hub からのメッセージは「人が続けた」に数えない" {
+	# 閉じられたあとも hub の棚卸しは届き、claude はそれに答える。
+	# それを「続けている」と読むと、閉じたものが永久に閉じていないことになる。
+	_new archived >/dev/null
+	_archived_from_app "$(_transcript_of archived)"
+	_say "$(_transcript_of archived)" 'Another Claude session sent a message: <cross-session-message from="hub">棚卸しです</cross-session-message>'
+
+	run "$CCS_BIN" gc
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"アプリで閉じられた"* ]] || return 1
+}
+
+@test "gc: Remote Control が付いていれば、古い行があっても畳まない" {
+	# 一度アーカイブした会話を立て直すと、Remote Control は**同じ id で**
+	# 付き直る（実測）。レジストリに bridgeSessionId が残っていることが
+	# 「いまは閉じていない」の根拠。
+	_new bridged >/dev/null
+	_archived_from_app "$(_transcript_of bridged)"
+
+	# 付き直った状態を作る。fake claude は `--remote-control` 無しでは
+	# `bridgeSessionId: null` を書くので、レジストリをその場で書き換える
+	# （本物が付き直したときに変わるのもこの欄だけ）。
+	local _reg
+	_reg=$(grep -l '"tmux":"cc/bridged:' "$CCS_SESSIONS_DIR"/*.json)
+	sed -i.bak 's/"bridgeSessionId":null/"bridgeSessionId":"session_fake"/' "$_reg"
+	rm -f "${_reg}.bak"
+	grep -q '"bridgeSessionId":"session_fake"' "$_reg"
+
+	run "$CCS_BIN" gc
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"アプリで閉じられた"* ]] || return 1
+}
+
+@test "gc: hub はアプリで閉じられていても畳まない" {
+	export CCS_HUB_HOME="${CCS_TEST_TMP}/hub-home"
+	run --separate-stderr "$CCS_BIN" hub up
+	[ "$status" -eq 0 ]
+	_archived_from_app "$(_transcript_of hub)"
+
+	run "$CCS_BIN" gc --yes
+	[ "$status" -eq 0 ]
+	ccs_tmux has-session -t '=cc/hub'
+}

@@ -751,6 +751,10 @@ CCS_RESOLVED_SLUG=''
 # 使い捨て作業枠として解決したか（I2b）。**打ち方では判定しない** ──
 # `--tmp` でも予約語の `tmp` でも同じ場所に落ちるので、解決した側が立てる。
 CCS_RESOLVED_SCRATCH=''
+# `restore_reject_reason` が読む。名指し（`ccs restore <slug>` / `ccs adopt`）と
+# `--all` では、アプリで閉じられた会話も戻す。
+CCS_RESTORE_NAMED=''
+CCS_RESTORE_ALL=''
 CCS_RESOLVED_WORKTREE_REPO=''
 CCS_RESOLVED_WORKTREE_BRANCH=''
 
@@ -2531,6 +2535,38 @@ CCS_LS_REQUEST_CANDIDATES=12
 # **その行より前も出せなくなる**。行単位で読んで `fromjson?` で落とせば、
 # 半端な行だけが黙って消える。
 #
+# 会話ログの user 行から「人が打った本文」を取り出す jq の定義。
+# `CCS_LS_REQUEST_JQ`（直近の依頼）と `CCS_CLOSED_JQ`（アプリで閉じられたか）が
+# 共有する ── **定型文の一覧を 2 か所に持たない**ため。片方だけ直すと、
+# 片方は「人が打った」と読み、もう片方は読まない、という食い違いになる。
+#
+# **hub からのメッセージ（`Another Claude session sent a message:`）も
+# 定型文として落とす。** あれは組み込みの `SendMessage` が届けるもので、
+# 人が打ったものではない。「直近の依頼」に出すと、放置しているセッションが
+# hub の棚卸しのたびに「いま依頼された」顔になる。
+# shellcheck disable=SC2016  # jq の変数
+CCS_LS_HUMAN_JQ='
+def human_text:
+  (if (.message.content | type) == "string" then .message.content
+   else [.message.content[]? | select(.type == "text") | .text] | join(" ")
+   end)
+  | select(type == "string")
+  | .[:400]
+  | gsub("\\s+"; " ")
+  | sub("^ "; "")
+  | sub(" $"; "")
+  | select(length > 0)
+  | select(startswith("<") | not)
+  | select(startswith("[Request interrupted") | not)
+  | select(startswith("[Image:") | not)
+  | select(startswith("Caveat:") | not)
+  | select(startswith("Base directory for this skill:") | not)
+  | select(startswith("This session is being continued") | not)
+  | select(startswith("Continue from where you left off") | not)
+  | select(startswith("Please continue") | not)
+  | select(startswith("Another Claude session sent a message") | not);
+'
+
 # shellcheck disable=SC2016  # $w / $s は jq の変数
 CCS_LS_REQUEST_JQ='
 def wide:
@@ -2551,23 +2587,7 @@ def clip($w):
     end;
 [ inputs
 | fromjson? // empty
-| (if (.message.content | type) == "string" then .message.content
-   else [.message.content[]? | select(.type == "text") | .text] | join(" ")
-   end)
-| select(type == "string")
-| .[:400]
-| gsub("\\s+"; " ")
-| sub("^ "; "")
-| sub(" $"; "")
-| select(length > 0)
-| select(startswith("<") | not)
-| select(startswith("[Request interrupted") | not)
-| select(startswith("[Image:") | not)
-| select(startswith("Caveat:") | not)
-| select(startswith("Base directory for this skill:") | not)
-| select(startswith("This session is being continued") | not)
-| select(startswith("Continue from where you left off") | not)
-| select(startswith("Please continue") | not)
+| human_text
 | clip($w)
 ] | last // empty
 '
@@ -2584,7 +2604,7 @@ last_request_from_stream() {
 	LC_ALL=C grep -aE "$CCS_LS_USER_RE" 2>/dev/null |
 		tail -n "$CCS_LS_REQUEST_CANDIDATES" |
 		"$CCS_JQ_BIN" -Rrn --argjson w "$CCS_LS_REQUEST_WIDTH" \
-			"$CCS_LS_REQUEST_JQ" 2>/dev/null
+			"${CCS_LS_HUMAN_JQ}${CCS_LS_REQUEST_JQ}" 2>/dev/null
 }
 
 # その会話ログで最後に人が頼んだこと。無ければ何も出さない。
@@ -2630,6 +2650,106 @@ last_request_of() {
 	done
 
 	last_request_from_stream <"$_lr_file"
+}
+
+# ---------------------------------------------------------------------------
+# アプリで閉じられたセッション
+#
+# **claude.ai / スマホアプリの「アーカイブ」「削除」はローカルに届く。** ただし
+# 届いた claude は Remote Control を切るだけで、**プロセスは生き続ける**
+# （実測 2026-09-11）。tmux のペインは残り、レジストリは `idle` のまま、
+# `ccs ls` にも並ぶ ── 人はアプリで畳んだつもりなのに、誰にも畳まれない。
+#
+# 痕跡は 2 か所に残る:
+#
+#   1. 会話ログに system 行が 1 本書かれる（`"subtype":"informational"`）
+#        アーカイブ … Remote Control disconnected — this session was ended or
+#                     archived from another device or app (code 4090)
+#        削除       … Remote Control disconnected — the server no longer reports
+#                     this session — it may have been deleted from another
+#                     device or app (code 4090)
+#   2. レジストリの `bridgeSessionId` が null になる
+#
+# **1 だけでは足りない。** 一度アーカイブした会話を `ccs restore` で立て直すと
+# Remote Control が**同じ id で**付き直り（実測: 会話ログの `bridge-session` 行の
+# id は変わらない）、以後は普通のセッションに戻る ── 会話ログには古い行が
+# 残ったまま。だから **disconnect の行より後に、人が打った依頼が無い**ことまで
+# 見る。人が続けているなら、それは閉じられたセッションではない。
+# 生きているセッションでは、さらにレジストリの 2 を重ねる。
+#
+# **2 だけでも足りない。** `bridgeSessionId` が null になる経路は他にもある
+# （同じ会話を 2 本開いたときの取り合い。design.md §11.2）。会話ログの行が
+# 無ければ、それはアプリで閉じたのではない。
+#
+# **hub からのメッセージは「人が打った依頼」に数えない**（`CCS_LS_HUMAN_JQ`）。
+# 閉じられたあとも hub の棚卸しは届き、claude はそれに答える。それを
+# 「続けている」と読むと、閉じたものが永久に閉じていないことになる。
+#
+# **ccs は文面を解釈しない、という線は越えていない。** 読んでいるのは人の
+# 依頼ではなく claude が書く定型の system 行で、`custom-title` の痕跡を読むのと
+# 同じ種類のこと。
+# ---------------------------------------------------------------------------
+
+# 候補の行だけを通す ERE（user 行、disconnect の行）。
+CCS_CLOSED_RE='"subtype":"informational"|"message":[{]"role":"user","content":("|[[][{]"type":"text")'
+
+# 行の列から「アプリで閉じられたか」を出す jq。archived / deleted / 空文字列。
+# shellcheck disable=SC2016  # jq の変数
+CCS_CLOSED_JQ='
+[ inputs
+| fromjson? // empty
+| if .type == "system" and .subtype == "informational"
+     and ((.content | tostring) | test("Remote Control disconnected")) then
+    (if (.content | test("ended or archived")) then "archived"
+     elif (.content | test("no longer reports this session")) then "deleted"
+     else empty end)
+  elif .type == "user" then (human_text | "human")
+  else empty end
+]
+| reduce .[] as $e (""; if $e == "human" then "" else $e end)
+'
+
+# 標準入力（会話ログ、またはその末尾）から判定を 1 つ出す。閉じられて
+# いなければ何も出さない。
+closed_from_app_from_stream() {
+	LC_ALL=C grep -aE "$CCS_CLOSED_RE" 2>/dev/null |
+		"$CCS_JQ_BIN" -Rrn "${CCS_LS_HUMAN_JQ}${CCS_CLOSED_JQ}" 2>/dev/null |
+		grep -v '^$' || true
+}
+
+# その会話ログがアプリで閉じられているか。archived / deleted / （空）。
+#
+# **末尾から広げていく**（`last_request_of` と同じ）。閉じられたあとも
+# hub からのメッセージで会話ログは伸びるので、末尾だけを決め打ちで読むと
+# 届かないことがある。当たるまで広げ、最後は全部読む。
+transcript_closed_from_app() {
+	_tc_file=$1
+	[ -f "$_tc_file" ] || return 0
+
+	_tc_size=$(wc -c <"$_tc_file" 2>/dev/null | tr -d ' ') || _tc_size=''
+	[ -n "$_tc_size" ] || return 0
+
+	for _tc_chunk in $CCS_LS_REQUEST_CHUNKS; do
+		[ "$_tc_chunk" -lt "$_tc_size" ] || break
+		_tc_hit=$(tail -c "$_tc_chunk" "$_tc_file" 2>/dev/null | closed_from_app_from_stream)
+		if [ -n "$_tc_hit" ]; then
+			printf '%s\n' "$_tc_hit"
+			return 0
+		fi
+	done
+
+	closed_from_app_from_stream <"$_tc_file"
+}
+
+# 生きているセッションがアプリで閉じられているか。
+#   <レジストリファイル> <会話ログ> → archived / deleted / （空）
+#
+# **レジストリの `bridgeSessionId` が残っていれば閉じられていない。**
+# 会話ログの行はあっても、それは前の生で起きたこと。
+live_closed_from_app() {
+	_lc_bridge=$(registry_field "$1" bridgeSessionId)
+	[ -z "$_lc_bridge" ] || return 0
+	transcript_closed_from_app "$2"
 }
 
 # そのファイルの mtime（epoch 秒）。取れなければ何も出さない。
@@ -2687,7 +2807,11 @@ ls_rss_of() {
 }
 
 # `collect_session_row` の行に盤面の列を足す。
-#   slug<TAB>status<TAB>sessionId<TAB>path<TAB>pid<TAB>startedAt<TAB>rssMb<TAB>mtime<TAB>request
+#   slug<TAB>status<TAB>sessionId<TAB>path<TAB>pid<TAB>startedAt<TAB>rssMb<TAB>mtime<TAB>closed<TAB>request
+#
+# **`closed` は `request` より前に置く。** `request` は空になりうるが、
+# タブ区切りの行の途中に空の欄を作ると `read` で潰れる（`_pid` と同じ理由）。
+# 無い値は `-` で運ぶ。
 ls_board_rows() {
 	_brows=$1
 
@@ -2714,9 +2838,16 @@ ls_board_rows() {
 			_brss_mb=$(ls_rss_of "$_brss" "$_pid")
 			_bmt=$(mtime_epoch_of "$_bfile")
 			_breq=$(last_request_of "$_bfile")
-			printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+			# アプリで閉じられているか。**生きている行だけ見る** ── 止まって
+			# いる行は claude が居ないので、閉じられていようが畳む対象は
+			# 同じ（`ccs gc` の「止まっているセッション」）。
+			_bclosed=''
+			if [ "$_pid" != '-' ] && _breg=$(registry_file_for_session "$_slug" 2>/dev/null); then
+				_bclosed=$(live_closed_from_app "$_breg" "$_bfile")
+			fi
+			printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
 				"$_slug" "$_status" "$_id" "$_path" "$_pid" "$_started" \
-				"${_brss_mb:--}" "${_bmt:--}" "$_breq"
+				"${_brss_mb:--}" "${_bmt:--}" "${_bclosed:--}" "$_breq"
 		done
 }
 
@@ -2729,6 +2860,15 @@ json_num() {
 	fi
 }
 
+# `closed` の列。archived / deleted か、無ければ（空か `-`）null。
+ls_json_closed() {
+	if [ -n "$1" ] && [ "$1" != '-' ]; then
+		json_str "$1"
+	else
+		printf 'null'
+	fi
+}
+
 # 盤面の JSON。**既定の `--json` のキーはそのまま残して足すだけ** ──
 # 既に読んでいる側を壊さない。
 ls_as_json_long() {
@@ -2736,11 +2876,11 @@ ls_as_json_long() {
 	_lbl=$(labels_table || true)
 	printf '['
 	_first=1
-	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid _started _rss _mt _req; do
+	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid _started _rss _mt _closed _req; do
 		[ -n "$_slug" ] || continue
 		[ "$_first" = 1 ] || printf ','
 		_first=0
-		printf '{"slug":%s,"status":%s,"sessionId":%s,"path":%s,"tmux":%s,"labels":%s,"startedAt":%s,"transcript":%s,"worktree":%s,"pid":%s,"rssMb":%s,"updatedAt":%s,"age":%s,"request":%s}' \
+		printf '{"slug":%s,"status":%s,"sessionId":%s,"path":%s,"tmux":%s,"labels":%s,"startedAt":%s,"transcript":%s,"worktree":%s,"pid":%s,"rssMb":%s,"updatedAt":%s,"age":%s,"request":%s,"closed":%s}' \
 			"$(ls_json_slug "$_slug")" "$(json_str "$_status")" \
 			"$(json_str "$_id")" "$(json_str "$_path")" \
 			"$(ls_json_tmux "$_slug")" \
@@ -2750,7 +2890,7 @@ ls_as_json_long() {
 			"$(ls_json_worktree "$_path")" \
 			"$(json_num "$_pid")" "$(json_num "$_rss")" \
 			"$(json_num "$_mt")" "$(json_str "$(ls_age_text "$_mt")")" \
-			"$(json_str "$_req")"
+			"$(json_str "$_req")" "$(ls_json_closed "$_closed")"
 	done
 	printf ']\n'
 }
@@ -2767,7 +2907,7 @@ ls_as_table_long() {
 		awk -F'\t' 'NF && length($1) > m { m = length($1) } END { print (m < 4 ? 4 : m) }')
 
 	printf "%-${_w}s  %-8s  %6s  %5s  %s\n" 'SLUG' 'STATUS' 'RSS' 'AGE' 'REQUEST'
-	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid _started _rss _mt _req; do
+	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid _started _rss _mt _closed _req; do
 		[ -n "$_slug" ] || continue
 		if [ -n "$_rss" ] && [ "$_rss" != '-' ]; then
 			_rss="${_rss}M"
@@ -2776,6 +2916,13 @@ ls_as_table_long() {
 		fi
 		_age=$(ls_age_text "$_mt")
 		[ -n "$_age" ] || _age='-'
+		# **アプリで閉じられていれば STATUS にそう出す。** レジストリの
+		# `idle` は「claude は生きている」の意味でしかなく、人が見たいのは
+		# 「もう畳んでよいか」のほう。`--json` の `status` は変えない
+		# （レジストリの値をそのまま読んでいる側を壊さない）。
+		if [ -n "$_closed" ] && [ "$_closed" != '-' ]; then
+			_status=$_closed
+		fi
 		printf "%-${_w}s  %-8s  %6s  %5s  %s\n" \
 			"$_slug" "$_status" "$_rss" "$_age" "$_req"
 	done
@@ -3805,6 +3952,25 @@ cmd_gc() {
 "
 	done
 
+	# 1b. アプリで閉じられたセッション
+	#
+	# **claude は生きている。** アーカイブ・削除はローカルに届くが、届いた
+	# claude は Remote Control を切るだけでプロセスは残る（`transcript_closed_from_app`
+	# の但し書き）。人はアプリで畳んだつもりなので、ここで畳む。
+	# **hub は対象外**（上と同じ）。
+	_app_closed=''
+	for _slug in $(list_slugs); do
+		[ "$_slug" = "$CCS_HUB_SLUG" ] && continue
+		_reg=$(registry_file_for_session "$_slug" 2>/dev/null) || continue
+		_uuid=$(registry_field "$_reg" sessionId)
+		_cwd=$(registry_field "$_reg" cwd)
+		[ -n "$_uuid" ] && [ -n "$_cwd" ] || continue
+		_how=$(live_closed_from_app "$_reg" "$(transcript_path "$_cwd" "$_uuid")")
+		[ -n "$_how" ] || continue
+		_app_closed="${_app_closed}${_slug}	${_uuid}	${_cwd}	${_how}
+"
+	done
+
 	# 2, 3. 使われていない作業枠
 	_slots=$(orphan_slots)
 	_empty_slots=$(printf '%s\n' "$_slots" | sed -n 's/^issued-empty\t//p')
@@ -3823,6 +3989,7 @@ cmd_gc() {
 
 	_found=''
 	[ -n "$_stopped" ] && _found=1
+	[ -n "$_app_closed" ] && _found=1
 	[ -n "$_empty_slots" ] && _found=1
 	[ -n "$_wt_removable" ] && _found=1
 	[ -n "$_wt_prunable" ] && _found=1
@@ -3848,6 +4015,15 @@ cmd_gc() {
 		done
 		# **畳むだけが選択肢ではない。** 同じ会話で立て直せる。
 		printf '  （畳まずに同じ会話で立て直す: ccs restore）\n\n'
+	fi
+
+	if [ -n "$_app_closed" ]; then
+		printf 'アプリで閉じられたセッション（畳む対象）:\n'
+		printf '%s' "$_app_closed" | while IFS="$(printf '\t')" read -r _s _u _c _h; do
+			[ -n "$_s" ] || continue
+			printf '  %-20s %-8s  claude --resume %s\n' "$_s" "$_h" "$_u"
+		done
+		printf '  （会話は残ります。戻す: ccs restore <slug>）\n\n'
 	fi
 
 	if [ -n "$_empty_slots" ]; then
@@ -3933,6 +4109,20 @@ cmd_gc() {
 		[ -n "$_s" ] || continue
 		if "$CCS_TMUX_BIN" kill-session -t "${CCS_PREFIX}${_s}" 2>/dev/null; then
 			printf '畳みました: %s%s\n' "$CCS_PREFIX" "$_s"
+		else
+			warn "ccs: 畳めませんでした: ${CCS_PREFIX}${_s}"
+		fi
+	done
+
+	# **アプリで閉じたものは「終わった」の記録にも入れる**（R6 の記録と
+	# 同じもの）。アーカイブは人の判断そのものなので、再起動のあとの
+	# `ccs restore` に並べない。名指し（`ccs restore <slug>`）なら戻せる。
+	printf '%s' "$_app_closed" | while IFS="$(printf '\t')" read -r _s _u _c _h; do
+		[ -n "$_s" ] || continue
+		if "$CCS_TMUX_BIN" kill-session -t "${CCS_PREFIX}${_s}" 2>/dev/null; then
+			printf '畳みました: %s%s（アプリで%s）\n' "$CCS_PREFIX" "$_s" \
+				"$([ "$_h" = deleted ] && printf '削除' || printf 'アーカイブ')"
+			dismissed_add "$_u" "$_c"
 		else
 			warn "ccs: 畳めませんでした: ${CCS_PREFIX}${_s}"
 		fi
@@ -4561,6 +4751,18 @@ restore_reject_reason() {
 		printf '会話ログの cwd が違います（%s）' "$(tilde_path "$_logged")"
 		return 0
 	fi
+
+	# **アプリで閉じられた会話は、列挙では戻さない。** アーカイブ・削除は
+	# 人の判断そのもので、再起動のあとに生き返らせると「畳んだのに戻る」に
+	# なる。**名指しと `--all` では戻す** ── 名指しは「これを戻す」という
+	# 答えそのもの、`--all` は「古いものも閉じたものも全部」の指定。
+	if [ -z "$CCS_RESTORE_NAMED" ] && [ -z "$CCS_RESTORE_ALL" ]; then
+		_closed=$(transcript_closed_from_app "$_file")
+		if [ -n "$_closed" ]; then
+			printf 'アプリで閉じられています（%s）。戻すなら名指しで: ccs restore <slug>' "$_closed"
+			return 0
+		fi
+	fi
 }
 
 # 1 本ぶん立て直す。冪等性の判定と検査は呼ぶ側でやる。
@@ -4937,6 +5139,8 @@ cmd_restore() {
 	_has_since=''
 	_ntargets=0
 	CCS_RESTORE_SESSION_ID=''
+	CCS_RESTORE_NAMED=''
+	CCS_RESTORE_ALL=''
 
 	# **オプションと対象は混ざる**（`ccs restore tmp-1 --yes`）ので 2 周する。
 	# `$@` を崩さないのは、空白を含むパスを対象に取れるようにするため。
@@ -4960,7 +5164,7 @@ cmd_restore() {
 		esac
 		case $_arg in
 		-y | --yes) _apply=1 ;;
-		--all) _all=1 ;;
+		--all) _all=1 CCS_RESTORE_ALL=1 ;;
 		--json) _json=1 ;;
 		--pick) _pick=1 ;;
 		--list) _list=1 ;;
@@ -5010,7 +5214,8 @@ cmd_restore() {
 	_rows=''
 	if [ "$_ntargets" -gt 0 ]; then
 		# **名指しは古さで絞らない。** 人が名前を打っているなら、1 か月前の
-		# 会話でもそれが意図。
+		# 会話でもそれが意図。アプリで閉じたものも同じ理由で戻す。
+		CCS_RESTORE_NAMED=1
 		_want=''
 		for _arg in "$@"; do
 			if [ -n "$_want" ]; then
@@ -5461,6 +5666,9 @@ cmd_adopt() {
 
 	# 門 3: 戻せる会話があるか。**`--resume` の先が無ければ引き取れない**
 	# （検査は restore と同じ ── 会話ログの実在と cwd の答え合わせ）。
+	# **引き取りは名指し。** 相手は生きていて、人がその場所を指している。
+	# アプリで閉じられた痕跡が会話ログに残っていても、それを理由に断らない。
+	CCS_RESTORE_NAMED=1
 	_why=$(restore_reject_reason "$_cwd" "$_uuid")
 	if [ -n "$_why" ]; then
 		warn "ccs: 引き取れません（${_why}）。"

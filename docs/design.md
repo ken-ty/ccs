@@ -878,6 +878,55 @@ ccb 側にハードコードさせると設定変更で黙って壊れる。そ�
 
 ---
 
+## 13. アプリで閉じられたセッション（2026-09-11 決定）
+
+**症状**: claude.ai / スマホアプリで「アーカイブ」「削除」しても、tmux の claude は
+生き続ける。`ccs ls` に `idle` で並び、再起動のあとは `ccs restore --last` が
+「一緒に落ちた組」として戻す。人はアプリで畳んだつもりなので、「終わったのに残る」
+「畳んだのに戻る」として現れる（2026-09-11 実測: 生きている 24 本のうち 4 本がこの状態。
+畳んだ 5 本のうち 4 本にも同じ痕跡があった）。
+
+### 13.1 何が起きているか（実測）
+
+Remote Control サーバーはアーカイブされたセッションへの接続に **4090 `session_not_active`**
+を返す。claude はそれを `session_archived` と分類し、**Remote Control だけを切る**。
+プロセスは残る。痕跡は 2 つ:
+
+| どこ | 何 |
+| --- | --- |
+| 会話ログ | `{"type":"system","subtype":"informational","content":"Remote Control disconnected — this session was ended or archived from another device or app (code 4090)", …}`。削除は `… the server no longer reports this session — it may have been deleted …` |
+| レジストリ | `bridgeSessionId` が `null` になる |
+
+### 13.2 判定
+
+**会話ログの行を読み、生きているならレジストリを重ねる。**
+
+- 会話ログに disconnect の行があり、**それより後に人が打った依頼が無い** → 閉じられている
+- 生きているセッションは、さらに **`bridgeSessionId` が null** であること
+
+片方では足りない理由が 2 つある。**(a) 立て直すと同じ id で付き直る** ── 一度アーカイブ
+した会話を `ccs restore` で開くと、Remote Control は `bridge_session_unarchive` で
+**同じ id のまま**復活する（会話ログの `bridge-session` 行の id は変わらない）。
+だから「別の id が付いたら付き直り」では見分けられず、**人が続けたか**を見る。
+**(b) null になる経路は他にもある** ── 同じ会話を 2 本開いたときの取り合い（§11.2）。
+会話ログの行が無ければ、閉じたのではない。
+
+**hub からのメッセージは「人が打った」に数えない。** 閉じられたあとも棚卸しは届き、
+claude は答える。それを「続けている」と読むと、閉じたものが永久に閉じていないことになる。
+これに合わせて、`ccs ls -l` の REQUEST も hub からのメッセージを定型文として落とす
+（定義は `CCS_LS_HUMAN_JQ` に 1 本化）。
+
+### 13.3 どこで使うか
+
+| どこ | 何をするか |
+| --- | --- |
+| `ccs ls -l` | `STATUS` に `archived` / `deleted`。`--json` に `closed`。**既定の `ccs ls` は変えない** |
+| `ccs gc` | 「アプリで閉じられたセッション（畳む対象）」に並べ、`--yes` で畳む。畳んだら「終わった」の記録（R6）に入れる |
+| `ccs restore` | 列挙では戻さず「戻せません」に理由つきで出す。**名指しと `--all` は戻す** |
+
+**4 責務の外に出ていない。** 読んでいるのは claude が書く定型の system 行で、
+`custom-title` の痕跡（§10）と同じ種類。人の依頼の中身は解釈しない。
+
 ## 7. 実測に使ったコマンド（再現用）
 
 ```bash
