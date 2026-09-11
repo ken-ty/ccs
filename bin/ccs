@@ -2597,11 +2597,14 @@ def clip($w):
     else ([range(0; $acc | length) | select($acc[.] <= $w - 1)] | length) as $i
       | $s[:$i] + "…"
     end;
+def human_at:
+  (.timestamp // "")
+  | try (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch 0;
 [ inputs
 | fromjson? // empty
-| human_text
-| clip($w)
+| { at: human_at, req: human_text }
 ] | last // empty
+| "\(.at)\t\(.req | clip($w))"
 '
 
 # 末尾から読み進める幅（バイト）。ここで当たらなければ全部読む。
@@ -2612,6 +2615,7 @@ def clip($w):
 CCS_LS_REQUEST_CHUNKS='262144 4194304'
 
 # 標準入力（会話ログ、またはその末尾）から依頼を 1 行取り出す。
+#   <epoch><TAB><依頼>  ── 時刻が取れなければ epoch は 0
 last_request_from_stream() {
 	LC_ALL=C grep -aE "$CCS_LS_USER_RE" 2>/dev/null |
 		tail -n "$CCS_LS_REQUEST_CANDIDATES" |
@@ -2620,6 +2624,18 @@ last_request_from_stream() {
 }
 
 # その会話ログで最後に人が頼んだこと。無ければ何も出さない。
+last_request_of() {
+	_lro=$(last_request_row_of "$1")
+	[ -n "$_lro" ] || return 0
+	printf '%s\n' "${_lro#*	}"
+}
+
+# 同じものを `<epoch><TAB><依頼>` で。**時刻は「人が最後に打った」時刻。**
+#
+# 会話ログの mtime は「最後に生きていた時刻」であって「最後に触った時刻」
+# ではない ── hub からのメッセージも、シャットダウン時の書き切りも mtime を
+# 進める（`restore --last` はまさにそれを根拠にしている）。盤面の AGE が
+# 見たいのは「人がどれだけ放置しているか」なので、こちらを使う。
 #
 # **末尾から広げていく。** 会話ログは 50MB を超えることがあり、全部を
 # grep に通すと 1 本で 0.6 秒かかる（実測、下記）。かといって末尾だけを
@@ -2642,7 +2658,7 @@ last_request_from_stream() {
 # JSON として読めないので `fromjson?` が黙って落とす（`CCS_LS_REQUEST_JQ`）。
 # 切れ目がちょうど最後の依頼の行を割ったときだけ 1 つ前の依頼が出るが、
 # 2KB の行が 256KB の切れ目に当たる確率なので、そのために 1 段増やさない。
-last_request_of() {
+last_request_row_of() {
 	_lr_file=$1
 	[ -f "$_lr_file" ] || return 0
 
@@ -2819,7 +2835,7 @@ ls_rss_of() {
 }
 
 # `collect_session_row` の行に盤面の列を足す。
-#   slug<TAB>status<TAB>sessionId<TAB>path<TAB>pid<TAB>startedAt<TAB>rssMb<TAB>mtime<TAB>closed<TAB>request
+#   slug<TAB>status<TAB>sessionId<TAB>path<TAB>pid<TAB>startedAt<TAB>rssMb<TAB>mtime<TAB>requestedAt<TAB>closed<TAB>request
 #
 # **`closed` は `request` より前に置く。** `request` は空になりうるが、
 # タブ区切りの行の途中に空の欄を作ると `read` で潰れる（`_pid` と同じ理由）。
@@ -2849,7 +2865,11 @@ ls_board_rows() {
 			# `_pid` と同じ理由 ── 空のタブ区切りの欄は read で潰れる）。
 			_brss_mb=$(ls_rss_of "$_brss" "$_pid")
 			_bmt=$(mtime_epoch_of "$_bfile")
-			_breq=$(last_request_of "$_bfile")
+			_brow=$(last_request_row_of "$_bfile")
+			_breq=${_brow#*	}
+			_bat=${_brow%%	*}
+			# 時刻が取れなければ `-`（会話ログが無い、user 行に timestamp が無い）。
+			[ -n "$_brow" ] && [ "$_bat" != 0 ] || _bat='-'
 			# アプリで閉じられているか。**生きている行だけ見る** ── 止まって
 			# いる行は claude が居ないので、閉じられていようが畳む対象は
 			# 同じ（`ccs gc` の「止まっているセッション」）。
@@ -2857,9 +2877,9 @@ ls_board_rows() {
 			if [ "$_pid" != '-' ] && _breg=$(registry_file_for_session "$_slug" 2>/dev/null); then
 				_bclosed=$(live_closed_from_app "$_breg" "$_bfile")
 			fi
-			printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+			printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
 				"$_slug" "$_status" "$_id" "$_path" "$_pid" "$_started" \
-				"${_brss_mb:--}" "${_bmt:--}" "${_bclosed:--}" "$_breq"
+				"${_brss_mb:--}" "${_bmt:--}" "$_bat" "${_bclosed:--}" "$_breq"
 		done
 }
 
@@ -2869,6 +2889,17 @@ json_num() {
 		printf '%s' "$1"
 	else
 		printf 'null'
+	fi
+}
+
+# AGE の基準時刻。**人が最後に打った時刻を優先し、無ければ mtime。**
+# 時刻が無いのは、会話ログがまだ無いか、user 行に timestamp が無いとき
+# （古い版の claude が書いたもの、テストのスタブ）。
+ls_age_basis() {
+	if [ -n "$1" ] && [ "$1" != '-' ]; then
+		printf '%s' "$1"
+	else
+		printf '%s' "$2"
 	fi
 }
 
@@ -2888,11 +2919,11 @@ ls_as_json_long() {
 	_lbl=$(labels_table || true)
 	printf '['
 	_first=1
-	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid _started _rss _mt _closed _req; do
+	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid _started _rss _mt _at _closed _req; do
 		[ -n "$_slug" ] || continue
 		[ "$_first" = 1 ] || printf ','
 		_first=0
-		printf '{"slug":%s,"status":%s,"sessionId":%s,"path":%s,"tmux":%s,"labels":%s,"startedAt":%s,"transcript":%s,"worktree":%s,"pid":%s,"rssMb":%s,"updatedAt":%s,"age":%s,"request":%s,"closed":%s}' \
+		printf '{"slug":%s,"status":%s,"sessionId":%s,"path":%s,"tmux":%s,"labels":%s,"startedAt":%s,"transcript":%s,"worktree":%s,"pid":%s,"rssMb":%s,"updatedAt":%s,"age":%s,"request":%s,"closed":%s,"requestedAt":%s}' \
 			"$(ls_json_slug "$_slug")" "$(json_str "$_status")" \
 			"$(json_str "$_id")" "$(json_str "$_path")" \
 			"$(ls_json_tmux "$_slug")" \
@@ -2901,8 +2932,9 @@ ls_as_json_long() {
 			"$(ls_json_transcript "$_path" "$_id")" \
 			"$(ls_json_worktree "$_path")" \
 			"$(json_num "$_pid")" "$(json_num "$_rss")" \
-			"$(json_num "$_mt")" "$(json_str "$(ls_age_text "$_mt")")" \
-			"$(json_str "$_req")" "$(ls_json_closed "$_closed")"
+			"$(json_num "$_mt")" "$(json_str "$(ls_age_text "$(ls_age_basis "$_at" "$_mt")")")" \
+			"$(json_str "$_req")" "$(ls_json_closed "$_closed")" \
+			"$(json_num "$_at")"
 	done
 	printf ']\n'
 }
@@ -2919,14 +2951,14 @@ ls_as_table_long() {
 		awk -F'\t' 'NF && length($1) > m { m = length($1) } END { print (m < 4 ? 4 : m) }')
 
 	printf "%-${_w}s  %-8s  %6s  %5s  %s\n" 'SLUG' 'STATUS' 'RSS' 'AGE' 'REQUEST'
-	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid _started _rss _mt _closed _req; do
+	printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _slug _status _id _path _pid _started _rss _mt _at _closed _req; do
 		[ -n "$_slug" ] || continue
 		if [ -n "$_rss" ] && [ "$_rss" != '-' ]; then
 			_rss="${_rss}M"
 		else
 			_rss='-'
 		fi
-		_age=$(ls_age_text "$_mt")
+		_age=$(ls_age_text "$(ls_age_basis "$_at" "$_mt")")
 		[ -n "$_age" ] || _age='-'
 		# **アプリで閉じられていれば STATUS にそう出す。** レジストリの
 		# `idle` は「claude は生きている」の意味でしかなく、人が見たいのは
