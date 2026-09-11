@@ -68,6 +68,7 @@ CCS_SCRATCH_SLOTS=4           # 同時に立てる使い捨て枠は 4 本で足
 | `CCS_SCRATCH_ROOT` | `~/.cc-scratch` | 使い捨て作業枠の置き場所 |
 | `CCS_SCRATCH_SLOTS` | `20` | **同時に立てられる**使い捨て枠の本数（[#81](https://github.com/ken-ty/ccs/issues/81)）。「空き枠の本数」ではなく「いま生きている本数」── 枠は発行のたびに一意なので、埋まる状態そのものが無い（I2b）。**20 は「いまローカルで無理なく捌ける数」であって、上限という仕組みへの信任ではない** |
 | `CCS_SCRATCH_NOTE` | （文面あり） | 使い捨て作業枠のセッションに渡す注意書き。`claude --append-system-prompt` で渡す。**空にすると渡さない**。既定は「成果物は cwd に置く。`/tmp` 側は数日で消える」旨（[#63](https://github.com/ken-ty/ccs/issues/63)） |
+| `CCS_DONE_NOTE` | （文面あり） | **全セッション**に渡す注意書き。「利用者が終了と言ったら `ccs kill --self` で畳む」旨。`CCS_SCRATCH_NOTE` と 1 本の `--append-system-prompt` にまとめて渡し、`ccs restore` で立て直すときも渡す。**空にすると渡さない**。未コミットがあれば `--self` は断るので、リポジトリのセッションでも作業は失われない |
 | `CCS_RESTORE_MAX_AGE` | `7` | `ccs restore` が黙って拾う会話ログの古さの上限（日）。`0` で無制限。**列挙にだけ効く**（名指しは古くても戻す） |
 | `CCS_RESTORE_LAST_WINDOW` | `300` | `ccs restore --last` が「一緒に落ちた組」とみなす幅（秒）。**停止は一瞬ではない**（実測で 13 本が 45 秒ばらけた）。広げると手で畳んだものを巻き込み、狭めると取りこぼす |
 | `CCS_LAUNCHED_FILE` | `~/.config/ccs/launched` | **`ccs` が立てた会話の記録。** ghq 配下は印を置けないので、`ccs restore` が「`ccs` が立てたか」を判定するのに使う。**消せば、痕跡のある古いセッションだけが残る** |
