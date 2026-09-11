@@ -167,6 +167,22 @@ _pick() {
 	[ "$status" -ne 0 ]
 }
 
+@test "kill: 畳んだ会話を「終わった」と記録する" {
+	# 再起動のあとの `ccs restore` に並べないため（#89 の 3）。
+	_out=$(_new myrepo)
+	_id=$(echo "$_out" | jq -r '.sessionId')
+
+	run "$CCS_BIN" kill myrepo
+	[ "$status" -eq 0 ]
+	grep -q "^${_id}	" "$CCS_DISMISSED_FILE"
+}
+
+@test "kill: 畳めなかったものは記録しない" {
+	run "$CCS_BIN" kill nothere
+	[ "$status" -ne 0 ]
+	[ ! -s "$CCS_DISMISSED_FILE" ]
+}
+
 @test "kill: 復帰用の uuid と cd 先を出す" {
 	# **v1 に resume が無いので、これが同じ会話に戻る唯一の手掛かり。**
 	_out=$(_new myrepo)
@@ -399,6 +415,15 @@ _run_self() {
 
 	run ccs_tmux has-session -t '=cc/myrepo'
 	[ "$status" -ne 0 ]
+}
+
+@test "kill --self: 畳んだ会話を「終わった」と記録する" {
+	_out=$(_new myrepo)
+	_id=$(echo "$_out" | jq -r '.sessionId')
+
+	_run_self myrepo
+	[ "$status" -eq 0 ]
+	grep -q "^${_id}	" "$CCS_DISMISSED_FILE"
 }
 
 @test "kill --self: 作業中でも畳める（自分が作業中だから）" {
