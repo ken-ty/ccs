@@ -1271,6 +1271,23 @@ _seed_moved() { # <slot-path> <uuid> <最後の cwd>
 	[[ "$output" != *"x01"* ]] || return 1
 }
 
+# --- 注意書きは立て直すときも渡す --------------------------------------------
+
+@test "restore: 立て直すときも注意書きを渡す（終わったら畳む・作業枠は cwd に置く）" {
+	# **tmux サーバの環境は起動時に固定される**ので、最初の ccs 実行より前に。
+	export FAKE_CLAUDE_LOG="${CCS_TEST_TMP}/args.log"
+	_new_tmp >/dev/null
+	_wipe_session $(_ts 1)
+	: >"$FAKE_CLAUDE_LOG"
+
+	run "$CCS_BIN" restore --yes
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"戻しました"* ]] || return 1
+	[[ "$(cat "$FAKE_CLAUDE_LOG")" == *"--resume"* ]] || return 1
+	[[ "$(cat "$FAKE_CLAUDE_LOG")" == *"ccs kill --self"* ]] || return 1
+	[[ "$(cat "$FAKE_CLAUDE_LOG")" == *"scratchpad"* ]] || return 1
+}
+
 # --- アプリで閉じられた会話 -------------------------------------------------
 #
 # アーカイブ・削除は人の判断そのもの。再起動のあとに `ccs restore` が

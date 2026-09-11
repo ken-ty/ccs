@@ -101,6 +101,7 @@ CCS_TRUST_FILE
 CCS_SCRATCH_ROOT
 CCS_SCRATCH_SLOTS
 CCS_SCRATCH_NOTE
+CCS_DONE_NOTE
 CCS_PROJECTS_DIR
 CCS_NEW_TIMEOUT
 CCS_ADOPT_TIMEOUT
@@ -270,6 +271,18 @@ load_config
 # 「渡さない」の意味に使うキーでは、代入は「未設定のときだけ」でなければ
 # ならない。
 : "${CCS_SCRATCH_NOTE=この作業ディレクトリは ccs が発行した使い捨ての作業枠です。残したい成果物は必ずこの作業ディレクトリ（cwd）の中に置いてください。システム側の一時ディレクトリ（/tmp 配下の scratchpad）は数日で自動的に消えます。}"
+
+# セッションに「終わったら自分で畳む」と伝える文面。**全セッションに渡す**
+# （作業枠に限らない）。空なら渡さない。`CCS_SCRATCH_NOTE` と同じ理由で
+# `=`（未設定のときだけ既定）。
+#
+# **なぜ要るか。** 人が「終了」と言って会話を終えても、claude のプロセスは
+# 残る。アプリでアーカイブしても残る（design.md §13）。畳む口は
+# `ccs kill --self` として既にあるが、頼まれなければ誰も打たない ──
+# 実測（2026-09-11）では、終了宣言のあと 1〜3 日残っていたセッションが
+# 5 本あった。**未コミットがあれば `--self` は断る**ので、リポジトリの
+# セッションに渡しても作業は失われない。
+: "${CCS_DONE_NOTE=このセッションは ccs が tmux 上に立てたものです。利用者が「終了」「これで終わり」「畳んで」のように、このセッションでの作業を終えると言ったら、最後の報告を出したあとに ccs kill --self を実行してセッションを畳んでください。未コミットの変更があると ccs は畳まずに断るので、そのときはその旨を伝えて判断を仰いでください。}"
 
 : "${CCS_SCRATCH_ROOT:=${HOME}/.cc-scratch}"
 
@@ -674,6 +687,7 @@ ccs — Claude Code セッションを tmux で立てる薄いラッパー
     CCS_PREFIX         tmux 名の接頭辞       [既定: cc/]
     CCS_SCRATCH_SLOTS  同時に立てられる作業枠の本数 [既定: 20]
     CCS_SCRATCH_NOTE   作業枠のセッションに渡す注意書き（空で無効）
+    CCS_DONE_NOTE      「終わったら ccs kill --self で畳む」の注意書き（空で無効）
 
   いま効いている値と出どころは `ccs config` で見られる。
   一覧と意味は docs/configuration.md、hub の運用は docs/hub.md。
@@ -2206,11 +2220,9 @@ cmd_new() {
 	# 同じ型が付くので、`ccs` が立てたかどうかを区別できない。
 	_cmd="$(shq "$CCS_CLAUDE_BIN") --session-id $(shq "$_uuid")"
 
-	# **作業枠だけに注意書きを渡す**（P0）。ここに立てたセッションは、
-	# 何も言わなければ成果物を `/tmp` 側へ置く。
-	if [ -n "$CCS_RESOLVED_SCRATCH" ] && [ -n "$CCS_SCRATCH_NOTE" ]; then
-		_cmd="${_cmd} --append-system-prompt $(shq "$CCS_SCRATCH_NOTE")"
-	fi
+	# 注意書き（作業枠の P0 と、全セッションの「終わったら畳む」）。
+	_note=$(session_note_for "$CCS_RESOLVED_SCRATCH")
+	[ -z "$_note" ] || _cmd="${_cmd} --append-system-prompt $(shq "$_note")"
 	[ -n "$_prompt" ] && _cmd="${_cmd} $(shq "$_prompt")"
 	_cmd="${_cmd}; exec $(shq "${SHELL:-/bin/sh}")"
 
@@ -4794,9 +4806,42 @@ restore_launch() {
 	#
 	# 末尾の `exec $SHELL` は `ccs new` と同じ理由（design.md §4.3）。
 	_cmd="$(shq "$CCS_CLAUDE_BIN") --resume $(shq "$_uuid")"
+
+	# **注意書きは立て直すときも渡す。** 「終わったら畳む」は会話の続きにも
+	# 効いてほしいし、作業枠の「成果物は cwd に置く」も同じ。渡さないと、
+	# 再起動のあとの組だけが注意書きを持たないことになる。
+	_rl_scratch=''
+	if [ "$(dirname "$_path")" = "$(abs_dir "$CCS_SCRATCH_ROOT" 2>/dev/null || printf '%s' "$CCS_SCRATCH_ROOT")" ]; then
+		_rl_scratch=1
+	fi
+	_note=$(session_note_for "$_rl_scratch")
+	[ -z "$_note" ] || _cmd="${_cmd} --append-system-prompt $(shq "$_note")"
+
 	_cmd="${_cmd}; exec $(shq "${SHELL:-/bin/sh}")"
 
 	"$CCS_TMUX_BIN" new-session -d -s "$_session" -c "$_path" sh -c "$_cmd"
+}
+
+# セッションに渡す注意書きをまとめて 1 つにする。<作業枠なら 1>
+#
+# **1 本の `--append-system-prompt` にまとめる。** 2 本渡せるかは claude の
+# 版次第なので、こちらで連結して 1 本にする。作業枠の注意書き（P0）は
+# 作業枠にだけ、「終わったら畳む」は全セッションに。どちらも空なら何も出さない。
+session_note_for() {
+	_snf=''
+	if [ -n "$1" ] && [ -n "$CCS_SCRATCH_NOTE" ]; then
+		_snf=$CCS_SCRATCH_NOTE
+	fi
+	if [ -n "$CCS_DONE_NOTE" ]; then
+		if [ -n "$_snf" ]; then
+			_snf="${_snf}
+
+${CCS_DONE_NOTE}"
+		else
+			_snf=$CCS_DONE_NOTE
+		fi
+	fi
+	printf '%s' "$_snf"
 }
 
 # `--list` の出力。その場所に残っている会話を新しい順に並べる。
