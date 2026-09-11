@@ -1271,6 +1271,37 @@ _seed_moved() { # <slot-path> <uuid> <最後の cwd>
 	[[ "$output" != *"x01"* ]] || return 1
 }
 
+# --- kill で畳んだ会話は列挙に出ない（#89 の 3 → C） -----------------------
+#
+# `ccs kill` は人の判断そのもの。再起動のあとの `ccs restore` が生き返らせると
+# 「畳んだのに戻る」になる。名指しなら戻せる（`--pick` の記録と同じ扱い）。
+
+@test "restore: kill で畳んだ会話は列挙に出ない" {
+	_new_tmp >/dev/null
+	run "$CCS_BIN" kill "$(_ts 1)"
+	[ "$status" -eq 0 ]
+
+	run "$CCS_BIN" restore
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"ありません"* ]] || return 1
+}
+
+@test "restore <slug>: 名指しなら kill で畳んだ会話も戻す" {
+	local id
+	id=$(_new_tmp)
+	run "$CCS_BIN" kill "$(_ts 1)"
+	[ "$status" -eq 0 ]
+
+	run "$CCS_BIN" restore "$(_ts 1)" --yes
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"戻しました"* ]] || return 1
+	run --separate-stderr "$CCS_BIN" ls --json
+	[ "$(printf '%s' "$output" | jq -r '.[0].sessionId')" = "$id" ]
+
+	# **戻したら記録は消える**（R6）。次に落ちたとき候補に出るように。
+	! grep -q "^${id}	" "$CCS_DISMISSED_FILE"
+}
+
 # --- 注意書きは立て直すときも渡す --------------------------------------------
 
 @test "restore: 立て直すときも注意書きを渡す（終わったら畳む・作業枠は cwd に置く）" {
