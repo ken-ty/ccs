@@ -52,6 +52,12 @@ ccs_setup_sandbox() {
 	# **本物を読ませない。** MCP のログは Claude Code が書くもので、
 	# 手元には他セッションのぶんが大量にある。
 	export CCS_MCP_LOG_DIR="${CCS_TEST_TMP}/mcp-logs"
+	# **launchd に触らせない。** macOS で ssh やこの手のサンドボックスから走ると、
+	# `ccs new` が tmux サーバを GUI セッションに立てようとして本物の launchctl を
+	# 叩く。テストの tmux サーバは自分の `-S` に閉じているので、それ自体は害が
+	# 無いが、テストの結果が「どこで走ったか」で変わる。確かめるのは tmux-gui.bats
+	# だけで、そこは launchctl をスタブに差し替えてから auto に戻す。
+	export CCS_TMUX_GUI=off
 	# **worktree の差し替え点は要らない**（ADR-0003 決定 6）。置き場所が
 	# リポジトリ配下 (`<repo>/.worktrees/`) になったので、テストが作る
 	# リポジトリはサンドボックスの中にあり、worktree もそこに落ちる。
