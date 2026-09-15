@@ -1,10 +1,18 @@
 #!/usr/bin/env sh
 #
-# push する前に、CI と同じ検証を手元で回す。
+# push する前に、手元で速く落とせるものだけ回す: lint + unit（約 1 分）。
 #
-# **ci.yml は PR でも回り、main の ruleset で required check になっている**
-# （2026-08-23 に戻した。理由は ci.yml の冒頭コメント）。**ここはその手前の関門。**
-# 手元で落とすほうが速いので二重にしてある。
+# **integration は回さない。CI に任せる。** ci.yml は PR でも回り、main の ruleset で
+# required check になっているので、integration の回帰は PR で必ず捕まる。
+#
+# 以前は `make check`（lint + unit + integration）を丸ごと回していた。「手元で落とす
+# ほうが速い」が理由だったが、テストが 700 件になった 2026-09-15 の実測で
+# **integration だけで 11 分（498 件 × 1.3 秒。特定の重いテストは無く、1 件ごとに
+# 専用の tmux サーバを立てる床が macOS で 0.43 秒）**、CI（ubuntu）は 5 分。
+# 手元のほうが遅くなった時点で、二重にする理由が無くなった。並列化（bats --jobs）
+# も試したが 2 倍止まり（6 分）で、逆転はしない。
+#
+# 全部を手元で確かめたいときは `make check` を手で打つ（そちらは変えていない）。
 #
 # **docs.yml は main への push でしか回らない**ので、docs のビルドを守るのは
 # いまもここだけ。
@@ -59,15 +67,16 @@ pre-push: $1 が落ちました。push を中止します。
   どうしても今 push したいなら: git push --no-verify
   （ci.yml は PR でも回るので、壊れたままだとマージできません。
    docs.yml は main への push でしか回らないので、docs は main が赤くなります）
+  integration はここでは回していません。全部確かめるなら: make check
 MSG
   exit 1
 }
 
-# ---- ci.yml と同じもの（常に回す）----
-# make check = lint(shellcheck) + test(unit + integration)。
+# ---- 速いものだけ（常に回す）----
+# lint(shellcheck) + unit。integration は CI に任せる（冒頭のコメント）。
 # LC_ALL=C は Makefile が付ける ── ここで足すと二重になる。
-echo 'pre-push: make check を回します（ci.yml と同じ）'
-make check || fail 'make check'
+echo 'pre-push: make lint unit を回します（integration は CI で）'
+make lint unit || fail 'make lint unit'
 
 # ---- docs.yml と同じもの（docs 系のパスが変わったときだけ）----
 #
