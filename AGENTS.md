@@ -183,7 +183,7 @@ integration はテストごとに専用の tmux サーバを立てる。ソケ�
 tmux サーバは端末から切り離された常駐プロセスなので、bats を殺しても、端末を
 閉じても死なない。しかも専用ソケットなので `ccs ls` にも `ccs gc` にも出てこない
 ── **誰も気づけない亡霊になる**。2026-08-26 に、丸 1 日生き残った `cc/hub` 入りの
-サーバが実際に見つかった。`make check` は 6 分かかるので、Ctrl-C の機会は十分ある。
+サーバが実際に見つかった。`make check` は 12 分かかるので（2026-09-15 実測、700 件）、Ctrl-C の機会は十分ある。
 
 だから `ccs_setup_sandbox` が **見張り（`ccs_watch_sandbox`）を外のプロセスとして
 起こす**。持ち主（テストのプロセス）が消えたら、tmux サーバを畳んでサンドボックスを
@@ -283,11 +283,11 @@ make setup-hooks    # git config core.hooksPath hooks
 `.git/config` にあり、worktree もそれを読むため（`extensions.worktreeConfig` を
 有効にしていない限り）。worktree を足すたびに実行し直す必要は無い。
 
-フックが回すのは CI と同じもの。
+フックが回すのは「手元で 1 分で落ちるもの」だけ。integration は CI に任せる。
 
 | いつ | 何を | 対応する CI |
 | --- | --- | --- |
-| 毎回 | `make check`（lint + unit + integration） | `ci.yml` |
+| 毎回 | `make lint unit`（integration は回さない） | `ci.yml`（こちらは integration も回す） |
 | `docs/` `mkdocs.yml` `requirements-docs.txt` `scripts/termshot.py` `.github/workflows/docs.yml` が変わったとき | `make docs-build` | `docs.yml` |
 
 **docs のパス一覧は `docs.yml` の `&docs_paths` と `hooks/pre-push` の 2 箇所にある。

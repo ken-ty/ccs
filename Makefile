@@ -34,8 +34,7 @@ lint:
 	@if [ -d test/fixtures ]; then \
 		find test/fixtures -type f -perm -u+x ! -name '*.py' -exec $(SHELLCHECK) -s sh {} +; \
 	fi
-	@# フックも検査する。**CI は main でしか回らない**ので、hooks/pre-push が
-	@# 唯一の関門になった。壊れたフックは「落ちない」＝素通しになるため、
+	@# フックも検査する。壊れたフックは「落ちない」＝素通しになるため、
 	@# bin/ccs と同じ基準で見る。
 	@if [ -d hooks ]; then \
 		find hooks -type f -perm -u+x -exec $(SHELLCHECK) -s sh {} +; \
