@@ -96,6 +96,8 @@ CCS_GHQ_BIN
 CCS_GIT_BIN
 CCS_JQ_BIN
 CCS_PS_BIN
+CCS_LAUNCHCTL_BIN
+CCS_TMUX_GUI
 CCS_SESSIONS_DIR
 CCS_TRUST_FILE
 CCS_SCRATCH_ROOT
@@ -254,6 +256,23 @@ load_config
 : "${CCS_GIT_BIN:=git}"
 : "${CCS_JQ_BIN:=jq}"
 : "${CCS_PS_BIN:=ps}"
+: "${CCS_LAUNCHCTL_BIN:=launchctl}"
+
+# tmux サーバを macOS の GUI セッション（Aqua）で立てるか。auto | off
+#
+# macOS では、プロセスが「どのセッションで生まれたか」で見えるものが変わる。
+# ssh から立てた tmux サーバは Background セッションで、ログインキーチェーンが
+# 付かない（`security list-keychains` に System しか出ない）。その子で動く claude
+# も、claude が呼ぶ gh も同じで、keyring に入ったトークンが読めず
+# 「token invalid」になる（2026-09-15 実測）。attach で画面を繋いでも親は
+# tmux サーバのままなので変わらない。**セッションはサーバが生まれた瞬間に
+# 決まり、後から変えられない。**
+#
+# だから「これからサーバを作る」場面でだけ、launchd の gui ドメインに
+# 一度きりのジョブを流してサーバを立て、そこへ new-session する。
+# 既にサーバがあれば何もしない（Background で立ってしまった分は
+# `tmux kill-server` で立て直すしかない）。macOS 以外では何もしない。
+: "${CCS_TMUX_GUI:=auto}"
 : "${CCS_SESSIONS_DIR:=${HOME}/.claude/sessions}"
 : "${CCS_TRUST_FILE:=${HOME}/.claude.json}"
 # 使い捨て作業枠のセッションに渡す注意書き（P0）。空にすると渡さない。
@@ -1771,6 +1790,73 @@ transcript_dir_for() {
 		"$(printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g')"
 }
 
+# tmux サーバが居るか（セッションが 0 本でも、サーバが居れば 0）。
+tmux_server_alive() {
+	"$CCS_TMUX_BIN" list-sessions >/dev/null 2>&1
+}
+
+# XML の属性値・要素値に埋め込める形にする（plist 用）。
+xml_escape() {
+	printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
+# new-session の前に呼ぶ。サーバをこれから作る場面で、GUI セッションに立てる。
+#
+# 立て方は `start-server` + `exit-empty off` の 2 命令を 1 クライアントで流す。
+# セッション 0 本のサーバは既定では即座に終わるので、off にしないと
+# new-session が届く前に消える。off のままにするので、全部畳んでもサーバは残る
+# （`ccs kill` の意味は変わらない。`tmux kill-server` はそのまま効く）。
+#
+# 失敗しても止めない ── 従来どおり今のセッションで立てて、警告だけ出す。
+# キーチェーンが読めない以外は動くので、ここで止めるほうが害が大きい。
+tmux_ensure_server() {
+	[ "$CCS_TMUX_GUI" != 'off' ] || return 0
+	[ "$(uname -s 2>/dev/null)" = Darwin ] || return 0
+	tmux_server_alive && return 0
+	[ "$("$CCS_LAUNCHCTL_BIN" managername 2>/dev/null)" != Aqua ] || return 0
+
+	_ts_label="local.ccs.tmux-bootstrap.$$"
+	_ts_plist="${TMPDIR:-/tmp}/${_ts_label}.plist"
+	# launchd は PATH を渡さないので、tmux の実パスと今の PATH を焼き込む。
+	# **サーバの環境はここで固定される**（test_helper の注記と同じ）。今の
+	# シェルの PATH を渡すのは、ペインで起動する claude がそれを引くため。
+	_ts_tmux=$(command -v "$CCS_TMUX_BIN" 2>/dev/null) || _ts_tmux=$CCS_TMUX_BIN
+	{
+		printf '<?xml version="1.0" encoding="UTF-8"?>\n'
+		printf '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+		printf '<plist version="1.0"><dict>\n'
+		printf '  <key>Label</key><string>%s</string>\n' "$_ts_label"
+		printf '  <key>ProgramArguments</key><array>\n'
+		printf '    <string>%s</string><string>start-server</string><string>;</string>\n' "$(xml_escape "$_ts_tmux")"
+		printf '    <string>set-option</string><string>-s</string><string>exit-empty</string><string>off</string>\n'
+		printf '  </array>\n'
+		printf '  <key>EnvironmentVariables</key><dict>\n'
+		printf '    <key>PATH</key><string>%s</string>\n' "$(xml_escape "$PATH")"
+		printf '    <key>HOME</key><string>%s</string>\n' "$(xml_escape "$HOME")"
+		[ -z "${TMUX_TMPDIR:-}" ] || printf '    <key>TMUX_TMPDIR</key><string>%s</string>\n' "$(xml_escape "$TMUX_TMPDIR")"
+		printf '  </dict>\n'
+		printf '  <key>RunAtLoad</key><true/>\n'
+		printf '</dict></plist>\n'
+	} >"$_ts_plist"
+
+	if "$CCS_LAUNCHCTL_BIN" bootstrap "gui/$(id -u)" "$_ts_plist" >/dev/null 2>&1; then
+		_ts_i=0
+		while ! tmux_server_alive; do
+			_ts_i=$((_ts_i + 1))
+			[ "$_ts_i" -lt 50 ] || break
+			sleep 0.1
+		done
+		"$CCS_LAUNCHCTL_BIN" bootout "gui/$(id -u)/${_ts_label}" >/dev/null 2>&1 || true
+	fi
+	rm -f "$_ts_plist"
+
+	if ! tmux_server_alive; then
+		warn 'ccs: GUI セッション（Aqua）で tmux サーバを立てられませんでした。'
+		warn '  このセッションのまま立てます（キーチェーンは読めません）。止めるなら CCS_TMUX_GUI=off'
+	fi
+	return 0
+}
+
 tmux_session_exists() {
 	"$CCS_TMUX_BIN" has-session -t "=${1}" 2>/dev/null
 }
@@ -2226,6 +2312,7 @@ cmd_new() {
 	[ -n "$_prompt" ] && _cmd="${_cmd} $(shq "$_prompt")"
 	_cmd="${_cmd}; exec $(shq "${SHELL:-/bin/sh}")"
 
+	tmux_ensure_server
 	"$CCS_TMUX_BIN" new-session -d -s "$_session" -c "$_path" sh -c "$_cmd" || {
 		error_is 'tmux' "tmux セッションを作れませんでした: ${_session}"
 		die "$EX_FAIL" "tmux セッションを作れませんでした: ${_session}"
@@ -4859,6 +4946,7 @@ restore_launch() {
 
 	_cmd="${_cmd}; exec $(shq "${SHELL:-/bin/sh}")"
 
+	tmux_ensure_server
 	"$CCS_TMUX_BIN" new-session -d -s "$_session" -c "$_path" sh -c "$_cmd"
 }
 
@@ -6244,6 +6332,7 @@ hub_launch() {
 
 	_hb_cmd="${_hb_cmd}; exec $(shq "${SHELL:-/bin/sh}")"
 
+	tmux_ensure_server
 	"$CCS_TMUX_BIN" new-session -d -s "$(hub_session)" -c "$CCS_HUB_HOME" sh -c "$_hb_cmd" ||
 		die "$EX_FAIL" "tmux セッションを作れませんでした: $(hub_session)"
 }

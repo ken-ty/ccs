@@ -64,6 +64,8 @@ CCS_SCRATCH_SLOTS=4           # 同時に立てる使い捨て枠は 4 本で足
 | `CCS_HUB_AGENT_INTERVAL` | `300` | 監視の間隔（秒）。**短くても負荷にならない** ── healthy なときの `ccs hub up` は claude を起動せず 0.06 秒で終わる |
 | `CCS_HUB_AGENT_LABEL` | `local.ccs.hub` | launchd のラベル。組織の命名規約に合わせるとき |
 | `CCS_REMOTE_CONTROL` | `auto` | Remote Control を使わない環境では `off`、全セッションに付けたいなら `on` |
+| `CCS_TMUX_GUI` | `auto` | **macOS のみ。** tmux サーバを「これから作る」場面で、自分が ssh などの Background セッションなら launchd の gui ドメイン（Aqua）に一度きりのジョブを流してそこで立てる。ssh で立てたサーバの子はログインキーチェーンが見えず、`gh` が keyring のトークンを読めない（2026-09-15 実測）。既にサーバがあれば触らない ── Background で立ってしまった分は `tmux kill-server` で立て直す。`off` で従来どおり |
+| `CCS_LAUNCHCTL_BIN` | `launchctl` | 上の差し替え点（テスト用） |
 | `CCS_PREFIX` | `cc/` | 既に `cc/` を別の用途で使っているとき |
 | `CCS_SCRATCH_ROOT` | `~/.cc-scratch` | 使い捨て作業枠の置き場所 |
 | `CCS_SCRATCH_SLOTS` | `20` | **同時に立てられる**使い捨て枠の本数（[#81](https://github.com/ken-ty/ccs/issues/81)）。「空き枠の本数」ではなく「いま生きている本数」── 枠は発行のたびに一意なので、埋まる状態そのものが無い（I2b）。**20 は「いまローカルで無理なく捌ける数」であって、上限という仕組みへの信任ではない** |
